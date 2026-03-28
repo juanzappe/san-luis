@@ -5,14 +5,13 @@ Side effect: upsert clientes únicos por nro_doc_receptor WHERE tipo_doc=80
 Dedup: fecha_emision + tipo_comprobante + punto_venta + numero_desde
 """
 
-from pathlib import Path
 from utils import (
     get_data_raw_path, clean_arca_csv, parse_monto_argentino,
-    safe_int, safe_str, batch_upsert,
+    safe_int, safe_str, batch_upsert, batch_insert, delete_all,
 )
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "ARCA_INGRESOS"
     csv_files = sorted(data_dir.glob("*.csv"))
     logger.info(f"  {len(csv_files)} archivos CSV encontrados")
@@ -79,19 +78,10 @@ def run(sb, logger) -> int:
             for cuit, nombre in clientes_seen.items()
         ]
         logger.info(f"  {len(clientes_data)} clientes a upsert")
-        batch_upsert(sb, "cliente", clientes_data, on_conflict="cuit")
+        batch_upsert(conn, "cliente", clientes_data, on_conflict="cuit")
 
-    # Upsert facturas
+    # Delete + insert facturas
     logger.info(f"  {len(all_facturas)} facturas emitidas a cargar")
-    # Truncate + insert approach: delete existing first to avoid complex composite key upsert
-    # Use insert since Supabase doesn't support composite on_conflict easily
-    # First delete all existing records
-    sb.table("factura_emitida").delete().neq("id", 0).execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_facturas), batch_size):
-        batch = all_facturas[i:i + batch_size]
-        sb.table("factura_emitida").insert(batch).execute()
-        count += len(batch)
-
+    delete_all(conn, "factura_emitida")
+    count = batch_insert(conn, "factura_emitida", all_facturas)
     return count
