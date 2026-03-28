@@ -17,7 +17,10 @@ try:
 except ImportError:
     HAS_PYMUPDF = False
 
-from utils import get_data_raw_path, parse_monto_argentino, parse_fecha_argentina, safe_str
+from utils import (
+    get_data_raw_path, parse_monto_argentino, parse_fecha_argentina,
+    safe_str, delete_where, batch_insert,
+)
 
 
 TIPO_MAP = {
@@ -53,7 +56,6 @@ def _extract_periodo(filename: str) -> str | None:
 def _parse_pdf(path: Path, logger) -> dict | None:
     """Extrae datos de una boleta municipal PDF."""
     if not HAS_PYMUPDF:
-        logger.warning("  PyMuPDF no disponible, saltando PDFs")
         return None
 
     try:
@@ -68,7 +70,6 @@ def _parse_pdf(path: Path, logger) -> dict | None:
 
     # Extraer importe
     importe = None
-    # Buscar patrones de importe
     for pattern in [
         r"(?:total|importe)[:\s]*\$?\s*([\d.,]+)",
         r"\$\s*([\d.,]+)",
@@ -120,7 +121,7 @@ def _parse_pdf(path: Path, logger) -> dict | None:
     }
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "IMPUESTOS MUNICIPALES"
     pdf_files = sorted(data_dir.rglob("*.pdf"))
     logger.info(f"  {len(pdf_files)} archivos PDF encontrados")
@@ -152,7 +153,6 @@ def run(sb, logger) -> int:
             "fuente": "municipio",
         }
 
-        # Intentar extraer datos del PDF
         pdf_data = _parse_pdf(pdf_path, logger)
         if pdf_data:
             record.update({k: v for k, v in pdf_data.items() if v is not None})
@@ -161,13 +161,6 @@ def run(sb, logger) -> int:
 
     logger.info(f"  {len(all_records)} obligaciones municipales a cargar")
 
-    # Delete municipales + insert
-    sb.table("impuesto_obligacion").delete().eq("fuente", "municipio").execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("impuesto_obligacion").insert(batch).execute()
-        count += len(batch)
-
+    delete_where(conn, "impuesto_obligacion", "fuente", "municipio")
+    count = batch_insert(conn, "impuesto_obligacion", all_records)
     return count

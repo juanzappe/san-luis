@@ -10,7 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from utils import get_data_raw_path, safe_int, safe_float, safe_str
+from utils import (
+    get_data_raw_path, safe_int, safe_float, safe_str,
+    delete_all, batch_insert, batch_insert_returning,
+)
 
 
 def _parse_fecha_mostrador(val) -> str | None:
@@ -28,14 +31,14 @@ def _parse_fecha_mostrador(val) -> str | None:
     return s
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "MOSTRADOR"
     xlsx_files = sorted(data_dir.rglob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
 
     # Delete existing to handle full reload
-    sb.table("venta_detalle").delete().neq("id", 0).execute()
-    sb.table("venta").delete().neq("id", 0).execute()
+    delete_all(conn, "venta_detalle")
+    delete_all(conn, "venta")
 
     total_ventas = 0
     total_detalles = 0
@@ -64,7 +67,7 @@ def run(sb, logger) -> int:
                 }
             ventas_grouped[id_venta]["detalles"].append(row)
 
-        # Insertar ventas en batches
+        # Insertar ventas y obtener IDs
         venta_records = []
         for id_venta, data in ventas_grouped.items():
             h = data["header"]
@@ -86,16 +89,13 @@ def run(sb, logger) -> int:
                 "operador": safe_str(h.get("OperadorCreacion")),
             })
 
-        # Insert ventas in batches and collect IDs
-        batch_size = 500
+        # Insert ventas with RETURNING to get IDs
         venta_id_map = {}  # id_venta_pos → db id
-
-        for i in range(0, len(venta_records), batch_size):
-            batch = venta_records[i:i + batch_size]
-            result = sb.table("venta").insert(batch).execute()
-            for rec in result.data:
-                venta_id_map[rec["id_venta_pos"]] = rec["id"]
-            total_ventas += len(batch)
+        rows = batch_insert_returning(conn, "venta", venta_records,
+                                       returning=["id", "id_venta_pos"])
+        for row in rows:
+            venta_id_map[row["id_venta_pos"]] = row["id"]
+        total_ventas += len(venta_records)
 
         # Insertar detalles
         detalle_records = []
@@ -122,10 +122,7 @@ def run(sb, logger) -> int:
                     "alicuota_dgr": safe_float(det.get("Alic DGR")),
                 })
 
-        for i in range(0, len(detalle_records), batch_size):
-            batch = detalle_records[i:i + batch_size]
-            sb.table("venta_detalle").insert(batch).execute()
-            total_detalles += len(batch)
+        total_detalles += batch_insert(conn, "venta_detalle", detalle_records)
 
     logger.info(f"  {total_ventas} ventas, {total_detalles} detalles")
     return total_ventas + total_detalles

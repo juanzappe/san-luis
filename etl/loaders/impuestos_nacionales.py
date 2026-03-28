@@ -6,7 +6,10 @@ Row 1 = "CUIT: 30-65703377-0 - Fecha de emisión: 27/03/2026" (skip)
 """
 
 import re
-from utils import get_data_raw_path, parse_monto_argentino, parse_fecha_argentina, safe_str
+from utils import (
+    get_data_raw_path, parse_monto_argentino, parse_fecha_argentina,
+    safe_str, delete_all, batch_insert,
+)
 
 
 def _clean_wrapped_value(val: str) -> str:
@@ -22,7 +25,7 @@ def _parse_importe_impuesto(val: str) -> float | None:
     return parse_monto_argentino(v)
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "IMPUESTOS NACIONALES"
     csv_files = sorted(data_dir.glob("*.csv"))
     logger.info(f"  {len(csv_files)} archivos CSV encontrados")
@@ -87,12 +90,6 @@ def run(sb, logger) -> int:
 
     logger.info(f"  {len(all_records)} pagos de impuestos a cargar")
 
-    sb.table("pago_impuesto").delete().neq("id", 0).execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("pago_impuesto").insert(batch).execute()
-        count += len(batch)
-
+    delete_all(conn, "pago_impuesto")
+    count = batch_insert(conn, "pago_impuesto", all_records)
     return count

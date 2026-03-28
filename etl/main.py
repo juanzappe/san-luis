@@ -9,7 +9,7 @@ Uso:
 import sys
 import time
 
-from utils import setup_logging, get_supabase
+from utils import setup_logging, get_db_connection
 
 # Importar todos los loaders
 from loaders import (
@@ -48,7 +48,7 @@ LOADERS = [
 
 def main():
     logger = setup_logging()
-    sb = get_supabase()
+    conn = get_db_connection()
 
     # Filtrar loaders si se pasan como argumento
     if len(sys.argv) > 1:
@@ -69,7 +69,7 @@ def main():
         logger.info(f"--- Iniciando: {name} ---")
         t0 = time.time()
         try:
-            count = module.run(sb, logger)
+            count = module.run(conn, logger)
             elapsed = time.time() - t0
             logger.info(f"✓ {name}: {count} registros en {elapsed:.1f}s")
             results.append((name, count, elapsed, None))
@@ -91,6 +91,7 @@ def main():
             total_ok += 1
 
     logger.info(f"Total: {total_ok} exitosos, {total_err} con error")
+    conn.close()
 
 
 if __name__ == "__main__":
