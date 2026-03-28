@@ -7,7 +7,7 @@ Sheet: "movcaja" — 9 columnas, ~56k filas
 from datetime import datetime
 
 import pandas as pd
-from utils import get_data_raw_path, safe_int, safe_float, safe_str
+from utils import get_data_raw_path, safe_int, safe_float, safe_str, delete_all, batch_insert
 
 
 def _parse_fecha_caja(val) -> str | None:
@@ -26,7 +26,7 @@ def _parse_fecha_caja(val) -> str | None:
     return s
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS DE CAJA"
     xlsx_files = sorted(data_dir.glob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
@@ -60,13 +60,6 @@ def run(sb, logger) -> int:
 
     logger.info(f"  {len(all_records)} movimientos de caja a cargar")
 
-    # Delete + insert
-    sb.table("movimiento_caja").delete().neq("id", 0).execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("movimiento_caja").insert(batch).execute()
-        count += len(batch)
-
+    delete_all(conn, "movimiento_caja")
+    count = batch_insert(conn, "movimiento_caja", all_records)
     return count

@@ -6,10 +6,10 @@ Dedup: numero_movimiento (natural key)
 """
 
 import pandas as pd
-from utils import get_data_raw_path, safe_str, safe_float
+from utils import get_data_raw_path, safe_str, safe_float, delete_all, batch_insert
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS BANCARIOS" / "MERCADO PAGO"
     xlsx_files = sorted(data_dir.rglob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
@@ -46,13 +46,6 @@ def run(sb, logger) -> int:
 
     logger.info(f"  {len(all_records)} movimientos MP a cargar")
 
-    # Delete + insert
-    sb.table("movimiento_mp").delete().neq("id", 0).execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("movimiento_mp").insert(batch).execute()
-        count += len(batch)
-
+    delete_all(conn, "movimiento_mp")
+    count = batch_insert(conn, "movimiento_mp", all_records)
     return count

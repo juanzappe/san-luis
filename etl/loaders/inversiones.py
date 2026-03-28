@@ -9,7 +9,10 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from utils import get_data_raw_path, safe_float, safe_str, parse_fecha_argentina
+from utils import (
+    get_data_raw_path, safe_float, safe_str, parse_fecha_argentina,
+    delete_all, batch_insert,
+)
 
 
 def _parse_tenencias(path: Path, logger) -> list[dict]:
@@ -61,7 +64,6 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
         # Check if this is a data row (column N has "Tipo de Activo" marker)
         col_n = safe_str(df.iloc[i, 13]) if df.shape[1] > 13 else None
         if col_n and "tipo de activo" in col_n.lower():
-            # Determine tipo from marker
             marker = col_n.lower()
             if "moneda" in marker:
                 row_tipo = "moneda"
@@ -165,7 +167,7 @@ def _parse_voucher(path: Path, logger) -> list[dict]:
     return records
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "INVERSIONES"
 
     total = 0
@@ -173,29 +175,25 @@ def run(sb, logger) -> int:
     # Procesar tenencias
     tenencias_files = sorted(data_dir.glob("Tenencias-*.xlsx"))
     if tenencias_files:
-        sb.table("inversion").delete().neq("id", 0).execute()
+        delete_all(conn, "inversion")
+        all_tenencias = []
         for f in tenencias_files:
             logger.info(f"  Procesando tenencias: {f.name}")
             records = _parse_tenencias(f, logger)
             logger.info(f"  {len(records)} posiciones de inversión")
-            batch_size = 500
-            for i in range(0, len(records), batch_size):
-                batch = records[i:i + batch_size]
-                sb.table("inversion").insert(batch).execute()
-                total += len(batch)
+            all_tenencias.extend(records)
+        total += batch_insert(conn, "inversion", all_tenencias)
 
     # Procesar voucher
     voucher_files = sorted(data_dir.glob("inviu-voucher-*.xlsx"))
     if voucher_files:
-        sb.table("inversion_movimiento").delete().neq("id", 0).execute()
+        delete_all(conn, "inversion_movimiento")
+        all_voucher = []
         for f in voucher_files:
             logger.info(f"  Procesando voucher: {f.name}")
             records = _parse_voucher(f, logger)
             logger.info(f"  {len(records)} movimientos de inversión")
-            batch_size = 500
-            for i in range(0, len(records), batch_size):
-                batch = records[i:i + batch_size]
-                sb.table("inversion_movimiento").insert(batch).execute()
-                total += len(batch)
+            all_voucher.extend(records)
+        total += batch_insert(conn, "inversion_movimiento", all_voucher)
 
     return total

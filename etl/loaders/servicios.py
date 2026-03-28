@@ -8,37 +8,35 @@ Dedup: Mismo key que arca_ingresos (no se deletea — se agrega a lo existente s
 
 import zipfile
 from pathlib import Path
-from io import BytesIO
 
-from utils import get_data_raw_path, safe_int, safe_str
+from utils import get_data_raw_path, safe_int, safe_str, fetch_all, batch_insert
 
 
 # Spec ARCA Libro IVA Digital — VENTAS.txt posiciones fijas
-# Formato: posición inicio (0-based), largo, campo
 VENTAS_SPEC = [
-    (0, 8, "fecha_comprobante"),       # YYYYMMDD
-    (8, 3, "tipo_comprobante"),        # 3 dígitos
-    (11, 5, "punto_venta"),            # 5 dígitos
-    (16, 20, "numero_desde"),          # 20 dígitos
-    (36, 20, "numero_hasta"),          # 20 dígitos
-    (56, 16, "cod_autorizacion"),      # 16 dígitos (CAE/CAEA)
-    (72, 2, "tipo_doc_receptor"),      # 2 dígitos
-    (74, 20, "nro_doc_receptor"),      # 20 dígitos
-    (94, 30, "denominacion_receptor"), # 30 chars
-    (124, 15, "imp_total"),            # 15 dígitos (último 2 = decimales)
-    (139, 15, "imp_neto_no_gravado"),  # 15 dígitos
-    (154, 15, "percep_no_categ"),      # 15 dígitos
-    (169, 15, "imp_op_exentas"),       # 15 dígitos
-    (184, 15, "percepciones_nacionales"), # 15 dígitos
-    (199, 15, "percepciones_iibb"),    # 15 dígitos
-    (214, 15, "percepciones_muni"),    # 15 dígitos
-    (229, 15, "impuestos_internos"),   # 15 dígitos
-    (244, 3, "moneda"),                # 3 chars (PES, DOL)
-    (247, 10, "tipo_cambio"),          # 10 dígitos (6 decimales)
-    (257, 1, "cantidad_alicuotas"),    # 1 dígito
-    (258, 1, "codigo_operacion"),      # 1 char
-    (259, 15, "otros_tributos"),       # 15 dígitos
-    (274, 8, "fecha_vto_pago"),        # YYYYMMDD
+    (0, 8, "fecha_comprobante"),
+    (8, 3, "tipo_comprobante"),
+    (11, 5, "punto_venta"),
+    (16, 20, "numero_desde"),
+    (36, 20, "numero_hasta"),
+    (56, 16, "cod_autorizacion"),
+    (72, 2, "tipo_doc_receptor"),
+    (74, 20, "nro_doc_receptor"),
+    (94, 30, "denominacion_receptor"),
+    (124, 15, "imp_total"),
+    (139, 15, "imp_neto_no_gravado"),
+    (154, 15, "percep_no_categ"),
+    (169, 15, "imp_op_exentas"),
+    (184, 15, "percepciones_nacionales"),
+    (199, 15, "percepciones_iibb"),
+    (214, 15, "percepciones_muni"),
+    (229, 15, "impuestos_internos"),
+    (244, 3, "moneda"),
+    (247, 10, "tipo_cambio"),
+    (257, 1, "cantidad_alicuotas"),
+    (258, 1, "codigo_operacion"),
+    (259, 15, "otros_tributos"),
+    (274, 8, "fecha_vto_pago"),
 ]
 
 
@@ -97,7 +95,7 @@ def _parse_ventas_line(line: str) -> dict | None:
     }
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "SERVICIOS"
     zip_files = sorted(data_dir.rglob("*.zip"))
     logger.info(f"  {len(zip_files)} archivos ZIP encontrados")
@@ -106,10 +104,11 @@ def run(sb, logger) -> int:
     seen_keys = set()
 
     # Obtener keys existentes de arca_ingresos para evitar duplicados
-    existing = sb.table("factura_emitida").select(
-        "fecha_emision,tipo_comprobante,punto_venta,numero_desde"
-    ).execute()
-    for rec in existing.data:
+    existing = fetch_all(
+        conn,
+        "SELECT fecha_emision, tipo_comprobante, punto_venta, numero_desde FROM factura_emitida"
+    )
+    for rec in existing:
         key = (
             str(rec["fecha_emision"]),
             str(rec["tipo_comprobante"]),
@@ -123,7 +122,6 @@ def run(sb, logger) -> int:
         logger.info(f"  Procesando {zip_path.name}")
         try:
             with zipfile.ZipFile(zip_path) as zf:
-                # Buscar VENTAS.txt
                 ventas_file = None
                 for name in zf.namelist():
                     if name.upper() == "VENTAS.TXT":
@@ -146,7 +144,6 @@ def run(sb, logger) -> int:
                     if not record:
                         continue
 
-                    # Dedup check
                     key = (
                         str(record["fecha_emision"]),
                         str(record["tipo_comprobante"]),
@@ -164,12 +161,5 @@ def run(sb, logger) -> int:
             continue
 
     logger.info(f"  {len(all_records)} facturas nuevas de SERVICIOS a cargar")
-
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("factura_emitida").insert(batch).execute()
-        count += len(batch)
-
+    count = batch_insert(conn, "factura_emitida", all_records)
     return count
