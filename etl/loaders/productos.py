@@ -8,7 +8,7 @@ import pandas as pd
 from utils import get_data_raw_path, safe_float, safe_str, batch_upsert
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     path = get_data_raw_path() / "PRODUCTOS" / "LISTADO_PRODUCTOS.xlsx"
     logger.info(f"Leyendo {path}")
 
@@ -34,5 +34,5 @@ def run(sb, logger) -> int:
         })
 
     logger.info(f"  {len(records)} productos a cargar")
-    count = batch_upsert(sb, "producto", records, on_conflict="codigo_pos")
+    count = batch_upsert(conn, "producto", records, on_conflict="codigo_pos")
     return count

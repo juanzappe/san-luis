@@ -6,11 +6,11 @@ Side effect: upsert proveedores únicos por nro_doc_emisor WHERE tipo_doc=80
 
 from utils import (
     get_data_raw_path, clean_arca_csv, parse_monto_argentino,
-    safe_int, safe_str, batch_upsert,
+    safe_int, safe_str, batch_upsert, batch_insert, delete_all,
 )
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "ARCA_EGRESOS"
     csv_files = sorted(data_dir.glob("*.csv"))
     logger.info(f"  {len(csv_files)} archivos CSV encontrados")
@@ -79,16 +79,10 @@ def run(sb, logger) -> int:
             for cuit, nombre in proveedores_seen.items()
         ]
         logger.info(f"  {len(proveedores_data)} proveedores a upsert")
-        batch_upsert(sb, "proveedor", proveedores_data, on_conflict="cuit")
+        batch_upsert(conn, "proveedor", proveedores_data, on_conflict="cuit")
 
-    # Insert facturas (delete + insert para manejar dedup sin composite upsert)
+    # Delete + insert facturas
     logger.info(f"  {len(all_facturas)} facturas recibidas a cargar")
-    sb.table("factura_recibida").delete().neq("id", 0).execute()
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_facturas), batch_size):
-        batch = all_facturas[i:i + batch_size]
-        sb.table("factura_recibida").insert(batch).execute()
-        count += len(batch)
-
+    delete_all(conn, "factura_recibida")
+    count = batch_insert(conn, "factura_recibida", all_facturas)
     return count

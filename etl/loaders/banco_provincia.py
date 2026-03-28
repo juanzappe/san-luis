@@ -9,7 +9,10 @@ import csv
 import io
 from pathlib import Path
 
-from utils import get_data_raw_path, parse_monto_argentino, parse_fecha_argentina, safe_str
+from utils import (
+    get_data_raw_path, parse_monto_argentino, parse_fecha_argentina,
+    safe_str, delete_where, batch_insert,
+)
 
 
 def _parse_banco_txt(path: Path) -> list[dict]:
@@ -78,7 +81,7 @@ def _parse_banco_txt(path: Path) -> list[dict]:
     return records
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS BANCARIOS" / "BANCO PROVINCIA"
     txt_files = sorted(data_dir.rglob("*.txt"))
     logger.info(f"  {len(txt_files)} archivos TXT encontrados")
@@ -91,14 +94,7 @@ def run(sb, logger) -> int:
 
     logger.info(f"  {len(all_records)} movimientos bancarios a cargar")
 
-    # Delete + insert (composite dedup)
-    sb.table("movimiento_bancario").delete().eq("banco", "provincia").execute()
-
-    count = 0
-    batch_size = 500
-    for i in range(0, len(all_records), batch_size):
-        batch = all_records[i:i + batch_size]
-        sb.table("movimiento_bancario").insert(batch).execute()
-        count += len(batch)
-
+    # Delete provincia + insert
+    delete_where(conn, "movimiento_bancario", "banco", "provincia")
+    count = batch_insert(conn, "movimiento_bancario", all_records)
     return count

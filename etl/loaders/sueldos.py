@@ -11,7 +11,10 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
-from utils import get_data_raw_path, safe_float, safe_str, batch_upsert
+from utils import (
+    get_data_raw_path, safe_float, safe_str,
+    delete_all, batch_insert, batch_insert_returning,
+)
 
 
 MESES = {
@@ -60,7 +63,7 @@ def _parse_fecha_sueldo(val) -> str | None:
     return None
 
 
-def run(sb, logger) -> int:
+def run(conn, logger) -> int:
     data_dir = get_data_raw_path() / "SUELDOS"
     xlsx_files = sorted(data_dir.rglob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
@@ -96,25 +99,23 @@ def run(sb, logger) -> int:
                 "fuente": "transferencia",
             })
 
-    # Upsert empleados
+    # Insert empleados and get IDs
     empleados_data = [
         {"nombre": nombre, "cuenta_bancaria": cuenta}
         for nombre, cuenta in empleados_map.items()
     ]
-    logger.info(f"  {len(empleados_data)} empleados a upsert")
+    logger.info(f"  {len(empleados_data)} empleados a cargar")
 
-    # Delete + insert empleados, then get IDs
-    sb.table("empleado").delete().neq("id", 0).execute()
+    delete_all(conn, "liquidacion_sueldo")
+    delete_all(conn, "empleado")
+
     emp_id_map = {}
-    batch_size = 500
-    for i in range(0, len(empleados_data), batch_size):
-        batch = empleados_data[i:i + batch_size]
-        result = sb.table("empleado").insert(batch).execute()
-        for rec in result.data:
-            emp_id_map[rec["nombre"]] = rec["id"]
+    rows = batch_insert_returning(conn, "empleado", empleados_data,
+                                   returning=["id", "nombre"])
+    for row in rows:
+        emp_id_map[row["nombre"]] = row["id"]
 
     # Insert liquidaciones
-    sb.table("liquidacion_sueldo").delete().neq("id", 0).execute()
     liq_records = []
     for liq in all_liquidaciones:
         emp_id = emp_id_map.get(liq["nombre"])
@@ -130,11 +131,6 @@ def run(sb, logger) -> int:
             "fuente": liq["fuente"],
         })
 
-    count = 0
-    for i in range(0, len(liq_records), batch_size):
-        batch = liq_records[i:i + batch_size]
-        sb.table("liquidacion_sueldo").insert(batch).execute()
-        count += len(batch)
-
+    count = batch_insert(conn, "liquidacion_sueldo", liq_records)
     logger.info(f"  {len(empleados_data)} empleados, {count} liquidaciones")
     return count

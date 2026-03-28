@@ -7,25 +7,123 @@ from datetime import datetime, date
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
+import psycopg2.extras
 from dotenv import load_dotenv
-from supabase import create_client, Client
 
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Conexión Supabase
+# Conexión PostgreSQL (directo a Supabase via connection string)
 # ---------------------------------------------------------------------------
 
-def get_supabase() -> Client:
-    """Crea y retorna un cliente Supabase con SERVICE_ROLE key."""
-    url = os.environ["SUPABASE_URL"]
-    key = os.environ["SUPABASE_SERVICE_KEY"]
-    return create_client(url, key)
+def get_db_connection():
+    """Crea y retorna una conexión psycopg2 usando DATABASE_URL."""
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    conn.autocommit = True
+    return conn
 
 
 def get_data_raw_path() -> Path:
     """Retorna la ruta a data_raw/."""
     return Path(os.environ.get("DATA_RAW_PATH", "../data_raw"))
+
+
+# ---------------------------------------------------------------------------
+# Operaciones SQL batch
+# ---------------------------------------------------------------------------
+
+def delete_all(conn, tabla: str):
+    """DELETE FROM tabla (todas las filas)."""
+    with conn.cursor() as cur:
+        cur.execute(f"DELETE FROM {tabla}")
+
+
+def delete_where(conn, tabla: str, campo: str, valor):
+    """DELETE FROM tabla WHERE campo = valor."""
+    with conn.cursor() as cur:
+        cur.execute(f"DELETE FROM {tabla} WHERE {campo} = %s", (valor,))
+
+
+def batch_insert(conn, tabla: str, datos: list[dict],
+                 batch_size: int = 500) -> int:
+    """Insert en batches usando execute_values. Retorna total insertado."""
+    if not datos:
+        return 0
+    cols = list(datos[0].keys())
+    cols_sql = ", ".join(cols)
+    template = "(" + ", ".join([f"%({c})s" for c in cols]) + ")"
+    sql = f"INSERT INTO {tabla} ({cols_sql}) VALUES %s"
+
+    total = 0
+    with conn.cursor() as cur:
+        for i in range(0, len(datos), batch_size):
+            batch = datos[i:i + batch_size]
+            psycopg2.extras.execute_values(
+                cur, sql, batch, template=template, page_size=batch_size
+            )
+            total += len(batch)
+    return total
+
+
+def batch_insert_returning(conn, tabla: str, datos: list[dict],
+                           returning: list[str],
+                           batch_size: int = 500) -> list[dict]:
+    """Insert en batches y retorna las columnas solicitadas (RETURNING).
+
+    Retorna lista de dicts con las columnas pedidas en `returning`.
+    """
+    if not datos:
+        return []
+    cols = list(datos[0].keys())
+    cols_sql = ", ".join(cols)
+    placeholders = ", ".join([f"%({c})s" for c in cols])
+    returning_sql = ", ".join(returning)
+    sql = f"INSERT INTO {tabla} ({cols_sql}) VALUES ({placeholders}) RETURNING {returning_sql}"
+
+    all_rows = []
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        for i in range(0, len(datos), batch_size):
+            batch = datos[i:i + batch_size]
+            for row in batch:
+                cur.execute(sql, row)
+                result = cur.fetchone()
+                if result:
+                    all_rows.append(dict(result))
+    return all_rows
+
+
+def batch_upsert(conn, tabla: str, datos: list[dict],
+                 on_conflict: str, batch_size: int = 500) -> int:
+    """Upsert en batches con ON CONFLICT DO UPDATE. Retorna total procesado."""
+    if not datos:
+        return 0
+    cols = list(datos[0].keys())
+    cols_sql = ", ".join(cols)
+    template = "(" + ", ".join([f"%({c})s" for c in cols]) + ")"
+    update_cols = [c for c in cols if c != on_conflict]
+    update_sql = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+    sql = (
+        f"INSERT INTO {tabla} ({cols_sql}) VALUES %s "
+        f"ON CONFLICT ({on_conflict}) DO UPDATE SET {update_sql}"
+    )
+
+    total = 0
+    with conn.cursor() as cur:
+        for i in range(0, len(datos), batch_size):
+            batch = datos[i:i + batch_size]
+            psycopg2.extras.execute_values(
+                cur, sql, batch, template=template, page_size=batch_size
+            )
+            total += len(batch)
+    return total
+
+
+def fetch_all(conn, sql: str, params=None) -> list[dict]:
+    """Ejecuta un SELECT y retorna lista de dicts."""
+    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
 
 
 # ---------------------------------------------------------------------------
@@ -106,33 +204,6 @@ def safe_str(val) -> str | None:
         return None
     s = str(val).strip()
     return s if s else None
-
-
-# ---------------------------------------------------------------------------
-# Batch operations
-# ---------------------------------------------------------------------------
-
-def batch_upsert(sb: Client, tabla: str, datos: list[dict],
-                 on_conflict: str, batch_size: int = 500) -> int:
-    """Upsert en batches. Retorna total de registros procesados."""
-    total = 0
-    for i in range(0, len(datos), batch_size):
-        batch = datos[i:i + batch_size]
-        sb.table(tabla).upsert(batch, on_conflict=on_conflict).execute()
-        total += len(batch)
-    return total
-
-
-def batch_insert(sb: Client, tabla: str, datos: list[dict],
-                 batch_size: int = 500) -> int:
-    """Insert en batches (ignora duplicados con on_conflict si hay unique).
-    Retorna total de registros procesados."""
-    total = 0
-    for i in range(0, len(datos), batch_size):
-        batch = datos[i:i + batch_size]
-        sb.table(tabla).insert(batch).execute()
-        total += len(batch)
-    return total
 
 
 # ---------------------------------------------------------------------------
