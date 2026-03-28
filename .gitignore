@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Environment
+.env.local
+.env
+web/.env.local
+importador/config.py
+
+# Next.js
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Datos sensibles (los de ejemplo sí van al repo)
+# datos-ejemplo/ ← estos SÍ van al repo para testear
