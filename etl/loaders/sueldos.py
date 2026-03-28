@@ -1,0 +1,140 @@
+"""Loader: SUELDOS → empleado + liquidacion_sueldo.
+
+Fuente: data_raw/SUELDOS/{year}/*.xlsx
+Row 1 = título ("Detalle de transferencias"), Row 2 = headers, datos desde Row 3.
+Side effect: upsert empleados por nombre.
+Período: derivado del nombre del archivo (SUELDOS_FEBRERO_2026 → "2026-02")
+"""
+
+import re
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
+from utils import get_data_raw_path, safe_float, safe_str, batch_upsert
+
+
+MESES = {
+    "ENERO": "01", "FEBRERO": "02", "MARZO": "03", "ABRIL": "04",
+    "MAYO": "05", "JUNIO": "06", "JULIO": "07", "AGOSTO": "08",
+    "SEPTIEMBRE": "09", "OCTUBRE": "10", "NOVIEMBRE": "11", "DICIEMBRE": "12",
+    "AGUINALDO_JUNIO": "06-SAC", "AGUINALDO_DICIEMBRE": "12-SAC",
+}
+
+
+def _extract_periodo(filename: str) -> str:
+    """Extrae período del nombre de archivo. Ej: SUELDOS_FEBRERO_2024.xlsx → 2024-02"""
+    name = filename.upper().replace(".XLSX", "").replace(" (2)", "")
+
+    # Buscar año (4 dígitos)
+    year_match = re.search(r"(\d{4})", name)
+    year = year_match.group(1) if year_match else "0000"
+
+    # Buscar mes
+    for mes_key, mes_val in MESES.items():
+        if mes_key in name:
+            return f"{year}-{mes_val}"
+
+    return year
+
+
+def _parse_fecha_sueldo(val) -> str | None:
+    """Parsea fecha de transferencia (03-may-2024) a YYYY-MM-DD."""
+    if val is None:
+        return None
+    s = str(val).strip()
+    if not s:
+        return None
+    # Meses en español abreviados
+    meses_es = {
+        "ene": "01", "feb": "02", "mar": "03", "abr": "04",
+        "may": "05", "jun": "06", "jul": "07", "ago": "08",
+        "sep": "09", "oct": "10", "nov": "11", "dic": "12",
+    }
+    match = re.match(r"(\d{1,2})-(\w{3})-(\d{4})", s.lower())
+    if match:
+        day = match.group(1).zfill(2)
+        month = meses_es.get(match.group(2), "01")
+        year = match.group(3)
+        return f"{year}-{month}-{day}"
+    return None
+
+
+def run(sb, logger) -> int:
+    data_dir = get_data_raw_path() / "SUELDOS"
+    xlsx_files = sorted(data_dir.rglob("*.xlsx"))
+    logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
+
+    empleados_map = {}  # nombre → cuenta_bancaria
+    all_liquidaciones = []
+
+    for xlsx_path in xlsx_files:
+        logger.info(f"  Procesando {xlsx_path.name}")
+        periodo = _extract_periodo(xlsx_path.name)
+
+        try:
+            df = pd.read_excel(xlsx_path, header=1, dtype=str)  # header en row 2 (index 1)
+        except Exception as e:
+            logger.warning(f"  No se pudo leer {xlsx_path.name}: {e}")
+            continue
+
+        for _, row in df.iterrows():
+            nombre = safe_str(row.get("Nombre Beneficiario"))
+            cuenta = safe_str(row.get("Cuenta Beneficiario"))
+            if not nombre:
+                continue
+
+            empleados_map[nombre] = cuenta
+
+            all_liquidaciones.append({
+                "nombre": nombre,
+                "periodo": periodo,
+                "sueldo_neto": safe_float(row.get("Importe")),
+                "fecha_transferencia": _parse_fecha_sueldo(row.get("Fecha")),
+                "cuenta_beneficiario": cuenta,
+                "situacion_transferencia": safe_str(row.get("Situación")),
+                "fuente": "transferencia",
+            })
+
+    # Upsert empleados
+    empleados_data = [
+        {"nombre": nombre, "cuenta_bancaria": cuenta}
+        for nombre, cuenta in empleados_map.items()
+    ]
+    logger.info(f"  {len(empleados_data)} empleados a upsert")
+
+    # Delete + insert empleados, then get IDs
+    sb.table("empleado").delete().neq("id", 0).execute()
+    emp_id_map = {}
+    batch_size = 500
+    for i in range(0, len(empleados_data), batch_size):
+        batch = empleados_data[i:i + batch_size]
+        result = sb.table("empleado").insert(batch).execute()
+        for rec in result.data:
+            emp_id_map[rec["nombre"]] = rec["id"]
+
+    # Insert liquidaciones
+    sb.table("liquidacion_sueldo").delete().neq("id", 0).execute()
+    liq_records = []
+    for liq in all_liquidaciones:
+        emp_id = emp_id_map.get(liq["nombre"])
+        if not emp_id:
+            continue
+        liq_records.append({
+            "empleado_id": emp_id,
+            "periodo": liq["periodo"],
+            "sueldo_neto": liq["sueldo_neto"],
+            "fecha_transferencia": liq["fecha_transferencia"],
+            "cuenta_beneficiario": liq["cuenta_beneficiario"],
+            "situacion_transferencia": liq["situacion_transferencia"],
+            "fuente": liq["fuente"],
+        })
+
+    count = 0
+    for i in range(0, len(liq_records), batch_size):
+        batch = liq_records[i:i + batch_size]
+        sb.table("liquidacion_sueldo").insert(batch).execute()
+        count += len(batch)
+
+    logger.info(f"  {len(empleados_data)} empleados, {count} liquidaciones")
+    return count
