@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
+import { Providers } from "./providers";
 import "./globals.css";
 
 const geistSans = localFont({
@@ -24,11 +25,13 @@ export default function RootLayout({
   return (
     <html lang="es" className={geistSans.variable}>
       <body className="antialiased">
-        <Sidebar />
-        <MobileNav />
-        <main className="min-h-screen lg:pl-64">
-          <div className="container mx-auto p-6 lg:p-8">{children}</div>
-        </main>
+        <Providers>
+          <Sidebar />
+          <MobileNav />
+          <main className="min-h-screen lg:pl-64">
+            <div className="container mx-auto p-6 lg:p-8">{children}</div>
+          </main>
+        </Providers>
       </body>
     </html>
   );

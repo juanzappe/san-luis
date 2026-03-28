@@ -36,8 +36,9 @@ const navigation: NavItem[] = [
     icon: BarChart3,
     children: [
       { label: "Estado de Resultados", href: "/economico/estado-resultados" },
-      { label: "Ventas", href: "/economico/ventas" },
+      { label: "Ingresos", href: "/economico/ingresos" },
       { label: "Egresos", href: "/economico/egresos" },
+      { label: "Ventas", href: "/economico/ventas" },
       { label: "Balance", href: "/economico/balance" },
       { label: "Indicadores", href: "/economico/indicadores" },
     ],
