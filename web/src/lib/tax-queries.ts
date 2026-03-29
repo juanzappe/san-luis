@@ -85,7 +85,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const [obligRes, pagosRes, ivaMensualRes, movBancRes, resultadoData] = await Promise.all([
     supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
     supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones, formulario"),
-    supabase.rpc("get_iva_mensual"),
+    supabase.rpc("get_iva_ingresos_mensual"),
     supabase.from("movimiento_bancario").select("fecha, concepto, debito, importe").ilike("concepto", "%IMPUESTO LEY 25413%").not("concepto", "ilike", "%COMPENSACION%"),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
@@ -109,26 +109,24 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
 
   // --- A) IVA — Posición neta from RPC (server-side aggregation) ---
   const ivaMensualRows = (ivaMensualRes.data ?? []) as Array<{
-    periodo: string; debito: number; credito: number; ingresos: number;
+    periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
   }>;
+  // Group by periodo (RPC returns one row per table per month via UNION ALL)
   const ivaDebitoMap = new Map<string, number>();
   const ivaCreditoMap = new Map<string, number>();
   const ingresosMap = new Map<string, number>();
   for (const row of ivaMensualRows) {
-    addToMap(ivaDebitoMap, row.periodo, Number(row.debito) || 0);
-    addToMap(ivaCreditoMap, row.periodo, Number(row.credito) || 0);
+    addToMap(ivaDebitoMap, row.periodo, Number(row.iva_debito) || 0);
+    addToMap(ivaCreditoMap, row.periodo, Number(row.iva_credito) || 0);
     addToMap(ingresosMap, row.periodo, Number(row.ingresos) || 0);
   }
   // Merge IVA neto into tipoMonthMap
-  ivaDebitoMap.forEach((_, p) => {
+  const allIvaPeriods = new Set<string>();
+  ivaDebitoMap.forEach((_, k) => allIvaPeriods.add(k));
+  ivaCreditoMap.forEach((_, k) => allIvaPeriods.add(k));
+  Array.from(allIvaPeriods).forEach((p) => {
     const neto = (ivaDebitoMap.get(p) ?? 0) - (ivaCreditoMap.get(p) ?? 0);
     if (neto > 0) addTipo("ivaNeto", p, neto, "arca");
-  });
-  ivaCreditoMap.forEach((_, p) => {
-    if (!ivaDebitoMap.has(p)) {
-      const neto = -(ivaCreditoMap.get(p) ?? 0);
-      if (neto > 0) addTipo("ivaNeto", p, neto, "arca");
-    }
   });
 
   // --- B) Ganancias — Estimated 35% of positive resultado, capped ---
