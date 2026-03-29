@@ -68,7 +68,8 @@ def run(conn, logger) -> int:
     xlsx_files = sorted(data_dir.rglob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
 
-    empleados_map = {}  # nombre → cuenta_bancaria
+    # cuil → { nombre (longest without "000"), cuenta_bancaria }
+    empleados_map: dict[str, dict] = {}
     all_liquidaciones = []
 
     for xlsx_path in xlsx_files:
@@ -84,13 +85,30 @@ def run(conn, logger) -> int:
         for _, row in df.iterrows():
             nombre = safe_str(row.get("Nombre Beneficiario"))
             cuenta = safe_str(row.get("Cuenta Beneficiario"))
+            cuil = safe_str(row.get("Referencia"))
             if not nombre:
                 continue
+            if not cuil:
+                # Fallback: use name as key (shouldn't happen)
+                cuil = nombre
 
-            empleados_map[nombre] = cuenta
+            # Keep the longest name without "000" as canonical
+            existing = empleados_map.get(cuil)
+            if existing is None:
+                empleados_map[cuil] = {"nombre": nombre, "cuenta_bancaria": cuenta, "cuil": cuil if cuil != nombre else None}
+            else:
+                has_000 = "000" in nombre
+                existing_has_000 = "000" in existing["nombre"]
+                # Prefer name without "000", then longest
+                if (existing_has_000 and not has_000) or (
+                    existing_has_000 == has_000 and len(nombre) > len(existing["nombre"])
+                ):
+                    existing["nombre"] = nombre
+                if cuenta:
+                    existing["cuenta_bancaria"] = cuenta
 
             all_liquidaciones.append({
-                "nombre": nombre,
+                "cuil": cuil,
                 "periodo": periodo,
                 "sueldo_neto": safe_float(row.get("Importe")),
                 "fecha_transferencia": _parse_fecha_sueldo(row.get("Fecha")),
@@ -99,26 +117,23 @@ def run(conn, logger) -> int:
                 "fuente": "transferencia",
             })
 
-    # Insert empleados and get IDs
-    empleados_data = [
-        {"nombre": nombre, "cuenta_bancaria": cuenta}
-        for nombre, cuenta in empleados_map.items()
-    ]
-    logger.info(f"  {len(empleados_data)} empleados a cargar")
+    # Insert empleados and get IDs (keyed by CUIL for dedup)
+    empleados_data = list(empleados_map.values())
+    logger.info(f"  {len(empleados_data)} empleados únicos a cargar")
 
     delete_all(conn, "liquidacion_sueldo")
     delete_all(conn, "empleado")
 
-    emp_id_map = {}
+    emp_id_map = {}  # cuil → db id
     rows = batch_insert_returning(conn, "empleado", empleados_data,
-                                   returning=["id", "nombre"])
+                                   returning=["id", "cuil"])
     for row in rows:
-        emp_id_map[row["nombre"]] = row["id"]
+        emp_id_map[row["cuil"]] = row["id"]
 
     # Insert liquidaciones
     liq_records = []
     for liq in all_liquidaciones:
-        emp_id = emp_id_map.get(liq["nombre"])
+        emp_id = emp_id_map.get(liq["cuil"])
         if not emp_id:
             continue
         liq_records.append({
