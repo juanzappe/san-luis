@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -12,11 +12,6 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import {
-  Wallet,
-  Briefcase,
-  Megaphone,
-  Landmark,
-  Receipt,
   Loader2,
   AlertCircle,
 } from "lucide-react";
@@ -41,12 +36,16 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-const COLORS = {
-  operativos: "#ef4444",
-  comerciales: "#f59e0b",
-  financieros: "#3b82f6",
-  ganancias: "#8b5cf6",
-};
+// Dynamic palette for expense categories
+const CATEGORY_COLORS = [
+  "#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#8b5cf6",
+  "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1",
+  "#14b8a6", "#e11d48", "#a855f7", "#0ea5e9",
+];
+// Fixed colors for non-category items
+const SUELDOS_COLOR = "#64748b";
+const IMPUESTOS_COLOR = "#78716c";
+const FINANCIEROS_COLOR = "#94a3b8";
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -55,14 +54,13 @@ function KpiCard({
   title,
   value,
   delta,
-  icon: Icon,
+  color,
 }: {
   title: string;
   value: number;
   delta: number | null;
-  icon: React.ElementType;
+  color?: string;
 }) {
-  // For expenses, negative delta = good (costs went down)
   const deltaPositive = delta !== null && delta < 0;
   const deltaNegative = delta !== null && delta > 0;
 
@@ -70,7 +68,7 @@ function KpiCard({
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+        {color && <span className="h-3 w-3 rounded-full" style={{ backgroundColor: color }} />}
       </CardHeader>
       <CardContent>
         <div className="text-2xl font-bold">{formatARS(value)}</div>
@@ -101,6 +99,28 @@ export default function EgresosPage() {
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Discover all category names sorted by total descending
+  const allCategories = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const r of raw) {
+      for (const [cat, monto] of Object.entries(r.categorias)) {
+        totals.set(cat, (totals.get(cat) ?? 0) + monto);
+      }
+    }
+    return Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([name]) => name);
+  }, [raw]);
+
+  // Color assignment for categories
+  const catColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    allCategories.forEach((cat, i) => {
+      map.set(cat, CATEGORY_COLORS[i % CATEGORY_COLORS.length]);
+    });
+    return map;
+  }, [allCategories]);
 
   if (loading) {
     return (
@@ -137,22 +157,41 @@ export default function EgresosPage() {
   }
 
   // Apply inflation adjustment
-  const data: EgresoRow[] = raw.map((r) => ({
-    periodo: r.periodo,
-    operativos: adjust(r.operativos, r.periodo),
-    comerciales: adjust(r.comerciales, r.periodo),
-    financieros: adjust(r.financieros, r.periodo),
-    ganancias: adjust(r.ganancias, r.periodo),
-    total: adjust(r.total, r.periodo),
-  }));
+  const data: EgresoRow[] = raw.map((r) => {
+    const adjCats: Record<string, number> = {};
+    for (const [cat, monto] of Object.entries(r.categorias)) {
+      adjCats[cat] = adjust(monto, r.periodo);
+    }
+    return {
+      ...r,
+      operativos: adjust(r.operativos, r.periodo),
+      comerciales: adjust(r.comerciales, r.periodo),
+      financieros: adjust(r.financieros, r.periodo),
+      ganancias: adjust(r.ganancias, r.periodo),
+      total: adjust(r.total, r.periodo),
+      categorias: adjCats,
+      sueldos: adjust(r.sueldos, r.periodo),
+      impuestos: adjust(r.impuestos, r.periodo),
+    };
+  });
 
   const last = data[data.length - 1];
   const prev = data.length >= 2 ? data[data.length - 2] : null;
 
-  const chartData = data.slice(-12).map((r) => ({
-    ...r,
-    label: shortLabel(r.periodo),
-  }));
+  // Chart data — flatten categorias into top-level keys for Recharts
+  const chartData = data.slice(-12).map((r) => {
+    const flat: Record<string, string | number> = { label: shortLabel(r.periodo) };
+    for (const cat of allCategories) {
+      flat[cat] = r.categorias[cat] ?? 0;
+    }
+    flat["Sueldos"] = r.sueldos;
+    flat["Impuestos"] = r.impuestos;
+    flat["Financieros"] = r.financieros;
+    return flat;
+  });
+
+  // Top KPI categories (top 3 by monto in last month)
+  const topCats = allCategories.slice(0, 3);
 
   return (
     <div className="space-y-6">
@@ -160,7 +199,7 @@ export default function EgresosPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Egresos</h1>
           <p className="text-muted-foreground">
-            Estructura de costos — {periodoLabel(last.periodo)}
+            Estructura de costos por categoría — {periodoLabel(last.periodo)}
           </p>
         </div>
         <InflationToggle />
@@ -172,51 +211,49 @@ export default function EgresosPage() {
           title="Total Egresos"
           value={last.total}
           delta={prev ? pctDelta(last.total, prev.total) : null}
-          icon={Wallet}
         />
+        {topCats.map((cat) => (
+          <KpiCard
+            key={cat}
+            title={cat}
+            value={last.categorias[cat] ?? 0}
+            delta={prev ? pctDelta(last.categorias[cat] ?? 0, prev.categorias[cat] ?? 0) : null}
+            color={catColorMap.get(cat)}
+          />
+        ))}
         <KpiCard
-          title="Operativos"
-          value={last.operativos}
-          delta={prev ? pctDelta(last.operativos, prev.operativos) : null}
-          icon={Briefcase}
-        />
-        <KpiCard
-          title="Comerciales"
-          value={last.comerciales}
-          delta={prev ? pctDelta(last.comerciales, prev.comerciales) : null}
-          icon={Megaphone}
-        />
-        <KpiCard
-          title="Financieros"
-          value={last.financieros}
-          delta={prev ? pctDelta(last.financieros, prev.financieros) : null}
-          icon={Landmark}
-        />
-        <KpiCard
-          title="Imp. Ganancias"
-          value={last.ganancias}
-          delta={prev ? pctDelta(last.ganancias, prev.ganancias) : null}
-          icon={Receipt}
+          title="Sueldos"
+          value={last.sueldos}
+          delta={prev ? pctDelta(last.sueldos, prev.sueldos) : null}
+          color={SUELDOS_COLOR}
         />
       </div>
 
       {/* Stacked bar chart */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Composición de Egresos Mensual</CardTitle>
+          <CardTitle className="text-base">Composición de Egresos por Categoría</CardTitle>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={350}>
+          <ResponsiveContainer width="100%" height={380}>
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
               <XAxis dataKey="label" fontSize={12} />
               <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
               <Tooltip formatter={arsTooltip} />
               <Legend />
-              <Bar dataKey="operativos" name="Operativos" stackId="a" fill={COLORS.operativos} />
-              <Bar dataKey="comerciales" name="Comerciales" stackId="a" fill={COLORS.comerciales} />
-              <Bar dataKey="financieros" name="Financieros" stackId="a" fill={COLORS.financieros} />
-              <Bar dataKey="ganancias" name="Imp. Ganancias" stackId="a" fill={COLORS.ganancias} radius={[4, 4, 0, 0]} />
+              {allCategories.map((cat, i) => (
+                <Bar
+                  key={cat}
+                  dataKey={cat}
+                  name={cat}
+                  stackId="a"
+                  fill={catColorMap.get(cat) ?? CATEGORY_COLORS[i % CATEGORY_COLORS.length]}
+                />
+              ))}
+              <Bar dataKey="Sueldos" name="Sueldos" stackId="a" fill={SUELDOS_COLOR} />
+              <Bar dataKey="Impuestos" name="Impuestos" stackId="a" fill={IMPUESTOS_COLOR} />
+              <Bar dataKey="Financieros" name="Financieros" stackId="a" fill={FINANCIEROS_COLOR} radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
@@ -225,33 +262,41 @@ export default function EgresosPage() {
       {/* Monthly table */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Detalle Mensual</CardTitle>
+          <CardTitle className="text-base">Detalle Mensual por Categoría</CardTitle>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Período</TableHead>
-                <TableHead className="text-right">Operativos</TableHead>
-                <TableHead className="text-right">Comerciales</TableHead>
-                <TableHead className="text-right">Financieros</TableHead>
-                <TableHead className="text-right">Ganancias</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[...data].reverse().map((row) => (
-                <TableRow key={row.periodo}>
-                  <TableCell className="font-medium">{periodoLabel(row.periodo)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.operativos)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.comerciales)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.financieros)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.ganancias)}</TableCell>
-                  <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Período</TableHead>
+                  {allCategories.map((cat) => (
+                    <TableHead key={cat} className="text-right">{cat}</TableHead>
+                  ))}
+                  <TableHead className="text-right">Sueldos</TableHead>
+                  <TableHead className="text-right">Impuestos</TableHead>
+                  <TableHead className="text-right">Financieros</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {[...data].reverse().map((row) => (
+                  <TableRow key={row.periodo}>
+                    <TableCell className="font-medium whitespace-nowrap">{periodoLabel(row.periodo)}</TableCell>
+                    {allCategories.map((cat) => (
+                      <TableCell key={cat} className="text-right">
+                        {formatARS(row.categorias[cat] ?? 0)}
+                      </TableCell>
+                    ))}
+                    <TableCell className="text-right">{formatARS(row.sueldos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(row.impuestos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(row.financieros)}</TableCell>
+                    <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
