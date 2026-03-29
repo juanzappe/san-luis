@@ -15,6 +15,16 @@ from utils import (
 )
 
 
+def _clean_moneda(val: str | None) -> str:
+    """Return valid moneda_enum value, defaulting to ARS."""
+    if not val or val.lower() == "nan":
+        return "ARS"
+    v = val.strip().upper()
+    if v in ("ARS", "USD", "EUR"):
+        return v
+    return "ARS"
+
+
 def _parse_tenencias(path: Path, logger) -> list[dict]:
     """Parsea tenencias del broker InvertirOnline."""
     wb = pd.ExcelFile(path)
@@ -89,7 +99,7 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
             "ticker": ticker,
             "nombre": nombre,
             "tipo": row_tipo,
-            "moneda": safe_str(df.iloc[i, 5]) or "ARS",
+            "moneda": _clean_moneda(safe_str(df.iloc[i, 5])),
             "cantidad": safe_float(df.iloc[i, 2]),
             "garantia": safe_float(df.iloc[i, 3]),
             "disponibles": safe_float(df.iloc[i, 4]),

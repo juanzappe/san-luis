@@ -151,11 +151,19 @@ def run(conn, logger) -> int:
             "periodo": periodo,
             "estado": "pendiente",
             "fuente": "municipio",
+            "monto_determinado": None,
+            "fecha_vencimiento": None,
+            "fecha_2do_vto": None,
+            "recargo_2do_vto": None,
+            "numero_boleta": None,
+            "numero_tasa": None,
         }
 
         pdf_data = _parse_pdf(pdf_path, logger)
         if pdf_data:
-            record.update({k: v for k, v in pdf_data.items() if v is not None})
+            for k, v in pdf_data.items():
+                if v is not None:
+                    record[k] = v
 
         all_records.append(record)
 

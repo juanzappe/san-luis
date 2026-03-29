@@ -57,6 +57,15 @@ def _parse_banco_txt(path: Path) -> list[dict]:
                 year = fecha[:4]
                 fecha_valor = f"{year}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
 
+        # Always include both credito and debito for consistent columns
+        credito = None
+        debito = None
+        if importe is not None:
+            if importe >= 0:
+                credito = importe
+            else:
+                debito = abs(importe)
+
         rec = {
             "fecha": fecha,
             "banco": "provincia",
@@ -67,14 +76,9 @@ def _parse_banco_txt(path: Path) -> list[dict]:
             "importe": importe,
             "fecha_valor": fecha_valor,
             "saldo": saldo,
+            "credito": credito,
+            "debito": debito,
         }
-
-        # Determinar débito/crédito por signo
-        if importe is not None:
-            if importe >= 0:
-                rec["credito"] = importe
-            else:
-                rec["debito"] = abs(importe)
 
         records.append(rec)
 
