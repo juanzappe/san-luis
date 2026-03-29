@@ -94,9 +94,10 @@ const navigation: NavItem[] = [
     href: "/unidades",
     icon: Building2,
     children: [
-      { label: "Servicios", href: "/unidades/servicios" },
+      { label: "Resumen", href: "/unidades/resumen" },
       { label: "Mostrador", href: "/unidades/mostrador" },
-      { label: "Terraza", href: "/unidades/terraza" },
+      { label: "Restobar", href: "/unidades/restobar" },
+      { label: "Servicios", href: "/unidades/servicios" },
       { label: "Decoración", href: "/unidades/decoracion" },
     ],
   },
