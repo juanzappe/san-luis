@@ -46,9 +46,10 @@ import type {
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
 const STACK_COLORS: Record<string, string> = {
-  iva: "#3b82f6",
-  ganancias: "#8b5cf6",
+  ivaNeto: "#3b82f6",
+  gananciasEst: "#8b5cf6",
   sicore: "#a78bfa",
+  cheque: "#ef4444",
   iibb: "#22c55e",
   segHigiene: "#f59e0b",
   publicidad: "#eab308",
@@ -95,9 +96,10 @@ export default function ResumenFiscalPage() {
       ...raw,
       mensual: raw.mensual.map((r) => ({
         ...r,
-        iva: adjust(r.iva, r.periodo),
-        ganancias: adjust(r.ganancias, r.periodo),
+        ivaNeto: adjust(r.ivaNeto, r.periodo),
+        gananciasEst: adjust(r.gananciasEst, r.periodo),
         sicore: adjust(r.sicore, r.periodo),
+        cheque: adjust(r.cheque, r.periodo),
         iibb: adjust(r.iibb, r.periodo),
         segHigiene: adjust(r.segHigiene, r.periodo),
         publicidad: adjust(r.publicidad, r.periodo),
@@ -123,8 +125,8 @@ export default function ResumenFiscalPage() {
       presion: last.presionFiscal,
       deltaPresion: prev && last.presionFiscal != null && prev.presionFiscal != null
         ? pctDelta(last.presionFiscal, prev.presionFiscal) : null,
-      posIva: last.iva,
-      deltaIva: prev ? pctDelta(last.iva, prev.iva) : null,
+      posIva: last.ivaNeto,
+      deltaIva: prev ? pctDelta(last.ivaNeto, prev.ivaNeto) : null,
     };
   }, [data]);
 
@@ -132,9 +134,10 @@ export default function ResumenFiscalPage() {
     if (!data) return [];
     return data.mensual.slice(-24).map((r) => ({
       label: shortLabel(r.periodo),
-      iva: r.iva,
-      ganancias: r.ganancias,
+      ivaNeto: r.ivaNeto,
+      gananciasEst: r.gananciasEst,
       sicore: r.sicore,
+      cheque: r.cheque,
       iibb: r.iibb,
       segHigiene: r.segHigiene,
       publicidad: r.publicidad,
@@ -185,7 +188,7 @@ export default function ResumenFiscalPage() {
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <KpiCard title="Impuestos del Mes" value={formatARS(kpis.total)} sub={kpis.deltaTotal != null ? formatPct(kpis.deltaTotal) : null} icon={DollarSign} />
           <KpiCard title="Presión Fiscal" value={kpis.presion != null ? `${kpis.presion.toFixed(1)}%` : "—"} sub={kpis.deltaPresion != null ? formatPct(kpis.deltaPresion) : null} icon={Percent} />
-          <KpiCard title="IVA del Mes" value={formatARS(kpis.posIva)} sub={kpis.deltaIva != null ? formatPct(kpis.deltaIva) : null} icon={Receipt} />
+          <KpiCard title="IVA Pos. Neta" value={formatARS(kpis.posIva)} sub={kpis.deltaIva != null ? formatPct(kpis.deltaIva) : null} icon={Receipt} />
           {data.proximoVto ? (
             <KpiCard title="Próximo Vencimiento" value={data.proximoVto.impuesto} sub={data.proximoVto.fecha} icon={CalendarClock} />
           ) : (
@@ -207,9 +210,10 @@ export default function ResumenFiscalPage() {
                 <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
                 <Tooltip formatter={arsTooltip} />
                 <Legend />
-                <Bar dataKey="iva" name="IVA" stackId="a" fill={STACK_COLORS.iva} />
-                <Bar dataKey="ganancias" name="Ganancias" stackId="a" fill={STACK_COLORS.ganancias} />
+                <Bar dataKey="ivaNeto" name="IVA Neto" stackId="a" fill={STACK_COLORS.ivaNeto} />
+                <Bar dataKey="gananciasEst" name="Ganancias*" stackId="a" fill={STACK_COLORS.gananciasEst} />
                 <Bar dataKey="sicore" name="Ret./SICORE" stackId="a" fill={STACK_COLORS.sicore} />
+                <Bar dataKey="cheque" name="Imp. Cheque" stackId="a" fill={STACK_COLORS.cheque} />
                 <Bar dataKey="iibb" name="IIBB" stackId="a" fill={STACK_COLORS.iibb} />
                 <Bar dataKey="segHigiene" name="Seg. e Higiene" stackId="a" fill={STACK_COLORS.segHigiene} />
                 <Bar dataKey="publicidad" name="Publicidad" stackId="a" fill={STACK_COLORS.publicidad} />
@@ -277,9 +281,10 @@ export default function ResumenFiscalPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Período</TableHead>
-                  <TableHead className="text-right">IVA</TableHead>
-                  <TableHead className="text-right">Ganancias</TableHead>
+                  <TableHead className="text-right">IVA Neto</TableHead>
+                  <TableHead className="text-right">Ganancias*</TableHead>
                   <TableHead className="text-right">SICORE</TableHead>
+                  <TableHead className="text-right">Cheque</TableHead>
                   <TableHead className="text-right">IIBB</TableHead>
                   <TableHead className="text-right">Seg. e Hig.</TableHead>
                   <TableHead className="text-right">Publicidad</TableHead>
@@ -293,9 +298,10 @@ export default function ResumenFiscalPage() {
                 {[...data.mensual].reverse().map((r) => (
                   <TableRow key={r.periodo}>
                     <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.iva)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.ganancias)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.ivaNeto)}</TableCell>
+                    <TableCell className="text-right italic">{formatARS(r.gananciasEst)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.sicore)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.cheque)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.iibb)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.segHigiene)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.publicidad)}</TableCell>
@@ -308,6 +314,7 @@ export default function ResumenFiscalPage() {
               </TableBody>
             </Table>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground italic">* Ganancias estimado (35% del resultado neto positivo)</p>
         </CardContent>
       </Card>
     </div>
