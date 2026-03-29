@@ -75,10 +75,13 @@ export async function fetchIngresos(): Promise<IngresoRow[]> {
     .select("producto, neto, venta:venta_id(fecha)");
   if (e1) throw e1;
 
-  // 2) factura_emitida for servicios (neto, no IVA)
+  // 2) factura_emitida PV 6 = Servicios (neto, no IVA)
+  //    PV 8 = Mostrador (facturas fiscales POS, ya capturado en venta_detalle)
+  //    PV 998 = pendiente de clasificar
   const { data: facturas, error: e2 } = await supabase
     .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total");
+    .select("fecha_emision, imp_neto_gravado_total, punto_venta")
+    .eq("punto_venta", 6);
   if (e2) throw e2;
 
   const mostradorMap = new Map<string, number>();
