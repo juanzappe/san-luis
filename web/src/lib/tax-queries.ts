@@ -82,19 +82,17 @@ export interface ResumenFiscalData {
 }
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
-  const [obligRes, pagosRes, factEmitRes, factRecibRes, movBancRes, resultadoData] = await Promise.all([
+  const [obligRes, pagosRes, ivaMensualRes, movBancRes, resultadoData] = await Promise.all([
     supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
     supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones, formulario"),
-    supabase.from("factura_emitida").select("fecha_emision, total_iva, imp_total"),
-    supabase.from("factura_recibida").select("fecha_emision, total_iva"),
-    supabase.from("movimiento_bancario").select("fecha, concepto, debito, importe").ilike("concepto", "%IMPUESTO LEY 25413%"),
+    supabase.rpc("get_iva_mensual"),
+    supabase.from("movimiento_bancario").select("fecha, concepto, debito, importe").ilike("concepto", "%IMPUESTO LEY 25413%").not("concepto", "ilike", "%COMPENSACION%"),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
 
   if (obligRes.error) throw obligRes.error;
   if (pagosRes.error) throw pagosRes.error;
-  if (factEmitRes.error) throw factEmitRes.error;
-  if (factRecibRes.error) throw factRecibRes.error;
+  if (ivaMensualRes.error) throw ivaMensualRes.error;
   if (movBancRes.error) throw movBancRes.error;
 
   // ---------------------------------------------------------------------------
@@ -109,32 +107,41 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addToMap(jurisdiccionTotal, jurisdiccion, monto);
   };
 
-  // --- A) IVA — Posición neta from facturas (devengado) ---
+  // --- A) IVA — Posición neta from RPC (server-side aggregation) ---
+  const ivaMensualRows = (ivaMensualRes.data ?? []) as Array<{
+    periodo: string; debito: number; credito: number; ingresos: number;
+  }>;
   const ivaDebitoMap = new Map<string, number>();
   const ivaCreditoMap = new Map<string, number>();
-  for (const r of factEmitRes.data ?? []) {
-    const p = (r.fecha_emision as string).slice(0, 7);
-    addToMap(ivaDebitoMap, p, Number(r.total_iva) || 0);
-  }
-  for (const r of factRecibRes.data ?? []) {
-    const p = (r.fecha_emision as string).slice(0, 7);
-    addToMap(ivaCreditoMap, p, Number(r.total_iva) || 0);
+  const ingresosMap = new Map<string, number>();
+  for (const row of ivaMensualRows) {
+    addToMap(ivaDebitoMap, row.periodo, Number(row.debito) || 0);
+    addToMap(ivaCreditoMap, row.periodo, Number(row.credito) || 0);
+    addToMap(ingresosMap, row.periodo, Number(row.ingresos) || 0);
   }
   // Merge IVA neto into tipoMonthMap
-  const allIvaPeriods = new Set<string>();
-  ivaDebitoMap.forEach((_, k) => allIvaPeriods.add(k));
-  ivaCreditoMap.forEach((_, k) => allIvaPeriods.add(k));
-  for (const p of Array.from(allIvaPeriods)) {
+  ivaDebitoMap.forEach((_, p) => {
     const neto = (ivaDebitoMap.get(p) ?? 0) - (ivaCreditoMap.get(p) ?? 0);
     if (neto > 0) addTipo("ivaNeto", p, neto, "arca");
-  }
+  });
+  ivaCreditoMap.forEach((_, p) => {
+    if (!ivaDebitoMap.has(p)) {
+      const neto = -(ivaCreditoMap.get(p) ?? 0);
+      if (neto > 0) addTipo("ivaNeto", p, neto, "arca");
+    }
+  });
 
-  // --- B) Ganancias — Estimated 35% of positive resultado (devengado) ---
+  // --- B) Ganancias — Estimated 35% of positive resultado, capped ---
   const resultados = resultadoData as ResultadoRow[];
   const resultadoMap = new Map<string, ResultadoRow>(resultados.map((r) => [r.periodo, r]));
   for (const [p, r] of Array.from(resultadoMap.entries())) {
     if (r.resultadoAntesGanancias > 0) {
-      addTipo("gananciasEst", p, r.resultadoAntesGanancias * 0.35, "arca");
+      let gananciasEst = r.resultadoAntesGanancias * 0.35;
+      // Cap: if resultado > 50% of ingresos, limit to 10% of ingresos
+      if (r.ingresos > 0 && r.resultadoAntesGanancias > r.ingresos * 0.5) {
+        gananciasEst = Math.min(gananciasEst, r.ingresos * 0.10);
+      }
+      addTipo("gananciasEst", p, gananciasEst, "arca");
     }
   }
 
@@ -209,12 +216,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     }
   }
 
-  // --- Ingresos: factura_emitida imp_total (con IVA) ---
-  const ingresosMap = new Map<string, number>();
-  for (const r of factEmitRes.data ?? []) {
-    const p = (r.fecha_emision as string).slice(0, 7);
-    addToMap(ingresosMap, p, Number(r.imp_total) || 0);
-  }
+  // (Ingresos already populated from RPC in section A above)
 
   // ---------------------------------------------------------------------------
   // Build monthly rows
@@ -297,58 +299,52 @@ export interface IvaMensualRow {
 }
 
 export async function fetchPosicionIva(): Promise<IvaMensualRow[]> {
-  const [emitRes, recibRes] = await Promise.all([
-    supabase.from("factura_emitida").select(
-      "fecha_emision, iva_21, iva_10_5, iva_27, iva_5, iva_2_5, iva_0_neto, total_iva"
-    ),
-    supabase.from("factura_recibida").select(
-      "fecha_emision, iva_21, iva_10_5, iva_27, iva_5, iva_2_5, iva_0_neto, total_iva, otros_tributos"
-    ),
-  ]);
+  const { data, error } = await supabase.rpc("get_posicion_iva_mensual");
+  if (error) throw error;
 
-  if (emitRes.error) throw emitRes.error;
-  if (recibRes.error) throw recibRes.error;
+  type RpcRow = {
+    periodo: string; tipo: string;
+    iva_21: number; iva_10_5: number; iva_27: number;
+    iva_5: number; iva_2_5: number; total_iva: number;
+    otros_tributos: number;
+  };
+  const rows = (data ?? []) as RpcRow[];
 
-  // Débito fiscal (from factura_emitida)
+  // Débito fiscal
   const debMap21 = new Map<string, number>();
   const debMap105 = new Map<string, number>();
   const debMapOtros = new Map<string, number>();
   const debMapTotal = new Map<string, number>();
 
-  for (const r of emitRes.data ?? []) {
-    const p = (r.fecha_emision as string).slice(0, 7);
-    const d21 = Number(r.iva_21) || 0;
-    const d105 = Number(r.iva_10_5) || 0;
-    const d27 = Number(r.iva_27) || 0;
-    const d5 = Number(r.iva_5) || 0;
-    const d25 = Number(r.iva_2_5) || 0;
-    const otros = d27 + d5 + d25;
-    addToMap(debMap21, p, d21);
-    addToMap(debMap105, p, d105);
-    addToMap(debMapOtros, p, otros);
-    addToMap(debMapTotal, p, Number(r.total_iva) || (d21 + d105 + otros));
-  }
-
-  // Crédito fiscal (from factura_recibida)
+  // Crédito fiscal
   const credMap21 = new Map<string, number>();
   const credMap105 = new Map<string, number>();
   const credMapOtros = new Map<string, number>();
   const credMapTotal = new Map<string, number>();
   const retMap = new Map<string, number>();
 
-  for (const r of recibRes.data ?? []) {
-    const p = (r.fecha_emision as string).slice(0, 7);
-    const c21 = Number(r.iva_21) || 0;
-    const c105 = Number(r.iva_10_5) || 0;
-    const c27 = Number(r.iva_27) || 0;
-    const c5 = Number(r.iva_5) || 0;
-    const c25 = Number(r.iva_2_5) || 0;
-    const otros = c27 + c5 + c25;
-    addToMap(credMap21, p, c21);
-    addToMap(credMap105, p, c105);
-    addToMap(credMapOtros, p, otros);
-    addToMap(credMapTotal, p, Number(r.total_iva) || (c21 + c105 + otros));
-    addToMap(retMap, p, Number(r.otros_tributos) || 0);
+  for (const r of rows) {
+    const p = r.periodo;
+    const v21 = Number(r.iva_21) || 0;
+    const v105 = Number(r.iva_10_5) || 0;
+    const v27 = Number(r.iva_27) || 0;
+    const v5 = Number(r.iva_5) || 0;
+    const v25 = Number(r.iva_2_5) || 0;
+    const otros = v27 + v5 + v25;
+    const totalIva = Number(r.total_iva) || (v21 + v105 + otros);
+
+    if (r.tipo === "debito") {
+      addToMap(debMap21, p, v21);
+      addToMap(debMap105, p, v105);
+      addToMap(debMapOtros, p, otros);
+      addToMap(debMapTotal, p, totalIva);
+    } else {
+      addToMap(credMap21, p, v21);
+      addToMap(credMap105, p, v105);
+      addToMap(credMapOtros, p, otros);
+      addToMap(credMapTotal, p, totalIva);
+      addToMap(retMap, p, Number(r.otros_tributos) || 0);
+    }
   }
 
   // Merge
