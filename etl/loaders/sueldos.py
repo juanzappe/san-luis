@@ -18,16 +18,16 @@ from utils import (
 
 
 MESES = {
+    "AGUINALDO_JUNIO": "06-SAC", "AGUINALDO_DICIEMBRE": "12-SAC",
     "ENERO": "01", "FEBRERO": "02", "MARZO": "03", "ABRIL": "04",
     "MAYO": "05", "JUNIO": "06", "JULIO": "07", "AGOSTO": "08",
     "SEPTIEMBRE": "09", "OCTUBRE": "10", "NOVIEMBRE": "11", "DICIEMBRE": "12",
-    "AGUINALDO_JUNIO": "06-SAC", "AGUINALDO_DICIEMBRE": "12-SAC",
 }
 
 
 def _extract_periodo(filename: str) -> str:
     """Extrae período del nombre de archivo. Ej: SUELDOS_FEBRERO_2024.xlsx → 2024-02"""
-    name = filename.upper().replace(".XLSX", "").replace(" (2)", "")
+    name = re.sub(r" \(\d+\)", "", filename.upper().replace(".XLSX", ""))
 
     # Buscar año (4 dígitos)
     year_match = re.search(r"(\d{4})", name)

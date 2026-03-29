@@ -27,6 +27,7 @@ from loaders import (
     eecc,
     servicios,
     segmentacion,
+    ipc,
 )
 
 # Orden de ejecución respetando dependencias FK
@@ -45,6 +46,7 @@ LOADERS = [
     ("eecc", eecc),
     ("servicios", servicios),
     ("segmentacion", segmentacion),
+    ("ipc", ipc),
 ]
 
 

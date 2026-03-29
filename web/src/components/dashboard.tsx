@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -43,19 +43,23 @@ import {
   formatARS,
   formatPct,
   periodoLabel,
+  pctDelta,
 } from "@/lib/queries";
+import { useInflation, InflationToggle } from "@/lib/inflation";
 
 // ---------------------------------------------------------------------------
 // Color palette
 // ---------------------------------------------------------------------------
 const COLORS = {
   ingresos: "#22c55e",
-  egresos: "#ef4444",
-  sueldos: "#f59e0b",
   resultado: "#3b82f6",
   mostrador: "#8b5cf6",
   servicios: "#06b6d4",
   margen: "#ec4899",
+  operativos: "#f59e0b",
+  comerciales: "#ef4444",
+  financieros: "#8b5cf6",
+  ganancias: "#6366f1",
 };
 
 // ---------------------------------------------------------------------------
@@ -137,6 +141,7 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { adjust } = useInflation();
 
   useEffect(() => {
     fetchDashboardData()
@@ -144,6 +149,53 @@ export default function Dashboard() {
       .catch((e) => setError(e.message ?? "Error al cargar datos"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Apply inflation adjustment to all monetary values
+  const adjustedData = useMemo(() => {
+    if (!data || !data.hasData || !data.kpis) return data;
+
+    const monthly: MonthRow[] = data.monthly.map((r) => {
+      const ing = adjust(r.ingresos, r.periodo);
+      const op = adjust(r.operativos, r.periodo);
+      const com = adjust(r.comerciales, r.periodo);
+      const fin = adjust(r.financieros, r.periodo);
+      const gan = adjust(r.ganancias, r.periodo);
+      const egTotal = op + com + fin + gan;
+      const res = ing - egTotal;
+      return {
+        ...r,
+        ingresos: ing,
+        operativos: op,
+        comerciales: com,
+        financieros: fin,
+        ganancias: gan,
+        egresosTotal: egTotal,
+        resultado: res,
+        margen: ing > 0 ? (res / ing) * 100 : 0,
+      };
+    });
+
+    const last = monthly[monthly.length - 1];
+    const prev = monthly.length >= 2 ? monthly[monthly.length - 2] : null;
+
+    const sueldosLast = adjust(data.kpis.sueldos, last.periodo);
+
+    return {
+      ...data,
+      monthly,
+      kpis: {
+        ingresos: last.ingresos,
+        egresos: last.egresosTotal,
+        sueldos: sueldosLast,
+        resultado: last.resultado,
+        deltaIngresos: prev ? pctDelta(last.ingresos, prev.ingresos) : null,
+        deltaEgresos: prev ? pctDelta(last.egresosTotal, prev.egresosTotal) : null,
+        deltaSueldos: data.kpis.deltaSueldos,
+        deltaResultado: prev ? pctDelta(last.resultado, prev.resultado) : null,
+        periodo: data.kpis.periodo,
+      },
+    };
+  }, [data, adjust]);
 
   // --- Loading state ---
   if (loading) {
@@ -176,7 +228,7 @@ export default function Dashboard() {
   }
 
   // --- Empty state ---
-  if (!data || !data.hasData || !data.kpis) {
+  if (!adjustedData || !adjustedData.hasData || !adjustedData.kpis) {
     return (
       <Card>
         <CardContent className="py-8 text-center">
@@ -191,7 +243,7 @@ export default function Dashboard() {
     );
   }
 
-  const { kpis, monthly, incomeBySource } = data;
+  const { kpis, monthly, incomeBySource } = adjustedData;
   const chartData = last12(monthly).map((r) => ({
     ...r,
     label: chartLabel(r.periodo),
@@ -201,16 +253,13 @@ export default function Dashboard() {
     label: chartLabel(r.periodo),
   }));
 
-  // Composición egresos = sueldos vs otros egresos
-  const expenseChartData = chartData.map((r) => ({
-    label: r.label,
-    periodo: r.periodo,
-    sueldos: r.sueldos,
-    otrosEgresos: r.egresos,
-  }));
-
   return (
     <div className="space-y-6">
+      {/* Inflation toggle */}
+      <div className="flex justify-end">
+        <InflationToggle />
+      </div>
+
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard
@@ -266,31 +315,45 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* 2. Composición de egresos */}
+        {/* 2. Composición de egresos — 4 categorías */}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">Composición de Egresos</CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={expenseChartData}>
+              <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
                 <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
                 <Tooltip formatter={arsFormatter} />
                 <Legend />
                 <Bar
-                  dataKey="sueldos"
-                  name="Sueldos"
+                  dataKey="operativos"
+                  name="Operativos"
                   stackId="a"
-                  fill={COLORS.sueldos}
+                  fill={COLORS.operativos}
                   radius={[0, 0, 0, 0]}
                 />
                 <Bar
-                  dataKey="otrosEgresos"
-                  name="Otros egresos"
+                  dataKey="comerciales"
+                  name="Comerciales"
                   stackId="a"
-                  fill={COLORS.egresos}
+                  fill={COLORS.comerciales}
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="financieros"
+                  name="Financieros"
+                  stackId="a"
+                  fill={COLORS.financieros}
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="ganancias"
+                  name="Ganancias"
+                  stackId="a"
+                  fill={COLORS.ganancias}
                   radius={[4, 4, 0, 0]}
                 />
               </BarChart>
@@ -374,7 +437,6 @@ export default function Dashboard() {
                 <TableHead>Período</TableHead>
                 <TableHead className="text-right">Ingresos</TableHead>
                 <TableHead className="text-right">Egresos</TableHead>
-                <TableHead className="text-right">Sueldos</TableHead>
                 <TableHead className="text-right">Resultado</TableHead>
                 <TableHead className="text-right">Margen %</TableHead>
               </TableRow>
@@ -389,10 +451,7 @@ export default function Dashboard() {
                     {formatARS(row.ingresos)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {formatARS(row.egresos)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {formatARS(row.sueldos)}
+                    {formatARS(row.egresosTotal)}
                   </TableCell>
                   <TableCell
                     className={`text-right font-medium ${
