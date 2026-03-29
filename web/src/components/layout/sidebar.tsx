@@ -60,7 +60,9 @@ const navigation: NavItem[] = [
     href: "/personal",
     icon: Users,
     children: [
-      { label: "Sueldos", href: "/personal/sueldos" },
+      { label: "Nómina", href: "/personal/nomina" },
+      { label: "Empleados", href: "/personal/empleados" },
+      { label: "Cargas Sociales", href: "/personal/cargas-sociales" },
       { label: "Organigrama", href: "/personal/organigrama" },
     ],
   },
