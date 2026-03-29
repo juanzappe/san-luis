@@ -90,7 +90,7 @@ function buildWaterfall(row: ResultadoRow): WaterfallBar[] {
   bars.push({ name: "Ingresos", base: 0, value: row.ingresos, color: "#22c55e" });
   running = row.ingresos;
 
-  // Costos operativos (subtract)
+  // Costos operativos — proveedores only (subtract)
   bars.push({
     name: "C. Operativos",
     base: running - row.costosOperativos,
@@ -98,6 +98,15 @@ function buildWaterfall(row: ResultadoRow): WaterfallBar[] {
     color: "#ef4444",
   });
   running -= row.costosOperativos;
+
+  // Sueldos (subtract)
+  bars.push({
+    name: "Sueldos",
+    base: running - row.sueldos,
+    value: row.sueldos,
+    color: "#6366f1",
+  });
+  running -= row.sueldos;
 
   // Margen bruto (subtotal)
   bars.push({ name: "Margen Bruto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
@@ -163,10 +172,11 @@ export default function EstadoResultadosPage() {
       raw.map((r) => {
         const ing = adjust(r.ingresos, r.periodo);
         const costOp = adjust(r.costosOperativos, r.periodo);
+        const sueldos = adjust(r.sueldos, r.periodo);
         const costCom = adjust(r.costosComercialesAdmin, r.periodo);
         const costFin = adjust(r.costosFinancieros, r.periodo);
         const gan = adjust(r.ganancias, r.periodo);
-        const margenBruto = ing - costOp;
+        const margenBruto = ing - costOp - sueldos;
         const resAntesGan = margenBruto - costCom - costFin;
         const resNeto = resAntesGan - gan;
         const margenPct = ing > 0 ? (resNeto / ing) * 100 : 0;
@@ -174,6 +184,7 @@ export default function EstadoResultadosPage() {
           periodo: r.periodo,
           ingresos: ing,
           costosOperativos: costOp,
+          sueldos,
           margenBruto,
           costosComercialesAdmin: costCom,
           costosFinancieros: costFin,
@@ -269,6 +280,12 @@ export default function EstadoResultadosPage() {
               <PnlLine
                 label="Costos Operativos"
                 values={tablePeriods.map((r) => r.costosOperativos)}
+                indent
+                negative
+              />
+              <PnlLine
+                label="Sueldos"
+                values={tablePeriods.map((r) => r.sueldos)}
                 indent
                 negative
               />
