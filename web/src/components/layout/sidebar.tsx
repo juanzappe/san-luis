@@ -36,8 +36,9 @@ const navigation: NavItem[] = [
     icon: BarChart3,
     children: [
       { label: "Estado de Resultados", href: "/economico/estado-resultados" },
-      { label: "Ventas", href: "/economico/ventas" },
+      { label: "Ingresos", href: "/economico/ingresos" },
       { label: "Egresos", href: "/economico/egresos" },
+      { label: "Ventas", href: "/economico/ventas" },
       { label: "Balance", href: "/economico/balance" },
       { label: "Indicadores", href: "/economico/indicadores" },
     ],
@@ -59,7 +60,9 @@ const navigation: NavItem[] = [
     href: "/personal",
     icon: Users,
     children: [
-      { label: "Sueldos", href: "/personal/sueldos" },
+      { label: "Nómina", href: "/personal/nomina" },
+      { label: "Empleados", href: "/personal/empleados" },
+      { label: "Cargas Sociales", href: "/personal/cargas-sociales" },
       { label: "Organigrama", href: "/personal/organigrama" },
     ],
   },
@@ -74,7 +77,17 @@ const navigation: NavItem[] = [
     ],
   },
   { label: "Costos", href: "/costos", icon: Calculator },
-  { label: "Impuestos", href: "/impuestos", icon: Receipt },
+  {
+    label: "Impuestos",
+    href: "/impuestos",
+    icon: Receipt,
+    children: [
+      { label: "Resumen Fiscal", href: "/impuestos/resumen" },
+      { label: "Posición IVA", href: "/impuestos/iva" },
+      { label: "Pagos", href: "/impuestos/pagos" },
+      { label: "Calendario", href: "/impuestos/calendario" },
+    ],
+  },
   {
     label: "Unidades de Negocio",
     href: "/unidades",
