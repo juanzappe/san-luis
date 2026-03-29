@@ -20,9 +20,11 @@ import type {
 } from "recharts/types/component/DefaultTooltipContent";
 import {
   DollarSign,
-  TrendingDown,
   TrendingUp,
   Users,
+  Receipt,
+  Landmark,
+  CreditCard,
   Loader2,
   AlertCircle,
 } from "lucide-react";
@@ -56,10 +58,10 @@ const COLORS = {
   mostrador: "#8b5cf6",
   servicios: "#06b6d4",
   margen: "#ec4899",
-  operativos: "#f59e0b",
+  egresosOp: "#f59e0b",
+  sueldos: "#6366f1",
   comerciales: "#ef4444",
   financieros: "#8b5cf6",
-  ganancias: "#6366f1",
 };
 
 // ---------------------------------------------------------------------------
@@ -156,43 +158,55 @@ export default function Dashboard() {
 
     const monthly: MonthRow[] = data.monthly.map((r) => {
       const ing = adjust(r.ingresos, r.periodo);
-      const op = adjust(r.operativos, r.periodo);
+      const eOp = adjust(r.egresosOp, r.periodo);
+      const sue = adjust(r.sueldos, r.periodo);
       const com = adjust(r.comerciales, r.periodo);
       const fin = adjust(r.financieros, r.periodo);
-      const gan = adjust(r.ganancias, r.periodo);
-      const egTotal = op + com + fin + gan;
+      const egTotal = eOp + sue + com + fin;
       const res = ing - egTotal;
       return {
         ...r,
         ingresos: ing,
-        operativos: op,
+        egresosOp: eOp,
+        sueldos: sue,
         comerciales: com,
         financieros: fin,
-        ganancias: gan,
         egresosTotal: egTotal,
         resultado: res,
         margen: ing > 0 ? (res / ing) * 100 : 0,
       };
     });
 
-    const last = monthly[monthly.length - 1];
-    const prev = monthly.length >= 2 ? monthly[monthly.length - 2] : null;
+    // Find last complete month in adjusted data
+    let lastCompleteIdx = monthly.length - 1;
+    for (let i = monthly.length - 1; i >= 0; i--) {
+      if (monthly[i].ingresos > 0 && (monthly[i].egresosOp > 0 || monthly[i].sueldos > 0)) {
+        lastCompleteIdx = i;
+        break;
+      }
+    }
 
-    const sueldosLast = adjust(data.kpis.sueldos, last.periodo);
+    const last = monthly[lastCompleteIdx];
+    const prev = lastCompleteIdx >= 1 ? monthly[lastCompleteIdx - 1] : null;
 
     return {
       ...data,
       monthly,
       kpis: {
         ingresos: last.ingresos,
-        egresos: last.egresosTotal,
-        sueldos: sueldosLast,
+        egresosOp: last.egresosOp,
+        sueldos: last.sueldos,
+        comerciales: last.comerciales,
+        financieros: last.financieros,
         resultado: last.resultado,
         deltaIngresos: prev ? pctDelta(last.ingresos, prev.ingresos) : null,
-        deltaEgresos: prev ? pctDelta(last.egresosTotal, prev.egresosTotal) : null,
-        deltaSueldos: data.kpis.deltaSueldos,
+        deltaEgresosOp: prev ? pctDelta(last.egresosOp, prev.egresosOp) : null,
+        deltaSueldos: prev ? pctDelta(last.sueldos, prev.sueldos) : null,
+        deltaComerciales: prev ? pctDelta(last.comerciales, prev.comerciales) : null,
+        deltaFinancieros: prev ? pctDelta(last.financieros, prev.financieros) : null,
         deltaResultado: prev ? pctDelta(last.resultado, prev.resultado) : null,
         periodo: data.kpis.periodo,
+        periodoKey: data.kpis.periodoKey,
       },
     };
   }, [data, adjust]);
@@ -255,24 +269,27 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Inflation toggle */}
-      <div className="flex justify-end">
+      {/* Month indicator + Inflation toggle */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-muted-foreground">
+          Datos de {kpis.periodo}
+        </h2>
         <InflationToggle />
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {/* KPI Cards — 6 cards in 3-column grid */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <KpiCard
-          title="Ingresos"
+          title="Ingresos Totales"
           value={kpis.ingresos}
           delta={kpis.deltaIngresos}
           icon={DollarSign}
         />
         <KpiCard
-          title="Egresos"
-          value={kpis.egresos}
-          delta={kpis.deltaEgresos}
-          icon={TrendingDown}
+          title="Egresos Operativos"
+          value={kpis.egresosOp}
+          delta={kpis.deltaEgresosOp}
+          icon={Receipt}
           invertDelta
         />
         <KpiCard
@@ -280,6 +297,20 @@ export default function Dashboard() {
           value={kpis.sueldos}
           delta={kpis.deltaSueldos}
           icon={Users}
+          invertDelta
+        />
+        <KpiCard
+          title="Costos Comerciales"
+          value={kpis.comerciales}
+          delta={kpis.deltaComerciales}
+          icon={Landmark}
+          invertDelta
+        />
+        <KpiCard
+          title="Costos Financieros"
+          value={kpis.financieros}
+          delta={kpis.deltaFinancieros}
+          icon={CreditCard}
           invertDelta
         />
         <KpiCard
@@ -329,10 +360,17 @@ export default function Dashboard() {
                 <Tooltip formatter={arsFormatter} />
                 <Legend />
                 <Bar
-                  dataKey="operativos"
+                  dataKey="egresosOp"
                   name="Operativos"
                   stackId="a"
-                  fill={COLORS.operativos}
+                  fill={COLORS.egresosOp}
+                  radius={[0, 0, 0, 0]}
+                />
+                <Bar
+                  dataKey="sueldos"
+                  name="Sueldos"
+                  stackId="a"
+                  fill={COLORS.sueldos}
                   radius={[0, 0, 0, 0]}
                 />
                 <Bar
@@ -347,13 +385,6 @@ export default function Dashboard() {
                   name="Financieros"
                   stackId="a"
                   fill={COLORS.financieros}
-                  radius={[0, 0, 0, 0]}
-                />
-                <Bar
-                  dataKey="ganancias"
-                  name="Ganancias"
-                  stackId="a"
-                  fill={COLORS.ganancias}
                   radius={[4, 4, 0, 0]}
                 />
               </BarChart>
@@ -436,7 +467,10 @@ export default function Dashboard() {
               <TableRow>
                 <TableHead>Período</TableHead>
                 <TableHead className="text-right">Ingresos</TableHead>
-                <TableHead className="text-right">Egresos</TableHead>
+                <TableHead className="text-right">Egresos Op</TableHead>
+                <TableHead className="text-right">Sueldos</TableHead>
+                <TableHead className="text-right">Costos Com</TableHead>
+                <TableHead className="text-right">Costos Fin</TableHead>
                 <TableHead className="text-right">Resultado</TableHead>
                 <TableHead className="text-right">Margen %</TableHead>
               </TableRow>
@@ -451,7 +485,16 @@ export default function Dashboard() {
                     {formatARS(row.ingresos)}
                   </TableCell>
                   <TableCell className="text-right">
-                    {formatARS(row.egresosTotal)}
+                    {formatARS(row.egresosOp)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatARS(row.sueldos)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatARS(row.comerciales)}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {formatARS(row.financieros)}
                   </TableCell>
                   <TableCell
                     className={`text-right font-medium ${
