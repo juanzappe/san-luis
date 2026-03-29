@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  BarChart, Bar, PieChart, Pie, Cell, Line,
+  BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { Loader2, AlertCircle, Store, ShoppingBag, Package, TrendingUp } from "lucide-react";
+import { Loader2, AlertCircle, Coffee, Receipt, Calendar, Hash } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -13,8 +13,8 @@ import {
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
-  type MostradorData, type HeatmapCell, fetchMostrador,
-  formatARS, shortLabel, dayName, hourLabel,
+  type RestobarData, type HeatmapCell, fetchRestobar,
+  formatARS, periodoLabel, shortLabel, dayName, hourLabel,
 } from "@/lib/units-queries";
 import type {
   Formatter, ValueType, NameType,
@@ -22,21 +22,13 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-const PIE_COLORS = [
-  "#8b5cf6", "#06b6d4", "#22c55e", "#f59e0b", "#ef4444",
-  "#ec4899", "#3b82f6", "#84cc16", "#f97316", "#6366f1",
-  "#14b8a6", "#e11d48",
-];
-
 // ---------------------------------------------------------------------------
 // Heatmap component
 // ---------------------------------------------------------------------------
 function Heatmap({ cells }: { cells: HeatmapCell[] }) {
   const maxMonto = useMemo(() => Math.max(...cells.map((c) => c.monto), 1), [cells]);
-
-  // Build grid: rows = days (Lun→Dom), cols = hours (8–22)
-  const days = [1, 2, 3, 4, 5, 6, 0]; // Mon-Sun
-  const hours = Array.from({ length: 15 }, (_, i) => i + 8); // 8–22
+  const days = [1, 2, 3, 4, 5, 6, 0];
+  const hours = Array.from({ length: 15 }, (_, i) => i + 8);
 
   const cellMap = useMemo(() => {
     const m = new Map<string, HeatmapCell>();
@@ -68,7 +60,7 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
                       className="rounded h-8 flex items-center justify-center text-[10px]"
                       style={{
                         backgroundColor: intensity > 0
-                          ? `rgba(139, 92, 246, ${0.1 + intensity * 0.85})`
+                          ? `rgba(6, 182, 212, ${0.1 + intensity * 0.85})`
                           : "#f3f4f6",
                         color: intensity > 0.5 ? "white" : "#6b7280",
                       }}
@@ -87,14 +79,14 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
   );
 }
 
-export default function MostradorPage() {
-  const [data, setData] = useState<MostradorData | null>(null);
+export default function RestobarPage() {
+  const [data, setData] = useState<RestobarData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { adjust } = useInflation();
 
   useEffect(() => {
-    fetchMostrador()
+    fetchRestobar()
       .then(setData)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
@@ -119,6 +111,7 @@ export default function MostradorPage() {
   const monthRows = data.monthly.map((r) => ({
     ...r,
     montoAdj: adjust(r.monto, r.periodo),
+    ticket: r.txCount > 0 ? adjust(r.monto, r.periodo) / r.txCount : 0,
     label: shortLabel(r.periodo),
   }));
 
@@ -126,25 +119,12 @@ export default function MostradorPage() {
   const prev = monthRows.length > 1 ? monthRows[monthRows.length - 2] : null;
   const lastDelta = last && prev ? ((last.montoAdj - prev.montoAdj) / Math.abs(prev.montoAdj || 1)) * 100 : null;
 
-  // Top 15 products
-  const top15 = data.products.slice(0, 15);
-
-  // Top 8 families for donut
-  const topFamilies = data.families.slice(0, 8);
-  const otherFamilies = data.families.slice(8);
-  const donutData = [
-    ...topFamilies.map((f) => ({ name: f.familia, value: f.monto })),
-    ...(otherFamilies.length > 0
-      ? [{ name: "Otras", value: otherFamilies.reduce((s, f) => s + f.monto, 0) }]
-      : []),
-  ];
-
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Mostrador</h1>
-          <p className="text-muted-foreground">Ventas POS — productos, familias y horarios</p>
+          <h1 className="text-3xl font-bold tracking-tight">Restobar</h1>
+          <p className="text-muted-foreground">Ventas, ticket promedio y horarios pico</p>
         </div>
         <InflationToggle />
       </div>
@@ -154,7 +134,7 @@ export default function MostradorPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ventas Último Mes</CardTitle>
-            <Store className="h-4 w-4 text-muted-foreground" />
+            <Coffee className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatARS(last?.montoAdj ?? 0)}</div>
@@ -168,7 +148,7 @@ export default function MostradorPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ticket Promedio</CardTitle>
-            <ShoppingBag className="h-4 w-4 text-muted-foreground" />
+            <Receipt className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatARS(data.kpis.ticketPromedio)}</div>
@@ -176,20 +156,20 @@ export default function MostradorPage() {
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Top Producto</CardTitle>
-            <Package className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Mejor Mes</CardTitle>
+            <Calendar className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-lg font-bold truncate">{data.kpis.topProducto}</div>
+            <div className="text-lg font-bold">{data.kpis.mesTop}</div>
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Top Familia</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Total Transacciones</CardTitle>
+            <Hash className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-lg font-bold truncate">{data.kpis.topFamilia}</div>
+            <div className="text-2xl font-bold">{data.kpis.txTotal.toLocaleString("es-AR")}</div>
           </CardContent>
         </Card>
       </div>
@@ -203,51 +183,31 @@ export default function MostradorPage() {
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="label" tick={{ fontSize: 12 }} />
               <YAxis yAxisId="left" tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => String(v)} />
+              <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${(v / 1e3).toFixed(0)}K`} />
               <Tooltip formatter={arsTooltip} />
               <Legend />
-              <Bar yAxisId="left" dataKey="montoAdj" name="Ventas" fill="#8b5cf6" />
-              <Line yAxisId="right" type="monotone" dataKey="txCount" name="Transacciones" stroke="#f59e0b" strokeWidth={2} dot={false} />
+              <Bar yAxisId="left" dataKey="montoAdj" name="Ventas" fill="#06b6d4" />
+              <Line yAxisId="right" type="monotone" dataKey="ticket" name="Ticket Prom." stroke="#f59e0b" strokeWidth={2} dot={false} />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
 
-      {/* Product mix + Family donut */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">Top 15 Productos</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={top15} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis type="number" tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <YAxis type="category" dataKey="producto" width={140} tick={{ fontSize: 11 }} />
-                <Tooltip formatter={arsTooltip} />
-                <Bar dataKey="monto" name="Ventas" fill="#8b5cf6" />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">Ventas por Familia</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={350}>
-              <PieChart>
-                <Pie data={donutData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                  innerRadius={50} outerRadius={90}
-                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
-                  {donutData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={arsTooltip} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Transactions line */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Transacciones Mensuales</CardTitle></CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={250}>
+            <LineChart data={monthRows}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+              <YAxis />
+              <Tooltip />
+              <Line type="monotone" dataKey="txCount" name="Transacciones" stroke="#06b6d4" strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
 
       {/* Heatmap */}
       <Card>
@@ -261,38 +221,29 @@ export default function MostradorPage() {
         </CardContent>
       </Card>
 
-      {/* Products table */}
+      {/* Monthly detail table */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Detalle de Productos ({data.products.length})</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">Detalle Mensual</CardTitle></CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Producto</TableHead>
-                  <TableHead>Familia</TableHead>
+                  <TableHead>Período</TableHead>
                   <TableHead className="text-right">Ventas</TableHead>
-                  <TableHead className="text-right">Cantidad</TableHead>
-                  <TableHead className="text-right">% Total</TableHead>
+                  <TableHead className="text-right">Transacciones</TableHead>
+                  <TableHead className="text-right">Ticket Prom.</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.products.slice(0, 50).map((p) => (
-                  <TableRow key={p.producto}>
-                    <TableCell className="font-medium max-w-[200px] truncate">{p.producto}</TableCell>
-                    <TableCell>{p.familia}</TableCell>
-                    <TableCell className="text-right">{formatARS(p.monto)}</TableCell>
-                    <TableCell className="text-right">{p.cantidad.toLocaleString("es-AR")}</TableCell>
-                    <TableCell className="text-right">{p.pct.toFixed(1)}%</TableCell>
+                {monthRows.map((r) => (
+                  <TableRow key={r.periodo}>
+                    <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.montoAdj)}</TableCell>
+                    <TableCell className="text-right">{r.txCount.toLocaleString("es-AR")}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.ticket)}</TableCell>
                   </TableRow>
                 ))}
-                {data.products.length > 50 && (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center text-xs text-muted-foreground">
-                      +{data.products.length - 50} productos más
-                    </TableCell>
-                  </TableRow>
-                )}
               </TableBody>
             </Table>
           </div>
