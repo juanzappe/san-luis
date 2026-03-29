@@ -15,6 +15,70 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
   map.set(key, (map.get(key) ?? 0) + val);
 }
 
+/**
+ * Paginated fetch to overcome Supabase REST 1000-row limit.
+ */
+async function fetchAllRows<T>(
+  table: string,
+  columns: string,
+  filter?: { column: string; value: string | number },
+): Promise<T[]> {
+  const PAGE = 1000;
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    let query = supabase.from(table).select(columns).range(from, from + PAGE - 1);
+    if (filter) {
+      query = query.eq(filter.column, filter.value);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...(data as T[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
+/**
+ * Devengamiento: assign salary to the month it corresponds to.
+ * - SAC (aguinaldo, periodo ends "-SAC"): accrue to payment month
+ * - day < 20: accrue to previous month
+ * - day >= 20: accrue to transfer month
+ * - null fecha_transferencia: fall back to periodo
+ */
+function accrualPeriod(r: { periodo: string; fecha_transferencia: string | null }): string {
+  const isSAC = r.periodo.endsWith("-SAC");
+  if (!r.fecha_transferencia) return r.periodo.slice(0, 7);
+
+  const ft = new Date(r.fecha_transferencia + "T12:00:00");
+  const day = ft.getDate();
+  const ftMonth = r.fecha_transferencia.slice(0, 7);
+
+  if (isSAC) return ftMonth;
+
+  if (day < 20) {
+    const y = ft.getFullYear();
+    const m = ft.getMonth(); // 0-indexed
+    return m === 0 ? `${y - 1}-12` : `${y}-${String(m).padStart(2, "0")}`;
+  }
+  return ftMonth;
+}
+
+/**
+ * Parse periodo from pago_impuesto observaciones field.
+ * Format: "Impuesto: 301 ... | Período: 20260200 | ..."
+ * Returns "2026-02" or null.
+ */
+function parsePeriodoFromObs(obs: string | null): string | null {
+  if (!obs) return null;
+  const match = obs.match(/Per[ií]odo:\s*(\d{6})/);
+  if (!match) return null;
+  const raw = match[1]; // "202602"
+  return `${raw.slice(0, 4)}-${raw.slice(4, 6)}`;
+}
+
 // ---------------------------------------------------------------------------
 // 1. Nómina — Monthly payroll evolution
 // ---------------------------------------------------------------------------
@@ -31,45 +95,57 @@ export interface NominaRow {
 }
 
 export async function fetchNomina(): Promise<NominaRow[]> {
-  const [liqRes, pagosRes, factRes, ventaRes] = await Promise.all([
-    supabase.from("liquidacion_sueldo").select("periodo, sueldo_neto, empleado_id"),
-    supabase.from("pago_impuesto").select("fecha_pago, monto, observaciones"),
-    supabase.from("factura_emitida").select("fecha_emision, imp_neto_gravado_total"),
-    supabase.from("venta").select("fecha, monto_total"),
+  const [liqData, pagosData, factData, ventaData] = await Promise.all([
+    fetchAllRows<{
+      periodo: string;
+      sueldo_neto: number;
+      empleado_id: number;
+      fecha_transferencia: string | null;
+    }>("liquidacion_sueldo", "periodo, sueldo_neto, empleado_id, fecha_transferencia"),
+    fetchAllRows<{ monto: number; observaciones: string | null; formulario: string | null }>(
+      "pago_impuesto",
+      "monto, observaciones, formulario",
+    ),
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+      "factura_emitida",
+      "fecha_emision, imp_neto_gravado_total",
+      { column: "punto_venta", value: 6 },
+    ),
+    fetchAllRows<{ fecha: string; monto_total: number }>(
+      "venta",
+      "fecha, monto_total",
+    ),
   ]);
 
-  if (liqRes.error) throw liqRes.error;
-  if (pagosRes.error) throw pagosRes.error;
-  if (factRes.error) throw factRes.error;
-  if (ventaRes.error) throw ventaRes.error;
-
-  // Sueldos netos + count distinct employees per period
+  // Sueldos netos with devengamiento + count distinct employees (excl SAC)
   const sueldosMap = new Map<string, number>();
   const empMap = new Map<string, Set<number>>();
-  for (const r of liqRes.data ?? []) {
-    const p = (r.periodo as string).slice(0, 7);
+  for (const r of liqData) {
+    const p = accrualPeriod(r);
     addToMap(sueldosMap, p, Number(r.sueldo_neto) || 0);
-    if (!empMap.has(p)) empMap.set(p, new Set());
-    empMap.get(p)!.add(Number(r.empleado_id));
-  }
-
-  // Cargas sociales: pago_impuesto where observaciones matches F931/SICOSS
-  const cargasMap = new Map<string, number>();
-  for (const r of pagosRes.data ?? []) {
-    const obs = ((r.observaciones as string) ?? "").toLowerCase();
-    if (obs.includes("931") || obs.includes("sicoss") || obs.includes("contribucion")) {
-      const p = (r.fecha_pago as string).slice(0, 7);
-      addToMap(cargasMap, p, Number(r.monto) || 0);
+    // Count employees only from regular payslips (exclude SAC/aguinaldo)
+    if (!r.periodo.endsWith("-SAC")) {
+      if (!empMap.has(p)) empMap.set(p, new Set());
+      empMap.get(p)!.add(Number(r.empleado_id));
     }
   }
 
-  // Ingresos: factura_emitida neto + venta monto_total
+  // Cargas sociales: formulario = '1931' only, grouped by parsed periodo
+  const cargasMap = new Map<string, number>();
+  for (const r of pagosData) {
+    if (r.formulario !== "1931") continue;
+    const p = parsePeriodoFromObs(r.observaciones);
+    if (!p) continue;
+    addToMap(cargasMap, p, Number(r.monto) || 0);
+  }
+
+  // Ingresos: factura_emitida PV=6 neto + venta monto_total
   const ingresosMap = new Map<string, number>();
-  for (const r of factRes.data ?? []) {
+  for (const r of factData) {
     const p = (r.fecha_emision as string).slice(0, 7);
     addToMap(ingresosMap, p, Number(r.imp_neto_gravado_total) || 0);
   }
-  for (const r of ventaRes.data ?? []) {
+  for (const r of ventaData) {
     const p = (r.fecha as string).slice(0, 7);
     addToMap(ingresosMap, p, Number(r.monto_total) || 0);
   }
@@ -224,38 +300,44 @@ export async function fetchCargasSociales(): Promise<{
   pagos: CargaSocialRow[];
   mensual: CargaSocialMensual[];
 }> {
-  const [pagosRes, liqRes] = await Promise.all([
-    supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones"),
-    supabase.from("liquidacion_sueldo").select("periodo, sueldo_neto"),
+  const [pagosData, liqData] = await Promise.all([
+    fetchAllRows<{
+      id: number;
+      fecha_pago: string;
+      monto: number;
+      observaciones: string | null;
+      formulario: string | null;
+    }>("pago_impuesto", "id, fecha_pago, monto, observaciones, formulario"),
+    fetchAllRows<{
+      periodo: string;
+      sueldo_neto: number;
+      fecha_transferencia: string | null;
+    }>("liquidacion_sueldo", "periodo, sueldo_neto, fecha_transferencia"),
   ]);
 
-  if (pagosRes.error) throw pagosRes.error;
-  if (liqRes.error) throw liqRes.error;
-
-  // Filter F931/SICOSS payments
+  // Filter formulario = '1931' only, group by parsed periodo from observaciones
   const pagos: CargaSocialRow[] = [];
   const mensualMap = new Map<string, number>();
 
-  for (const r of pagosRes.data ?? []) {
-    const obs = ((r.observaciones as string) ?? "").toLowerCase();
-    if (obs.includes("931") || obs.includes("sicoss") || obs.includes("contribucion")) {
-      const p = (r.fecha_pago as string).slice(0, 7);
-      const monto = Number(r.monto) || 0;
-      pagos.push({
-        id: r.id as number,
-        periodo: p,
-        concepto: (r.observaciones as string) ?? "F931/SICOSS",
-        monto,
-        fechaPago: r.fecha_pago as string,
-      });
-      addToMap(mensualMap, p, monto);
-    }
+  for (const r of pagosData) {
+    if (r.formulario !== "1931") continue;
+    const p = parsePeriodoFromObs(r.observaciones);
+    if (!p) continue;
+    const monto = Number(r.monto) || 0;
+    pagos.push({
+      id: r.id as number,
+      periodo: p,
+      concepto: r.observaciones ?? "F1931",
+      monto,
+      fechaPago: r.fecha_pago as string,
+    });
+    addToMap(mensualMap, p, monto);
   }
 
-  // Sueldos netos for ratio
+  // Sueldos netos with devengamiento for ratio
   const sueldosMap = new Map<string, number>();
-  for (const r of liqRes.data ?? []) {
-    const p = (r.periodo as string).slice(0, 7);
+  for (const r of liqData) {
+    const p = accrualPeriod(r);
     addToMap(sueldosMap, p, Number(r.sueldo_neto) || 0);
   }
 

@@ -87,12 +87,21 @@ export default function NominaPage() {
     [raw, adjust],
   );
 
-  // KPIs from last two months
+  // KPIs from last COMPLETE month (has both sueldos AND cargas)
   const kpis = useMemo(() => {
     if (data.length < 1) return null;
-    const last = data[data.length - 1];
-    const prev = data.length > 1 ? data[data.length - 2] : null;
+    // Find last month where both sueldos > 0 and cargasSociales > 0
+    let lastIdx = data.length - 1;
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (data[i].sueldosNetos > 0 && data[i].cargasSociales > 0) {
+        lastIdx = i;
+        break;
+      }
+    }
+    const last = data[lastIdx];
+    const prev = lastIdx >= 1 ? data[lastIdx - 1] : null;
     return {
+      periodo: periodoLabel(last.periodo),
       costoTotal: last.costoTotal,
       deltaCosto: prev ? pctDelta(last.costoTotal, prev.costoTotal) : null,
       sueldosNetos: last.sueldosNetos,
@@ -148,7 +157,9 @@ export default function NominaPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Nómina</h1>
-          <p className="text-muted-foreground">Evolución mensual de sueldos y cargas sociales</p>
+          <p className="text-muted-foreground">
+            {kpis ? `Datos de ${kpis.periodo}` : "Evolución mensual de sueldos y cargas sociales"}
+          </p>
         </div>
         <InflationToggle />
       </div>
