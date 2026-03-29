@@ -51,13 +51,19 @@ async function syncIpc(): Promise<{ ok: boolean; count: number; error?: string }
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
     const data: { fecha: string; valor: number }[] = await res.json();
 
+    // Delete all existing IPC rows first (ETL uses YYYY-MM-01 dates,
+    // API uses end-of-month — clean slate avoids duplicates per month)
+    await supabase.from("indicador_macro").delete().eq("tipo", "ipc");
+
     // Build cumulative IPC index (base 100) + store monthly variation
     let ipcIndex = 100;
     const rows = data.map((entry) => {
       ipcIndex = ipcIndex * (1 + entry.valor / 100);
+      // Normalize date to first of month (YYYY-MM-01) to match ETL convention
+      const periodo = entry.fecha.slice(0, 7);
       return {
         tipo: "ipc",
-        fecha: entry.fecha,
+        fecha: `${periodo}-01`,
         valor: ipcIndex,
         variacion_mensual: entry.valor,
         fuente_api: "argentinadatos.com",
@@ -169,8 +175,8 @@ async function syncDolarBlue(): Promise<{ ok: boolean; count: number; error?: st
 
 // ---------------------------------------------------------------------------
 // Tasa de interés (depósitos 30 días) — argentinadatos.com
-// Response: [{fecha: "YYYY-MM-DD", valor: 0.0815}]
-// valor is decimal (0.0815 = 8.15% TNA) → multiply by 100 to store as %
+// Response: [{fecha: "YYYY-MM-DD", valor: 25.1}]
+// valor is already TNA % (25.1 = 25.1%)
 // ---------------------------------------------------------------------------
 async function syncTasa(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
@@ -183,7 +189,7 @@ async function syncTasa(): Promise<{ ok: boolean; count: number; error?: string 
     const rows = data.map((entry) => ({
       tipo: "tasa_bcra",
       fecha: entry.fecha,
-      valor: entry.valor * 100, // decimal → percentage
+      valor: entry.valor,
       fuente_api: "argentinadatos.com",
     }));
 
