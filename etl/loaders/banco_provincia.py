@@ -15,9 +15,10 @@ from utils import (
 )
 
 
-def _parse_banco_txt(path: Path) -> list[dict]:
-    """Parsea un TXT de extracto bancario Provincia."""
+def _parse_banco_txt(path: Path) -> tuple[list[dict], int]:
+    """Parsea un TXT de extracto bancario Provincia. Returns (records, skipped_count)."""
     records = []
+    skipped = 0
     with open(path, "r", encoding="latin-1") as f:
         lines = f.readlines()
 
@@ -29,7 +30,7 @@ def _parse_banco_txt(path: Path) -> list[dict]:
             break
 
     if header_idx is None:
-        return records
+        return records, 0
 
     # Parsear CSV desde header_idx
     csv_text = "".join(lines[header_idx:])
@@ -46,6 +47,10 @@ def _parse_banco_txt(path: Path) -> list[dict]:
 
         importe = parse_monto_argentino(importe_str)
         saldo = parse_monto_argentino(saldo_str)
+
+        if importe is None:
+            skipped += 1
+            continue
 
         # Parsear Fecha Valor (DD-MM)
         fecha_valor_str = safe_str(row.get("Fecha Valor"))
@@ -82,7 +87,7 @@ def _parse_banco_txt(path: Path) -> list[dict]:
 
         records.append(rec)
 
-    return records
+    return records, skipped
 
 
 def run(conn, logger) -> int:
@@ -91,11 +96,15 @@ def run(conn, logger) -> int:
     logger.info(f"  {len(txt_files)} archivos TXT encontrados")
 
     all_records = []
+    total_skipped = 0
     for txt_path in txt_files:
         logger.info(f"  Procesando {txt_path.name}")
-        records = _parse_banco_txt(txt_path)
+        records, skipped = _parse_banco_txt(txt_path)
         all_records.extend(records)
+        total_skipped += skipped
 
+    if total_skipped:
+        logger.warning(f"  {total_skipped} filas salteadas (importe null)")
     logger.info(f"  {len(all_records)} movimientos bancarios a cargar")
 
     # Delete provincia + insert
