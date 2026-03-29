@@ -71,9 +71,10 @@ const navigation: NavItem[] = [
     href: "/comercial",
     icon: Megaphone,
     children: [
-      { label: "Marketing", href: "/comercial/marketing" },
-      { label: "Proveedores", href: "/comercial/proveedores" },
       { label: "Clientes", href: "/comercial/clientes" },
+      { label: "Proveedores", href: "/comercial/proveedores" },
+      { label: "Segmentación", href: "/comercial/segmentacion" },
+      { label: "Marketing", href: "/comercial/marketing" },
     ],
   },
   { label: "Costos", href: "/costos", icon: Calculator },
