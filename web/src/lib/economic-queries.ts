@@ -56,6 +56,57 @@ function groupSum(
   return map;
 }
 
+/**
+ * Paginated fetch to overcome Supabase REST 1000-row limit.
+ */
+async function fetchAllRows<T>(
+  table: string,
+  columns: string,
+  filter?: { column: string; value: string | number },
+): Promise<T[]> {
+  const PAGE = 1000;
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    let query = supabase.from(table).select(columns).range(from, from + PAGE - 1);
+    if (filter) {
+      query = query.eq(filter.column, filter.value);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...(data as T[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
+}
+
+/**
+ * Devengamiento: assign salary to the month it corresponds to.
+ * - SAC (aguinaldo): accrue to payment month
+ * - day < 20: accrue to previous month
+ * - day >= 20: accrue to transfer month
+ * - null fecha_transferencia: fall back to periodo
+ */
+function accrualPeriod(r: { periodo: string; fecha_transferencia: string | null }): string {
+  const isSAC = r.periodo.endsWith("-SAC");
+  if (!r.fecha_transferencia) return r.periodo.slice(0, 7);
+
+  const ft = new Date(r.fecha_transferencia + "T12:00:00");
+  const day = ft.getDate();
+  const ftMonth = r.fecha_transferencia.slice(0, 7);
+
+  if (isSAC) return ftMonth;
+
+  if (day < 20) {
+    const y = ft.getFullYear();
+    const m = ft.getMonth(); // 0-indexed
+    return m === 0 ? `${y - 1}-12` : `${y}-${String(m).padStart(2, "0")}`;
+  }
+  return ftMonth;
+}
+
 // ---------------------------------------------------------------------------
 // Ingresos by source
 // ---------------------------------------------------------------------------
@@ -70,50 +121,53 @@ export interface IngresoRow {
 
 export async function fetchIngresos(): Promise<IngresoRow[]> {
   // 1) venta_detalle joined with venta for fecha — split mostrador vs restobar
-  const { data: detalle, error: e1 } = await supabase
-    .from("venta_detalle")
-    .select("producto, neto, venta:venta_id(fecha)");
-  if (e1) throw e1;
+  //    Paginated manually (JOIN prevents using fetchAllRows)
+  const PAGE = 1000;
+  const detalle: Array<{ producto: string; neto: number; venta: unknown }> = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("venta_detalle")
+      .select("producto, neto, venta:venta_id(fecha)")
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    detalle.push(...(data as typeof detalle));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
 
-  // 2) factura_emitida PV 6 = Servicios (neto, no IVA)
-  //    PV 8 = Mostrador (facturas fiscales POS, ya capturado en venta_detalle)
-  //    PV 998 = pendiente de clasificar
-  const { data: facturas, error: e2 } = await supabase
-    .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total, punto_venta")
-    .eq("punto_venta", 6);
-  if (e2) throw e2;
+  // 2) factura_emitida PV 6 = Servicios (neto, no IVA) — paginated
+  const facturas = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+    "factura_emitida",
+    "fecha_emision, imp_neto_gravado_total",
+    { column: "punto_venta", value: 6 },
+  );
 
   const mostradorMap = new Map<string, number>();
   const restobarMap = new Map<string, number>();
 
-  if (detalle) {
-    for (const d of detalle) {
-      // venta is a joined object { fecha: "..." }
-      // Supabase returns FK joins as arrays or objects depending on cardinality
-      const ventaRaw = d.venta as unknown;
-      const venta = Array.isArray(ventaRaw) ? ventaRaw[0] as { fecha: string } | undefined : ventaRaw as { fecha: string } | null;
-      if (!venta) continue;
-      const p = venta.fecha.slice(0, 7);
-      const monto = Number(d.neto) || 0;
-      const prod = (d.producto ?? "").toLowerCase();
-      if (prod === "restobar") {
-        restobarMap.set(p, (restobarMap.get(p) ?? 0) + monto);
-      } else {
-        mostradorMap.set(p, (mostradorMap.get(p) ?? 0) + monto);
-      }
+  for (const d of detalle) {
+    const ventaRaw = d.venta as { fecha: string } | { fecha: string }[] | null;
+    const venta = Array.isArray(ventaRaw) ? ventaRaw[0] : ventaRaw;
+    if (!venta?.fecha) continue;
+    const p = venta.fecha.slice(0, 7);
+    const monto = Number(d.neto) || 0;
+    const prod = (d.producto ?? "").toLowerCase();
+    if (prod === "restobar") {
+      restobarMap.set(p, (restobarMap.get(p) ?? 0) + monto);
+    } else {
+      mostradorMap.set(p, (mostradorMap.get(p) ?? 0) + monto);
     }
   }
 
   const serviciosMap = new Map<string, number>();
-  if (facturas) {
-    for (const f of facturas) {
-      const p = (f.fecha_emision as string).slice(0, 7);
-      serviciosMap.set(
-        p,
-        (serviciosMap.get(p) ?? 0) + (Number(f.imp_neto_gravado_total) || 0),
-      );
-    }
+  for (const f of facturas) {
+    const p = (f.fecha_emision as string).slice(0, 7);
+    serviciosMap.set(
+      p,
+      (serviciosMap.get(p) ?? 0) + (Number(f.imp_neto_gravado_total) || 0),
+    );
   }
 
   // Merge all periodos
@@ -154,46 +208,53 @@ export interface EgresoRow {
   categorias: Record<string, number>; // { "Insumos": 1234, "Nafta": 5678, ... }
   sueldos: number;
   impuestos: number;
+  sueldosNeto: number; // sueldo_neto with devengamiento (for P&L)
 }
 
 export async function fetchEgresos(): Promise<EgresoRow[]> {
-  // 1) Sueldos (costo_total_empresa for full employer cost)
-  const { data: sueldos, error: e1 } = await supabase
-    .from("liquidacion_sueldo")
-    .select("periodo, costo_total_empresa, sueldo_neto");
-  if (e1) throw e1;
+  // 1) Sueldos — paginated, with devengamiento
+  const sueldosData = await fetchAllRows<{
+    periodo: string;
+    costo_total_empresa: number | null;
+    sueldo_neto: number;
+    fecha_transferencia: string | null;
+  }>("liquidacion_sueldo", "periodo, costo_total_empresa, sueldo_neto, fecha_transferencia");
 
-  const sueldosMap = groupSum(
-    (sueldos ?? []).map((s) => ({
-      periodo: s.periodo.slice(0, 7),
-      monto: Number(s.costo_total_empresa ?? s.sueldo_neto) || 0,
-    })),
-  );
+  // costo_total_empresa with devengamiento (for egresos page)
+  const sueldosMap = new Map<string, number>();
+  // sueldo_neto with devengamiento (for P&L)
+  const sueldosNetoMap = new Map<string, number>();
+  for (const s of sueldosData) {
+    const p = accrualPeriod(s);
+    sueldosMap.set(p, (sueldosMap.get(p) ?? 0) + (Number(s.costo_total_empresa ?? s.sueldo_neto) || 0));
+    sueldosNetoMap.set(p, (sueldosNetoMap.get(p) ?? 0) + (Number(s.sueldo_neto) || 0));
+  }
 
-  // 2) Facturas recibidas + proveedor segmentación
-  const [factRecRes, provRes] = await Promise.all([
-    supabase.from("factura_recibida").select("fecha_emision, imp_neto_gravado_total, nro_doc_emisor"),
-    supabase.from("proveedor").select("cuit, categoria_egreso"),
+  // 2) Facturas recibidas + proveedor segmentación — paginated
+  const [factRecData, provData] = await Promise.all([
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; nro_doc_emisor: string | null }>(
+      "factura_recibida",
+      "fecha_emision, imp_neto_gravado_total, nro_doc_emisor",
+    ),
+    fetchAllRows<{ cuit: string | null; categoria_egreso: string | null }>(
+      "proveedor",
+      "cuit, categoria_egreso",
+    ),
   ]);
-  if (factRecRes.error) throw factRecRes.error;
-  if (provRes.error) throw provRes.error;
 
   // Build CUIT → categoria lookup
   const cuitToCategoria = new Map<string, string>();
-  for (const p of provRes.data ?? []) {
-    const cuit = p.cuit as string | null;
-    const cat = p.categoria_egreso as string | null;
-    if (cuit && cat) cuitToCategoria.set(cuit, cat);
+  for (const p of provData) {
+    if (p.cuit && p.categoria_egreso) cuitToCategoria.set(p.cuit, p.categoria_egreso);
   }
 
   // Group facturas by periodo + categoria
-  // catMap: Map<periodo, Map<categoria, sum>>
   const catMap = new Map<string, Map<string, number>>();
-  const proveedoresTotalMap = new Map<string, number>(); // legacy: all proveedores
-  for (const f of factRecRes.data ?? []) {
+  const proveedoresTotalMap = new Map<string, number>();
+  for (const f of factRecData) {
     const periodo = (f.fecha_emision as string).slice(0, 7);
     const monto = Number(f.imp_neto_gravado_total) || 0;
-    const cuit = f.nro_doc_emisor as string | null;
+    const cuit = f.nro_doc_emisor;
     const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Sin clasificar";
 
     if (!catMap.has(periodo)) catMap.set(periodo, new Map());
@@ -203,54 +264,57 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     proveedoresTotalMap.set(periodo, (proveedoresTotalMap.get(periodo) ?? 0) + monto);
   }
 
-  // 3) Impuestos — join pago_impuesto with impuesto_obligacion to get tipo
-  const { data: pagos, error: e3 } = await supabase
-    .from("pago_impuesto")
-    .select("fecha_pago, monto, impuesto_obligacion:impuesto_obligacion_id(tipo)");
-  if (e3) throw e3;
+  // 3) Impuestos — two separate paginated fetches (avoids fragile JOIN)
+  const [pagosData, oblData] = await Promise.all([
+    fetchAllRows<{ fecha_pago: string; monto: number; impuesto_obligacion_id: number | null }>(
+      "pago_impuesto",
+      "fecha_pago, monto, impuesto_obligacion_id",
+    ),
+    fetchAllRows<{ id: number; tipo: string }>(
+      "impuesto_obligacion",
+      "id, tipo",
+    ),
+  ]);
 
+  const oblMap = new Map(oblData.map((o) => [o.id, o.tipo]));
   const impComercialMap = new Map<string, number>();
   const gananciasMap = new Map<string, number>();
 
-  if (pagos) {
-    for (const pago of pagos) {
-      const p = (pago.fecha_pago as string).slice(0, 7);
-      const monto = Number(pago.monto) || 0;
-      const oblRaw = pago.impuesto_obligacion as unknown;
-      const obligacion = Array.isArray(oblRaw) ? oblRaw[0] as { tipo: string } | undefined : oblRaw as { tipo: string } | null;
-      const tipo = obligacion?.tipo ?? "";
-      if (tipo === "ganancias") {
-        gananciasMap.set(p, (gananciasMap.get(p) ?? 0) + monto);
-      } else {
-        impComercialMap.set(p, (impComercialMap.get(p) ?? 0) + monto);
-      }
+  for (const pago of pagosData) {
+    const p = (pago.fecha_pago as string).slice(0, 7);
+    const monto = Number(pago.monto) || 0;
+    const tipo = pago.impuesto_obligacion_id
+      ? (oblMap.get(pago.impuesto_obligacion_id) ?? "")
+      : "";
+    if (tipo === "ganancias") {
+      gananciasMap.set(p, (gananciasMap.get(p) ?? 0) + monto);
+    } else {
+      impComercialMap.set(p, (impComercialMap.get(p) ?? 0) + monto);
     }
   }
 
-  // 4) Bank fees (movimiento_bancario debits that are fees/interest)
-  const { data: movBanco, error: e4 } = await supabase
-    .from("movimiento_bancario")
-    .select("fecha, concepto, debito");
-  if (e4) throw e4;
+  // 4) Bank fees — paginated
+  const movBanco = await fetchAllRows<{ fecha: string; concepto: string; debito: number }>(
+    "movimiento_bancario",
+    "fecha, concepto, debito",
+  );
 
   const financierosMap = new Map<string, number>();
-  if (movBanco) {
-    for (const m of movBanco) {
-      const concepto = (m.concepto ?? "").toLowerCase();
-      const debito = Number(m.debito) || 0;
-      if (debito <= 0) continue;
-      if (
-        concepto.includes("comision") ||
-        concepto.includes("interes") ||
-        concepto.includes("impuesto s/deb") ||
-        concepto.includes("impuesto s/cred") ||
-        concepto.includes("mantenimiento") ||
-        concepto.includes("seguro") ||
-        concepto.includes("sellado")
-      ) {
-        const p = (m.fecha as string).slice(0, 7);
-        financierosMap.set(p, (financierosMap.get(p) ?? 0) + debito);
-      }
+  for (const m of movBanco) {
+    const concepto = (m.concepto ?? "").toLowerCase();
+    const debito = Number(m.debito) || 0;
+    if (debito <= 0) continue;
+    if (
+      concepto.includes("comision") ||
+      concepto.includes("interes") ||
+      concepto.includes("impuesto s/deb") ||
+      concepto.includes("impuesto s/cred") ||
+      concepto.includes("mantenimiento") ||
+      concepto.includes("seguro") ||
+      concepto.includes("sellado")
+    ) {
+      const p = (m.fecha as string).slice(0, 7);
+      financierosMap.set(p, (financierosMap.get(p) ?? 0) + debito);
     }
   }
 
@@ -274,16 +338,15 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       if (pm) pm.forEach((v, k) => { categorias[k] = v; });
       return {
         periodo: p,
-        // Legacy fields for fetchResultado
         operativos: sueldosMes + proveedoresMes,
         comerciales,
         financieros,
         ganancias: gan,
         total: sueldosMes + proveedoresMes + comerciales + financieros + gan,
-        // Dynamic breakdown
         categorias,
         sueldos: sueldosMes,
         impuestos: impuestosMes,
+        sueldosNeto: sueldosNetoMap.get(p) ?? 0,
       };
     });
 }
@@ -295,7 +358,8 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 export interface ResultadoRow {
   periodo: string;
   ingresos: number;
-  costosOperativos: number;
+  costosOperativos: number; // proveedores only
+  sueldos: number; // sueldo_neto with devengamiento
   margenBruto: number;
   costosComercialesAdmin: number;
   costosFinancieros: number;
@@ -323,12 +387,14 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
     .map((p) => {
       const ing = ingMap.get(p) ?? 0;
       const egr = egrMap.get(p);
-      const costosOp = egr?.operativos ?? 0;
+      // proveedores only (operativos minus sueldos)
+      const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
+      const sueldos = egr?.sueldosNeto ?? 0;
       const costosCom = egr?.comerciales ?? 0;
       const costosFin = egr?.financieros ?? 0;
       const gan = egr?.ganancias ?? 0;
 
-      const margenBruto = ing - costosOp;
+      const margenBruto = ing - costosOp - sueldos;
       const resultadoAntesGanancias = margenBruto - costosCom - costosFin;
       const resultadoNeto = resultadoAntesGanancias - gan;
       const margenPct = ing > 0 ? (resultadoNeto / ing) * 100 : 0;
@@ -337,6 +403,7 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
         periodo: p,
         ingresos: ing,
         costosOperativos: costosOp,
+        sueldos,
         margenBruto,
         costosComercialesAdmin: costosCom,
         costosFinancieros: costosFin,
