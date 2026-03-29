@@ -1,165 +1,193 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-// Server-side Supabase client (same creds, but only runs on server)
+// Server-side Supabase client
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
 // ---------------------------------------------------------------------------
-// Helper: fetch with timeout + optional headers
+// Helper: fetch with timeout
 // ---------------------------------------------------------------------------
-async function fetchWithTimeout(
-  url: string,
-  opts?: { headers?: Record<string, string>; ms?: number },
-): Promise<Response> {
-  const ms = opts?.ms ?? 10000;
+async function fetchWithTimeout(url: string, ms = 15000): Promise<Response> {
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
   try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      cache: "no-store",
-      headers: opts?.headers,
-    });
-    return res;
+    return await fetch(url, { signal: controller.signal, cache: "no-store" });
   } finally {
     clearTimeout(id);
   }
 }
 
-function bcraHeaders(): Record<string, string> {
-  const token = process.env.ESTADISTICAS_BCRA_TOKEN;
-  if (!token) return {};
-  return { Authorization: `Bearer ${token}` };
+// ---------------------------------------------------------------------------
+// Batch upsert helper
+// ---------------------------------------------------------------------------
+async function batchUpsert(
+  rows: Record<string, unknown>[],
+): Promise<{ ok: boolean; count: number; error?: string }> {
+  let upserted = 0;
+  for (let i = 0; i < rows.length; i += 500) {
+    const batch = rows.slice(i, i + 500);
+    const { error } = await supabase
+      .from("indicador_macro")
+      .upsert(batch, { onConflict: "tipo,fecha", ignoreDuplicates: false });
+    if (error) return { ok: false, count: upserted, error: error.message };
+    upserted += batch.length;
+  }
+  return { ok: true, count: upserted };
 }
 
 // ---------------------------------------------------------------------------
-// IPC / Inflación mensual — estadisticasbcra.com
+// IPC / Inflación mensual — argentinadatos.com
+// Response: [{fecha: "YYYY-MM-DD", valor: 2.9}]
+// valor is already a percentage (2.9 = 2.9%)
 // ---------------------------------------------------------------------------
 async function syncIpc(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/inflacion_mensual_oficial", { headers: bcraHeaders() });
+    const res = await fetchWithTimeout(
+      "https://api.argentinadatos.com/v1/finanzas/indices/inflacion",
+    );
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
-    const data: { d: string; v: number }[] = await res.json();
+    const data: { fecha: string; valor: number }[] = await res.json();
 
-    // Build rows: each entry is a month with % variation
-    // We also need cumulative IPC index. Base = 100 at start, compound monthly.
+    // Build cumulative IPC index (base 100) + store monthly variation
     let ipcIndex = 100;
-    const rows: {
-      tipo: string;
-      fecha: string;
-      valor: number;
-      variacion_mensual: number;
-      fuente_api: string;
-    }[] = [];
-
-    for (const entry of data) {
-      ipcIndex = ipcIndex * (1 + entry.v / 100);
-      rows.push({
+    const rows = data.map((entry) => {
+      ipcIndex = ipcIndex * (1 + entry.valor / 100);
+      return {
         tipo: "ipc",
-        fecha: entry.d, // YYYY-MM-DD
+        fecha: entry.fecha,
         valor: ipcIndex,
-        variacion_mensual: entry.v,
-        fuente_api: "estadisticasbcra.com",
-      });
-    }
+        variacion_mensual: entry.valor,
+        fuente_api: "argentinadatos.com",
+      };
+    });
 
-    // Upsert in batches of 500
-    let upserted = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const batch = rows.slice(i, i + 500);
-      const { error } = await supabase
-        .from("indicador_macro")
-        .upsert(batch, { onConflict: "tipo,fecha", ignoreDuplicates: false });
-      if (error) return { ok: false, count: upserted, error: error.message };
-      upserted += batch.length;
-    }
-    return { ok: true, count: upserted };
+    return batchUpsert(rows);
   } catch (e: unknown) {
     return { ok: false, count: 0, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Dólar Oficial — dolarapi.com
+// Dólar Oficial — argentinadatos.com (histórico) + dolarapi.com (hoy)
+// ArgentinaDatos: [{casa, compra, venta, fecha}]
+// DolarAPI: {compra, venta, ...}
 // ---------------------------------------------------------------------------
 async function syncDolarOficial(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://dolarapi.com/v1/dolares/oficial");
-    if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
-    const data = await res.json();
+    // Historical data from ArgentinaDatos
+    const [histRes, todayRes] = await Promise.all([
+      fetchWithTimeout("https://api.argentinadatos.com/v1/cotizaciones/dolares/oficial"),
+      fetchWithTimeout("https://dolarapi.com/v1/dolares/oficial"),
+    ]);
 
-    const today = new Date().toISOString().slice(0, 10);
-    const { error } = await supabase.from("indicador_macro").upsert(
-      {
+    const rows: Record<string, unknown>[] = [];
+
+    if (histRes.ok) {
+      const histData: { casa: string; compra: number; venta: number; fecha: string }[] =
+        await histRes.json();
+      for (const entry of histData) {
+        rows.push({
+          tipo: "dolar_oficial",
+          fecha: entry.fecha,
+          valor: entry.venta,
+          fuente_api: "argentinadatos.com",
+        });
+      }
+    }
+
+    // Today's quote from DolarAPI
+    if (todayRes.ok) {
+      const todayData = await todayRes.json();
+      const today = new Date().toISOString().slice(0, 10);
+      rows.push({
         tipo: "dolar_oficial",
         fecha: today,
-        valor: Number(data.venta),
+        valor: Number(todayData.venta),
         fuente_api: "dolarapi.com",
-      },
-      { onConflict: "tipo,fecha", ignoreDuplicates: false },
-    );
-    if (error) return { ok: false, count: 0, error: error.message };
-    return { ok: true, count: 1 };
+      });
+    }
+
+    if (rows.length === 0) {
+      return { ok: false, count: 0, error: "No data from either source" };
+    }
+
+    return batchUpsert(rows);
   } catch (e: unknown) {
     return { ok: false, count: 0, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Dólar Blue — dolarapi.com
+// Dólar Blue — argentinadatos.com (histórico) + dolarapi.com (hoy)
 // ---------------------------------------------------------------------------
 async function syncDolarBlue(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://dolarapi.com/v1/dolares/blue");
-    if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
-    const data = await res.json();
+    const [histRes, todayRes] = await Promise.all([
+      fetchWithTimeout("https://api.argentinadatos.com/v1/cotizaciones/dolares/blue"),
+      fetchWithTimeout("https://dolarapi.com/v1/dolares/blue"),
+    ]);
 
-    const today = new Date().toISOString().slice(0, 10);
-    const { error } = await supabase.from("indicador_macro").upsert(
-      {
+    const rows: Record<string, unknown>[] = [];
+
+    if (histRes.ok) {
+      const histData: { casa: string; compra: number; venta: number; fecha: string }[] =
+        await histRes.json();
+      for (const entry of histData) {
+        rows.push({
+          tipo: "dolar_blue",
+          fecha: entry.fecha,
+          valor: entry.venta,
+          fuente_api: "argentinadatos.com",
+        });
+      }
+    }
+
+    // Today's quote from DolarAPI
+    if (todayRes.ok) {
+      const todayData = await todayRes.json();
+      const today = new Date().toISOString().slice(0, 10);
+      rows.push({
         tipo: "dolar_blue",
         fecha: today,
-        valor: Number(data.venta),
+        valor: Number(todayData.venta),
         fuente_api: "dolarapi.com",
-      },
-      { onConflict: "tipo,fecha", ignoreDuplicates: false },
-    );
-    if (error) return { ok: false, count: 0, error: error.message };
-    return { ok: true, count: 1 };
+      });
+    }
+
+    if (rows.length === 0) {
+      return { ok: false, count: 0, error: "No data from either source" };
+    }
+
+    return batchUpsert(rows);
   } catch (e: unknown) {
     return { ok: false, count: 0, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tasa de interés (depósitos 30 días) — estadisticasbcra.com
+// Tasa de interés (depósitos 30 días) — argentinadatos.com
+// Response: [{fecha: "YYYY-MM-DD", valor: 0.0815}]
+// valor is decimal (0.0815 = 8.15% TNA) → multiply by 100 to store as %
 // ---------------------------------------------------------------------------
 async function syncTasa(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/tasa_depositos_30_dias", { headers: bcraHeaders() });
+    const res = await fetchWithTimeout(
+      "https://api.argentinadatos.com/v1/finanzas/tasas/depositos30Dias",
+    );
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
-    const data: { d: string; v: number }[] = await res.json();
+    const data: { fecha: string; valor: number }[] = await res.json();
 
     const rows = data.map((entry) => ({
       tipo: "tasa_bcra",
-      fecha: entry.d,
-      valor: entry.v,
-      fuente_api: "estadisticasbcra.com",
+      fecha: entry.fecha,
+      valor: entry.valor * 100, // decimal → percentage
+      fuente_api: "argentinadatos.com",
     }));
 
-    let upserted = 0;
-    for (let i = 0; i < rows.length; i += 500) {
-      const batch = rows.slice(i, i + 500);
-      const { error } = await supabase
-        .from("indicador_macro")
-        .upsert(batch, { onConflict: "tipo,fecha", ignoreDuplicates: false });
-      if (error) return { ok: false, count: upserted, error: error.message };
-      upserted += batch.length;
-    }
-    return { ok: true, count: upserted };
+    return batchUpsert(rows);
   } catch (e: unknown) {
     return { ok: false, count: 0, error: e instanceof Error ? e.message : String(e) };
   }
