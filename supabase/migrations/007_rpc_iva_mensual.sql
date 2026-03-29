@@ -3,8 +3,8 @@
 -- on tables with ~93k rows (factura_emitida).
 
 -- Used by fetchResumenFiscal() in tax-queries.ts
-CREATE OR REPLACE FUNCTION get_iva_mensual()
-RETURNS TABLE(periodo text, debito numeric, credito numeric, ingresos numeric)
+CREATE OR REPLACE FUNCTION get_iva_ingresos_mensual()
+RETURNS TABLE(periodo text, iva_debito numeric, iva_credito numeric, ingresos numeric)
 AS $$
   SELECT
     TO_CHAR(fecha_emision, 'YYYY-MM'),
