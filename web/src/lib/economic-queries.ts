@@ -141,11 +141,16 @@ export async function fetchIngresos(): Promise<IngresoRow[]> {
 
 export interface EgresoRow {
   periodo: string;
+  // Legacy fields (used by fetchResultado for P&L)
   operativos: number; // sueldos + proveedores
-  comerciales: number; // impuestos (no ganancias) + marketing + delivery
+  comerciales: number; // impuestos (no ganancias)
   financieros: number; // bank fees & interest
   ganancias: number; // imp. a las ganancias
   total: number;
+  // Dynamic category breakdown (from proveedor segmentation)
+  categorias: Record<string, number>; // { "Insumos": 1234, "Nafta": 5678, ... }
+  sueldos: number;
+  impuestos: number;
 }
 
 export async function fetchEgresos(): Promise<EgresoRow[]> {
@@ -162,18 +167,38 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     })),
   );
 
-  // 2) Proveedores operativos (factura_recibida neto — this is the bulk of opex)
-  const { data: factRec, error: e2 } = await supabase
-    .from("factura_recibida")
-    .select("fecha_emision, imp_neto_gravado_total");
-  if (e2) throw e2;
+  // 2) Facturas recibidas + proveedor segmentación
+  const [factRecRes, provRes] = await Promise.all([
+    supabase.from("factura_recibida").select("fecha_emision, imp_neto_gravado_total, nro_doc_emisor"),
+    supabase.from("proveedor").select("cuit, categoria_egreso"),
+  ]);
+  if (factRecRes.error) throw factRecRes.error;
+  if (provRes.error) throw provRes.error;
 
-  const proveedoresMap = groupSum(
-    (factRec ?? []).map((f) => ({
-      periodo: (f.fecha_emision as string).slice(0, 7),
-      monto: Number(f.imp_neto_gravado_total) || 0,
-    })),
-  );
+  // Build CUIT → categoria lookup
+  const cuitToCategoria = new Map<string, string>();
+  for (const p of provRes.data ?? []) {
+    const cuit = p.cuit as string | null;
+    const cat = p.categoria_egreso as string | null;
+    if (cuit && cat) cuitToCategoria.set(cuit, cat);
+  }
+
+  // Group facturas by periodo + categoria
+  // catMap: Map<periodo, Map<categoria, sum>>
+  const catMap = new Map<string, Map<string, number>>();
+  const proveedoresTotalMap = new Map<string, number>(); // legacy: all proveedores
+  for (const f of factRecRes.data ?? []) {
+    const periodo = (f.fecha_emision as string).slice(0, 7);
+    const monto = Number(f.imp_neto_gravado_total) || 0;
+    const cuit = f.nro_doc_emisor as string | null;
+    const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Sin clasificar";
+
+    if (!catMap.has(periodo)) catMap.set(periodo, new Map());
+    const pm = catMap.get(periodo)!;
+    pm.set(cat, (pm.get(cat) ?? 0) + monto);
+
+    proveedoresTotalMap.set(periodo, (proveedoresTotalMap.get(periodo) ?? 0) + monto);
+  }
 
   // 3) Impuestos — join pago_impuesto with impuesto_obligacion to get tipo
   const { data: pagos, error: e3 } = await supabase
@@ -211,7 +236,6 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       const concepto = (m.concepto ?? "").toLowerCase();
       const debito = Number(m.debito) || 0;
       if (debito <= 0) continue;
-      // Filter for financial costs: commissions, interest, fees
       if (
         concepto.includes("comision") ||
         concepto.includes("interes") ||
@@ -229,24 +253,34 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 
   // Merge all periodos
   const allP = new Set<string>();
-  for (const mp of [sueldosMap, proveedoresMap, impComercialMap, gananciasMap, financierosMap]) {
+  for (const mp of [sueldosMap, proveedoresTotalMap, impComercialMap, gananciasMap, financierosMap]) {
     mp.forEach((_, k) => allP.add(k));
   }
 
   return Array.from(allP)
     .sort()
     .map((p) => {
-      const operativos = (sueldosMap.get(p) ?? 0) + (proveedoresMap.get(p) ?? 0);
+      const sueldosMes = sueldosMap.get(p) ?? 0;
+      const proveedoresMes = proveedoresTotalMap.get(p) ?? 0;
       const comerciales = impComercialMap.get(p) ?? 0;
+      const gan = gananciasMap.get(p) ?? 0;
       const financieros = financierosMap.get(p) ?? 0;
-      const ganancias = gananciasMap.get(p) ?? 0;
+      const impuestosMes = comerciales + gan;
+      const categorias: Record<string, number> = {};
+      const pm = catMap.get(p);
+      if (pm) pm.forEach((v, k) => { categorias[k] = v; });
       return {
         periodo: p,
-        operativos,
+        // Legacy fields for fetchResultado
+        operativos: sueldosMes + proveedoresMes,
         comerciales,
         financieros,
-        ganancias,
-        total: operativos + comerciales + financieros + ganancias,
+        ganancias: gan,
+        total: sueldosMes + proveedoresMes + comerciales + financieros + gan,
+        // Dynamic breakdown
+        categorias,
+        sueldos: sueldosMes,
+        impuestos: impuestosMes,
       };
     });
 }

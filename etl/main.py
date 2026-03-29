@@ -26,6 +26,7 @@ from loaders import (
     impuestos_municipales,
     eecc,
     servicios,
+    segmentacion,
 )
 
 # Orden de ejecución respetando dependencias FK
@@ -43,6 +44,7 @@ LOADERS = [
     ("impuestos_municipales", impuestos_municipales),
     ("eecc", eecc),
     ("servicios", servicios),
+    ("segmentacion", segmentacion),
 ]
 
 
