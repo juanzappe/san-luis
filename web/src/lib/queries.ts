@@ -11,8 +11,11 @@ import { supabase } from "./supabase";
 export interface MonthRow {
   periodo: string; // YYYY-MM
   ingresos: number;
-  egresos: number;
-  sueldos: number;
+  operativos: number; // sueldos + proveedores
+  comerciales: number; // impuestos (no ganancias)
+  financieros: number; // comisiones bancarias
+  ganancias: number; // impuesto a las ganancias
+  egresosTotal: number;
   resultado: number;
   margen: number; // %
 }
@@ -122,58 +125,160 @@ async function fetchIngresosMensuales(): Promise<Map<string, number>> {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch egresos mensuales (factura_recibida.imp_neto_gravado_total por mes)
+// Egresos segmentados (4 categorías)
 // ---------------------------------------------------------------------------
-async function fetchEgresosMensuales(): Promise<Map<string, number>> {
-  const data = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
-    "factura_recibida",
-    "fecha_emision, imp_neto_gravado_total",
-  );
-  if (data.length === 0) return new Map();
-  return sumBy(
-    data,
-    (r) => (r.fecha_emision as string).slice(0, 7),
-    (r) => Number(r.imp_neto_gravado_total) || 0,
-  );
+
+interface EgresosMonth {
+  operativos: number; // sueldos + proveedores
+  comerciales: number; // impuestos (no ganancias)
+  financieros: number; // comisiones bancarias
+  ganancias: number; // imp. a las ganancias
+  sueldos: number; // solo sueldos (para KPI separado)
 }
 
-// ---------------------------------------------------------------------------
-// Fetch sueldos mensuales (liquidacion_sueldo.sueldo_neto por periodo)
-// ---------------------------------------------------------------------------
-async function fetchSueldosMensuales(): Promise<Map<string, number>> {
-  const data = await fetchAllRows<{ periodo: string; sueldo_neto: number }>(
+async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
+  // 1) Sueldos (costo_total_empresa si existe, fallback a sueldo_neto)
+  const sueldosData = await fetchAllRows<{ periodo: string; costo_total_empresa: number | null; sueldo_neto: number }>(
     "liquidacion_sueldo",
-    "periodo, sueldo_neto",
+    "periodo, costo_total_empresa, sueldo_neto",
   );
-  if (data.length === 0) return new Map();
-  // periodo ya es YYYY-MM (o podría ser "2025-03" directamente)
-  return sumBy(
-    data,
+
+  const sueldosMap = sumBy(
+    sueldosData,
+    (r) => (r.periodo as string).slice(0, 7),
+    (r) => Number(r.costo_total_empresa ?? r.sueldo_neto) || 0,
+  );
+
+  // Sueldos netos (for KPI display)
+  const sueldosNetoMap = sumBy(
+    sueldosData,
     (r) => (r.periodo as string).slice(0, 7),
     (r) => Number(r.sueldo_neto) || 0,
   );
+
+  // 2) Proveedores (factura_recibida neto)
+  const provData = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+    "factura_recibida",
+    "fecha_emision, imp_neto_gravado_total",
+  );
+
+  const provMap = sumBy(
+    provData,
+    (r) => (r.fecha_emision as string).slice(0, 7),
+    (r) => Number(r.imp_neto_gravado_total) || 0,
+  );
+
+  // 3) Impuestos — pago_impuesto JOIN impuesto_obligacion para tipo
+  const { data: pagos, error: e3 } = await supabase
+    .from("pago_impuesto")
+    .select("fecha_pago, monto, impuesto_obligacion:impuesto_obligacion_id(tipo)");
+  if (e3) throw e3;
+
+  const impComercialMap = new Map<string, number>();
+  const gananciasMap = new Map<string, number>();
+
+  if (pagos) {
+    for (const pago of pagos) {
+      const p = (pago.fecha_pago as string).slice(0, 7);
+      const monto = Number(pago.monto) || 0;
+      const oblRaw = pago.impuesto_obligacion as unknown;
+      const obligacion = Array.isArray(oblRaw)
+        ? (oblRaw[0] as { tipo: string } | undefined)
+        : (oblRaw as { tipo: string } | null);
+      const tipo = obligacion?.tipo ?? "";
+      if (tipo === "ganancias") {
+        gananciasMap.set(p, (gananciasMap.get(p) ?? 0) + monto);
+      } else {
+        impComercialMap.set(p, (impComercialMap.get(p) ?? 0) + monto);
+      }
+    }
+  }
+
+  // 4) Costos financieros (comisiones, intereses, etc. en movimientos bancarios)
+  const { data: movBanco, error: e4 } = await supabase
+    .from("movimiento_bancario")
+    .select("fecha, concepto, debito");
+  if (e4) throw e4;
+
+  const financierosMap = new Map<string, number>();
+  if (movBanco) {
+    for (const m of movBanco) {
+      const concepto = (m.concepto ?? "").toLowerCase();
+      const debito = Number(m.debito) || 0;
+      if (debito <= 0) continue;
+      if (
+        concepto.includes("comision") ||
+        concepto.includes("interes") ||
+        concepto.includes("impuesto s/deb") ||
+        concepto.includes("impuesto s/cred") ||
+        concepto.includes("mantenimiento") ||
+        concepto.includes("seguro") ||
+        concepto.includes("sellado")
+      ) {
+        const p = (m.fecha as string).slice(0, 7);
+        financierosMap.set(p, (financierosMap.get(p) ?? 0) + debito);
+      }
+    }
+  }
+
+  // Merge all periodos
+  const allP = new Set<string>();
+  for (const mp of [sueldosMap, provMap, impComercialMap, gananciasMap, financierosMap]) {
+    mp.forEach((_, k) => allP.add(k));
+  }
+
+  const result = new Map<string, EgresosMonth>();
+  for (const p of Array.from(allP)) {
+    const sueldosMes = sueldosMap.get(p) ?? 0;
+    const provMes = provMap.get(p) ?? 0;
+    result.set(p, {
+      operativos: sueldosMes + provMes,
+      comerciales: impComercialMap.get(p) ?? 0,
+      financieros: financierosMap.get(p) ?? 0,
+      ganancias: gananciasMap.get(p) ?? 0,
+      sueldos: sueldosNetoMap.get(p) ?? 0,
+    });
+  }
+
+  return result;
 }
 
 // ---------------------------------------------------------------------------
-// Fetch ventas por fuente (venta.monto_total agrupado por mes y fuente)
+// Fetch ventas por fuente + servicios de factura_emitida PV=6
 // ---------------------------------------------------------------------------
 async function fetchVentasPorFuente(): Promise<IncomeBySource[]> {
-  const data = await fetchAllRows<{ fecha: string; monto_total: number; fuente: string }>(
-    "venta",
-    "fecha, monto_total, fuente",
-  );
-  if (data.length === 0) return [];
+  const [ventasData, facturasServ] = await Promise.all([
+    fetchAllRows<{ fecha: string; monto_total: number; fuente: string }>(
+      "venta",
+      "fecha, monto_total, fuente",
+    ),
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+      "factura_emitida",
+      "fecha_emision, imp_neto_gravado_total",
+      { column: "punto_venta", value: 6 },
+    ),
+  ]);
 
   const map = new Map<string, { mostrador: number; servicios: number }>();
-  for (const r of data) {
+
+  // POS ventas → mostrador
+  for (const r of ventasData) {
     const p = (r.fecha as string).slice(0, 7);
     const entry = map.get(p) ?? { mostrador: 0, servicios: 0 };
     const monto = Number(r.monto_total) || 0;
     if (r.fuente === "pos") {
       entry.mostrador += monto;
     } else {
-      entry.servicios += monto;
+      entry.mostrador += monto; // non-pos ventas still go to mostrador
     }
+    map.set(p, entry);
+  }
+
+  // Facturas PV=6 → servicios
+  for (const r of facturasServ) {
+    const p = (r.fecha_emision as string).slice(0, 7);
+    const entry = map.get(p) ?? { mostrador: 0, servicios: 0 };
+    entry.servicios += Number(r.imp_neto_gravado_total) || 0;
     map.set(p, entry);
   }
 
@@ -193,18 +298,16 @@ export interface DashboardData {
 }
 
 export async function fetchDashboardData(): Promise<DashboardData> {
-  const [ingresos, egresos, sueldos, incomeBySource] = await Promise.all([
+  const [ingresos, egresosMap, incomeBySource] = await Promise.all([
     fetchIngresosMensuales(),
-    fetchEgresosMensuales(),
-    fetchSueldosMensuales(),
+    fetchEgresosSegmentados(),
     fetchVentasPorFuente(),
   ]);
 
   // Juntar todos los períodos
   const allPeriodos = new Set<string>();
-  for (const m of [ingresos, egresos, sueldos]) {
-    m.forEach((_, k) => allPeriodos.add(k));
-  }
+  ingresos.forEach((_, k) => allPeriodos.add(k));
+  egresosMap.forEach((_, k) => allPeriodos.add(k));
 
   if (allPeriodos.size === 0) {
     return { kpis: null, monthly: [], incomeBySource: [], hasData: false };
@@ -215,25 +318,39 @@ export async function fetchDashboardData(): Promise<DashboardData> {
   // Construir tabla mensual
   const monthly: MonthRow[] = sorted.map((p) => {
     const ing = ingresos.get(p) ?? 0;
-    const egr = egresos.get(p) ?? 0;
-    const sue = sueldos.get(p) ?? 0;
-    const res = ing - egr - sue;
+    const eg = egresosMap.get(p) ?? { operativos: 0, comerciales: 0, financieros: 0, ganancias: 0, sueldos: 0 };
+    const egTotal = eg.operativos + eg.comerciales + eg.financieros + eg.ganancias;
+    const res = ing - egTotal;
     const margen = ing > 0 ? (res / ing) * 100 : 0;
-    return { periodo: p, ingresos: ing, egresos: egr, sueldos: sue, resultado: res, margen };
+    return {
+      periodo: p,
+      ingresos: ing,
+      operativos: eg.operativos,
+      comerciales: eg.comerciales,
+      financieros: eg.financieros,
+      ganancias: eg.ganancias,
+      egresosTotal: egTotal,
+      resultado: res,
+      margen,
+    };
   });
 
   // KPIs del último mes
   const last = monthly[monthly.length - 1];
   const prev = monthly.length >= 2 ? monthly[monthly.length - 2] : null;
+  const lastEg = egresosMap.get(last.periodo);
+  const prevRow = prev;
 
   const kpis: KpiData = {
     ingresos: last.ingresos,
-    egresos: last.egresos,
-    sueldos: last.sueldos,
+    egresos: last.egresosTotal,
+    sueldos: lastEg?.sueldos ?? 0,
     resultado: last.resultado,
     deltaIngresos: prev ? pctDelta(last.ingresos, prev.ingresos) : null,
-    deltaEgresos: prev ? pctDelta(last.egresos, prev.egresos) : null,
-    deltaSueldos: prev ? pctDelta(last.sueldos, prev.sueldos) : null,
+    deltaEgresos: prev ? pctDelta(last.egresosTotal, prevRow!.egresosTotal) : null,
+    deltaSueldos: prev && lastEg
+      ? pctDelta(lastEg.sueldos, egresosMap.get(prev.periodo)?.sueldos ?? 0)
+      : null,
     deltaResultado: prev ? pctDelta(last.resultado, prev.resultado) : null,
     periodo: periodoLabel(last.periodo),
   };
@@ -257,4 +374,4 @@ export function formatPct(n: number): string {
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
 }
 
-export { periodoLabel };
+export { periodoLabel, pctDelta };
