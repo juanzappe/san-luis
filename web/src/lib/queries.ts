@@ -64,35 +64,76 @@ function sumBy<T>(rows: T[], keyFn: (r: T) => string, valFn: (r: T) => number) {
   return map;
 }
 
-// ---------------------------------------------------------------------------
-// Fetch ingresos mensuales (factura_emitida.imp_total agrupado por mes)
-// ---------------------------------------------------------------------------
-async function fetchIngresosMensuales(): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from("factura_emitida")
-    .select("fecha_emision, imp_total");
-  if (error) throw error;
-  if (!data || data.length === 0) return new Map();
-  return sumBy(
-    data,
-    (r) => (r.fecha_emision as string).slice(0, 7),
-    (r) => Number(r.imp_total) || 0,
-  );
+/**
+ * Fetch paginado para superar el límite de 1000 filas de Supabase REST.
+ * Soporta un filtro eq opcional.
+ */
+async function fetchAllRows<T>(
+  table: string,
+  columns: string,
+  filter?: { column: string; value: string | number },
+): Promise<T[]> {
+  const PAGE = 1000;
+  const all: T[] = [];
+  let from = 0;
+  while (true) {
+    let query = supabase.from(table).select(columns).range(from, from + PAGE - 1);
+    if (filter) {
+      query = query.eq(filter.column, filter.value);
+    }
+    const { data, error } = await query;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    all.push(...(data as T[]));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+  return all;
 }
 
 // ---------------------------------------------------------------------------
-// Fetch egresos mensuales (factura_recibida.imp_total agrupado por mes)
+// Fetch ingresos mensuales:
+//   factura_emitida PV=6 (Servicios) + venta (Mostrador/Restobar)
+//   Usa imp_neto_gravado_total para facturas, monto_total para ventas.
+// ---------------------------------------------------------------------------
+async function fetchIngresosMensuales(): Promise<Map<string, number>> {
+  const [facturas, ventas] = await Promise.all([
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+      "factura_emitida",
+      "fecha_emision, imp_neto_gravado_total",
+      { column: "punto_venta", value: 6 },
+    ),
+    fetchAllRows<{ fecha: string; monto_total: number }>(
+      "venta",
+      "fecha, monto_total",
+    ),
+  ]);
+
+  const map = new Map<string, number>();
+  for (const r of facturas) {
+    const p = (r.fecha_emision as string).slice(0, 7);
+    map.set(p, (map.get(p) ?? 0) + (Number(r.imp_neto_gravado_total) || 0));
+  }
+  for (const r of ventas) {
+    const p = (r.fecha as string).slice(0, 7);
+    map.set(p, (map.get(p) ?? 0) + (Number(r.monto_total) || 0));
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
+// Fetch egresos mensuales (factura_recibida.imp_neto_gravado_total por mes)
 // ---------------------------------------------------------------------------
 async function fetchEgresosMensuales(): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from("factura_recibida")
-    .select("fecha_emision, imp_total");
-  if (error) throw error;
-  if (!data || data.length === 0) return new Map();
+  const data = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+    "factura_recibida",
+    "fecha_emision, imp_neto_gravado_total",
+  );
+  if (data.length === 0) return new Map();
   return sumBy(
     data,
     (r) => (r.fecha_emision as string).slice(0, 7),
-    (r) => Number(r.imp_total) || 0,
+    (r) => Number(r.imp_neto_gravado_total) || 0,
   );
 }
 
@@ -100,11 +141,11 @@ async function fetchEgresosMensuales(): Promise<Map<string, number>> {
 // Fetch sueldos mensuales (liquidacion_sueldo.sueldo_neto por periodo)
 // ---------------------------------------------------------------------------
 async function fetchSueldosMensuales(): Promise<Map<string, number>> {
-  const { data, error } = await supabase
-    .from("liquidacion_sueldo")
-    .select("periodo, sueldo_neto");
-  if (error) throw error;
-  if (!data || data.length === 0) return new Map();
+  const data = await fetchAllRows<{ periodo: string; sueldo_neto: number }>(
+    "liquidacion_sueldo",
+    "periodo, sueldo_neto",
+  );
+  if (data.length === 0) return new Map();
   // periodo ya es YYYY-MM (o podría ser "2025-03" directamente)
   return sumBy(
     data,
@@ -117,11 +158,11 @@ async function fetchSueldosMensuales(): Promise<Map<string, number>> {
 // Fetch ventas por fuente (venta.monto_total agrupado por mes y fuente)
 // ---------------------------------------------------------------------------
 async function fetchVentasPorFuente(): Promise<IncomeBySource[]> {
-  const { data, error } = await supabase
-    .from("venta")
-    .select("fecha, monto_total, fuente");
-  if (error) throw error;
-  if (!data || data.length === 0) return [];
+  const data = await fetchAllRows<{ fecha: string; monto_total: number; fuente: string }>(
+    "venta",
+    "fecha, monto_total, fuente",
+  );
+  if (data.length === 0) return [];
 
   const map = new Map<string, { mostrador: number; servicios: number }>();
   for (const r of data) {
