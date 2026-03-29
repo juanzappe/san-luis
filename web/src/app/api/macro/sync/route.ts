@@ -8,17 +8,31 @@ const supabase = createClient(
 );
 
 // ---------------------------------------------------------------------------
-// Helper: fetch with timeout
+// Helper: fetch with timeout + optional headers
 // ---------------------------------------------------------------------------
-async function fetchWithTimeout(url: string, ms = 10000): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  opts?: { headers?: Record<string, string>; ms?: number },
+): Promise<Response> {
+  const ms = opts?.ms ?? 10000;
   const controller = new AbortController();
   const id = setTimeout(() => controller.abort(), ms);
   try {
-    const res = await fetch(url, { signal: controller.signal, cache: "no-store" });
+    const res = await fetch(url, {
+      signal: controller.signal,
+      cache: "no-store",
+      headers: opts?.headers,
+    });
     return res;
   } finally {
     clearTimeout(id);
   }
+}
+
+function bcraHeaders(): Record<string, string> {
+  const token = process.env.ESTADISTICAS_BCRA_TOKEN;
+  if (!token) return {};
+  return { Authorization: `Bearer ${token}` };
 }
 
 // ---------------------------------------------------------------------------
@@ -26,7 +40,7 @@ async function fetchWithTimeout(url: string, ms = 10000): Promise<Response> {
 // ---------------------------------------------------------------------------
 async function syncIpc(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/inflacion_mensual_oficial");
+    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/inflacion_mensual_oficial", { headers: bcraHeaders() });
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
     const data: { d: string; v: number }[] = await res.json();
 
@@ -125,7 +139,7 @@ async function syncDolarBlue(): Promise<{ ok: boolean; count: number; error?: st
 // ---------------------------------------------------------------------------
 async function syncTasa(): Promise<{ ok: boolean; count: number; error?: string }> {
   try {
-    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/tasa_depositos_30_dias");
+    const res = await fetchWithTimeout("https://api.estadisticasbcra.com/tasa_depositos_30_dias", { headers: bcraHeaders() });
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
     const data: { d: string; v: number }[] = await res.json();
 
