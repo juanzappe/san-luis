@@ -28,6 +28,7 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -252,7 +253,18 @@ export default function IndicadoresMacroPage() {
             IPC, tipo de cambio y tasa de interés — Argentina
           </p>
         </div>
-        <SyncButton onSynced={loadData} />
+        <div className="flex items-center gap-2">
+          <a
+            href="https://rendimientos.co/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-gray-50 hover:text-foreground"
+          >
+            Ver en Rendimientos AR
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+          <SyncButton onSynced={loadData} />
+        </div>
       </div>
 
       {/* KPI Cards */}

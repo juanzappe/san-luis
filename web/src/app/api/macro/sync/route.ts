@@ -49,22 +49,26 @@ async function syncIpc(): Promise<{ ok: boolean; count: number; error?: string }
       "https://api.argentinadatos.com/v1/finanzas/indices/inflacion",
     );
     if (!res.ok) return { ok: false, count: 0, error: `HTTP ${res.status}` };
-    const data: { fecha: string; valor: number }[] = await res.json();
+    const allData: { fecha: string; valor: number }[] = await res.json();
 
-    // Delete all existing IPC rows first (ETL uses YYYY-MM-01 dates,
-    // API uses end-of-month — clean slate avoids duplicates per month)
+    // Only import from 2020 onwards — older data (1943+) causes overflows
+    // in the cumulative index column and is not useful for the business.
+    const data = allData.filter((e) => e.fecha >= "2020-01-01");
+
+    // Delete existing IPC rows and rebuild from API data
     await supabase.from("indicador_macro").delete().eq("tipo", "ipc");
 
-    // Build cumulative IPC index (base 100) + store monthly variation
-    let ipcIndex = 100;
+    // Build cumulative IPC index (INDEC base dic-2016 = 100).
+    // We use a base that produces values matching the INDEC IPC series.
+    // IPC dic-2019 ≈ 283.44 (INDEC), so we start compounding from there.
+    let ipcIndex = 283.44;
     const rows = data.map((entry) => {
       ipcIndex = ipcIndex * (1 + entry.valor / 100);
-      // Normalize date to first of month (YYYY-MM-01) to match ETL convention
       const periodo = entry.fecha.slice(0, 7);
       return {
         tipo: "ipc",
         fecha: `${periodo}-01`,
-        valor: ipcIndex,
+        valor: Math.round(ipcIndex * 10) / 10, // 1 decimal
         variacion_mensual: entry.valor,
         fuente_api: "argentinadatos.com",
       };
