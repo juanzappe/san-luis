@@ -76,7 +76,7 @@ def run(conn, logger) -> int:
         periodo = _extract_periodo(xlsx_path.name)
 
         try:
-            df = pd.read_excel(xlsx_path, header=1, dtype=str)  # header en row 2 (index 1)
+            df = pd.read_excel(xlsx_path, header=1)  # header en row 2 (index 1)
         except Exception as e:
             logger.warning(f"  No se pudo leer {xlsx_path.name}: {e}")
             continue
