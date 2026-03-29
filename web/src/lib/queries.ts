@@ -40,6 +40,7 @@ export interface KpiData {
 export interface IncomeBySource {
   periodo: string;
   mostrador: number;
+  restobar: number;
   servicios: number;
 }
 
@@ -258,29 +259,46 @@ async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
 // Fetch ventas por fuente + servicios de factura_emitida PV=6
 // ---------------------------------------------------------------------------
 async function fetchVentasPorFuente(): Promise<IncomeBySource[]> {
-  const [ventasData, facturasServ] = await Promise.all([
-    fetchAllRows<{ fecha: string; monto_total: number; fuente: string }>(
-      "venta",
-      "fecha, monto_total, fuente",
-    ),
-    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
-      "factura_emitida",
-      "fecha_emision, imp_neto_gravado_total",
-      { column: "punto_venta", value: 6 },
-    ),
-  ]);
+  // 1) venta_detalle joined with venta for fecha — split mostrador vs restobar
+  //    Paginated to handle 14k+ rows
+  const PAGE = 1000;
+  const detalle: Array<{ neto: number; producto: string; venta: unknown }> = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("venta_detalle")
+      .select("neto, producto, venta:venta_id(fecha)")
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+    detalle.push(...(data as Array<{ neto: number; producto: string; venta: unknown }>));
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
 
-  const map = new Map<string, { mostrador: number; servicios: number }>();
+  // 2) Servicios from factura_emitida PV=6
+  const facturasServ = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
+    "factura_emitida",
+    "fecha_emision, imp_neto_gravado_total",
+    { column: "punto_venta", value: 6 },
+  );
 
-  // POS ventas → mostrador
-  for (const r of ventasData) {
-    const p = (r.fecha as string).slice(0, 7);
-    const entry = map.get(p) ?? { mostrador: 0, servicios: 0 };
-    const monto = Number(r.monto_total) || 0;
-    if (r.fuente === "pos") {
-      entry.mostrador += monto;
+  const map = new Map<string, { mostrador: number; restobar: number; servicios: number }>();
+
+  // POS detalle → mostrador or restobar
+  for (const d of detalle) {
+    const ventaRaw = d.venta as { fecha: string } | { fecha: string }[] | null;
+    const venta = Array.isArray(ventaRaw) ? ventaRaw[0] : ventaRaw;
+    if (!venta?.fecha) continue;
+
+    const p = venta.fecha.slice(0, 7);
+    const entry = map.get(p) ?? { mostrador: 0, restobar: 0, servicios: 0 };
+    const monto = Number(d.neto) || 0;
+    const prod = (d.producto ?? "").toLowerCase();
+    if (prod === "restobar") {
+      entry.restobar += monto;
     } else {
-      entry.mostrador += monto; // non-pos ventas still go to mostrador
+      entry.mostrador += monto;
     }
     map.set(p, entry);
   }
@@ -288,7 +306,7 @@ async function fetchVentasPorFuente(): Promise<IncomeBySource[]> {
   // Facturas PV=6 → servicios
   for (const r of facturasServ) {
     const p = (r.fecha_emision as string).slice(0, 7);
-    const entry = map.get(p) ?? { mostrador: 0, servicios: 0 };
+    const entry = map.get(p) ?? { mostrador: 0, restobar: 0, servicios: 0 };
     entry.servicios += Number(r.imp_neto_gravado_total) || 0;
     map.set(p, entry);
   }

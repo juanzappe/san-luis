@@ -56,6 +56,7 @@ const COLORS = {
   ingresos: "#22c55e",
   resultado: "#3b82f6",
   mostrador: "#8b5cf6",
+  restobar: "#f97316",
   servicios: "#06b6d4",
   margen: "#ec4899",
   egresosOp: "#f59e0b",
@@ -439,6 +440,13 @@ export default function Dashboard() {
                     radius={[0, 0, 0, 0]}
                   />
                   <Bar
+                    dataKey="restobar"
+                    name="Restobar"
+                    stackId="a"
+                    fill={COLORS.restobar}
+                    radius={[0, 0, 0, 0]}
+                  />
+                  <Bar
                     dataKey="servicios"
                     name="Servicios"
                     stackId="a"
@@ -451,6 +459,32 @@ export default function Dashboard() {
               <p className="py-12 text-center text-sm text-muted-foreground">
                 Sin datos de ventas por origen
               </p>
+            )}
+            {incomeChartData.length > 0 && (
+              <Table className="mt-4">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Período</TableHead>
+                    <TableHead className="text-right">Mostrador</TableHead>
+                    <TableHead className="text-right">Restobar</TableHead>
+                    <TableHead className="text-right">Servicios</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {[...incomeChartData].reverse().map((r) => (
+                    <TableRow key={r.periodo}>
+                      <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
+                      <TableCell className="text-right">{formatARS(r.mostrador)}</TableCell>
+                      <TableCell className="text-right">{formatARS(r.restobar)}</TableCell>
+                      <TableCell className="text-right">{formatARS(r.servicios)}</TableCell>
+                      <TableCell className="text-right font-medium">
+                        {formatARS(r.mostrador + r.restobar + r.servicios)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
             )}
           </CardContent>
         </Card>
