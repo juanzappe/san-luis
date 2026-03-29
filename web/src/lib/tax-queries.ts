@@ -3,7 +3,7 @@
  * Resumen Fiscal, Posición IVA, Historial de Pagos, Calendario.
  */
 import { supabase } from "./supabase";
-import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel } from "./economic-queries";
+import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, type ResultadoRow } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
 
@@ -20,6 +20,7 @@ const TIPO_LABELS: Record<string, string> = {
   iva: "IVA",
   ganancias: "Ganancias",
   sicore: "Ret./SICORE",
+  cheque: "Imp. al Cheque",
   iibb: "Ingresos Brutos",
   tasa_seguridad_higiene: "Seg. e Higiene",
   tasa_publicidad_propaganda: "Publicidad",
@@ -43,7 +44,7 @@ export function fuenteLabel(fuente: string): string {
 
 // Jurisdiction from tipo
 function jurisdiccionFromTipo(tipo: string): string {
-  if (tipo === "iva" || tipo === "ganancias" || tipo === "debitos_creditos") return "arca";
+  if (tipo === "iva" || tipo === "ganancias" || tipo === "debitos_creditos" || tipo === "cheque" || tipo === "sicore") return "arca";
   if (tipo === "iibb") return "arba";
   return "municipio";
 }
@@ -54,9 +55,10 @@ function jurisdiccionFromTipo(tipo: string): string {
 
 export interface ResumenMensualRow {
   periodo: string;
-  iva: number;
-  ganancias: number;
+  ivaNeto: number;
+  gananciasEst: number;
   sicore: number;
+  cheque: number;
   iibb: number;
   segHigiene: number;
   publicidad: number;
@@ -80,15 +82,20 @@ export interface ResumenFiscalData {
 }
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
-  const [obligRes, pagosRes, factRes] = await Promise.all([
+  const [obligRes, pagosRes, factEmitRes, factRecibRes, movBancRes, resultadoData] = await Promise.all([
     supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
-    supabase.from("pago_impuesto").select("id, impuesto_obligacion_id, fecha_pago, monto, observaciones, formulario"),
-    supabase.from("factura_emitida").select("fecha_emision, imp_total"),
+    supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones, formulario"),
+    supabase.from("factura_emitida").select("fecha_emision, total_iva, imp_total"),
+    supabase.from("factura_recibida").select("fecha_emision, total_iva"),
+    supabase.from("movimiento_bancario").select("fecha, concepto, debito, importe").ilike("concepto", "%IMPUESTO LEY 25413%"),
+    fetchResultado() as Promise<ResultadoRow[]>,
   ]);
 
   if (obligRes.error) throw obligRes.error;
   if (pagosRes.error) throw pagosRes.error;
-  if (factRes.error) throw factRes.error;
+  if (factEmitRes.error) throw factEmitRes.error;
+  if (factRecibRes.error) throw factRecibRes.error;
+  if (movBancRes.error) throw movBancRes.error;
 
   // ---------------------------------------------------------------------------
   // Aggregate: tipo → month → sum
@@ -102,42 +109,65 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addToMap(jurisdiccionTotal, jurisdiccion, monto);
   };
 
-  // --- A) Impuestos nacionales from pago_impuesto (formulario 800) ---
-  // Classify by observaciones, parse periodo fiscal from observaciones
-  // Format: "Impuesto: 30 - IVA | Período: YYYYMM00 | ..."
+  // --- A) IVA — Posición neta from facturas (devengado) ---
+  const ivaDebitoMap = new Map<string, number>();
+  const ivaCreditoMap = new Map<string, number>();
+  for (const r of factEmitRes.data ?? []) {
+    const p = (r.fecha_emision as string).slice(0, 7);
+    addToMap(ivaDebitoMap, p, Number(r.total_iva) || 0);
+  }
+  for (const r of factRecibRes.data ?? []) {
+    const p = (r.fecha_emision as string).slice(0, 7);
+    addToMap(ivaCreditoMap, p, Number(r.total_iva) || 0);
+  }
+  // Merge IVA neto into tipoMonthMap
+  const allIvaPeriods = new Set<string>();
+  ivaDebitoMap.forEach((_, k) => allIvaPeriods.add(k));
+  ivaCreditoMap.forEach((_, k) => allIvaPeriods.add(k));
+  for (const p of Array.from(allIvaPeriods)) {
+    const neto = (ivaDebitoMap.get(p) ?? 0) - (ivaCreditoMap.get(p) ?? 0);
+    if (neto > 0) addTipo("ivaNeto", p, neto, "arca");
+  }
+
+  // --- B) Ganancias — Estimated 35% of positive resultado (devengado) ---
+  const resultados = resultadoData as ResultadoRow[];
+  const resultadoMap = new Map<string, ResultadoRow>(resultados.map((r) => [r.periodo, r]));
+  for (const [p, r] of Array.from(resultadoMap.entries())) {
+    if (r.resultadoAntesGanancias > 0) {
+      addTipo("gananciasEst", p, r.resultadoAntesGanancias * 0.35, "arca");
+    }
+  }
+
+  // --- C) Impuesto al Cheque — from movimiento_bancario (devengado) ---
+  for (const row of movBancRes.data ?? []) {
+    const month = (row.fecha as string).slice(0, 7);
+    const amount = Math.abs(Number(row.debito) || Number(row.importe) || 0);
+    if (amount > 0) addTipo("cheque", month, amount, "arca");
+  }
+
+  // --- D) SICORE — from pago_impuesto with periodo parsing ---
   for (const p of pagosRes.data ?? []) {
     const obs = (p.observaciones as string) ?? "";
     const monto = Number(p.monto) || 0;
+    if (!obs.includes("217 - SICORE")) continue;
 
-    // Classify by impuesto code in observaciones
-    let tipo: string | null = null;
-    if (obs.includes("30 - IVA")) tipo = "iva";
-    else if (obs.includes("10 - GANANCIAS")) tipo = "ganancias";
-    else if (obs.includes("217 - SICORE")) tipo = "sicore";
-
-    // Skip anything else (cargas sociales, unknown)
-    if (!tipo) continue;
-
-    // Parse periodo fiscal from observaciones
     let month: string;
     const periodoMatch = obs.match(/Per[ií]odo:\s*(\d{4})(\d{2})/);
     if (periodoMatch) {
       const [, yyyy, mm] = periodoMatch;
       if (mm === "00") {
-        // Annual tax (Ganancias) — no specific month, use fecha_pago
         month = (p.fecha_pago as string).slice(0, 7);
       } else {
         month = `${yyyy}-${mm}`;
       }
     } else {
-      // Fallback to fecha_pago if no periodo in observaciones
       month = (p.fecha_pago as string).slice(0, 7);
     }
 
-    addTipo(tipo, month, monto, "arca");
+    addTipo("sicore", month, monto, "arca");
   }
 
-  // --- B) IIBB from impuesto_obligacion ---
+  // --- E) IIBB from impuesto_obligacion ---
   for (const o of obligRes.data ?? []) {
     if (o.tipo !== "iibb") continue;
     const month = (o.periodo as string) ?? "";
@@ -150,8 +180,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     if (amount > 0) addTipo("iibb", month, amount, "arba");
   }
 
-  // --- C) Municipal taxes from impuesto_obligacion ---
-  // In 2024-2025: monthly periods. In 2026+: bimestral → split across 2 months.
+  // --- F) Municipal taxes from impuesto_obligacion ---
   const municipalMap: Record<string, string> = {
     tasa_seguridad_higiene: "segHigiene",
     tasa_publicidad_propaganda: "publicidad",
@@ -169,10 +198,8 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const monthNum = parseInt(periodo.slice(5, 7));
 
     if (year >= 2026 && monthNum % 2 === 1) {
-      // Bimestral: odd month covers current + next month → split in half
       const half = amount / 2;
       addTipo(mapped, periodo, half, "municipio");
-      // Next month
       const nextMonth = monthNum < 12 ? monthNum + 1 : 1;
       const nextYear = monthNum < 12 ? year : year + 1;
       const nextPeriodo = `${nextYear}-${String(nextMonth).padStart(2, "0")}`;
@@ -182,9 +209,9 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     }
   }
 
-  // --- D) Ingresos: factura_emitida imp_total (con IVA) ---
+  // --- Ingresos: factura_emitida imp_total (con IVA) ---
   const ingresosMap = new Map<string, number>();
-  for (const r of factRes.data ?? []) {
+  for (const r of factEmitRes.data ?? []) {
     const p = (r.fecha_emision as string).slice(0, 7);
     addToMap(ingresosMap, p, Number(r.imp_total) || 0);
   }
@@ -198,17 +225,18 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
 
   const mensual: ResumenMensualRow[] = Array.from(allP).sort().map((p) => {
     const get = (tipo: string) => tipoMonthMap.get(tipo)?.get(p) ?? 0;
-    const iva = get("iva");
-    const ganancias = get("ganancias");
+    const ivaNeto = get("ivaNeto");
+    const gananciasEst = get("gananciasEst");
     const sicore = get("sicore");
+    const cheque = get("cheque");
     const iibb = get("iibb");
     const segHigiene = get("segHigiene");
     const publicidad = get("publicidad");
     const espacioPublico = get("espacioPublico");
-    const total = iva + ganancias + sicore + iibb + segHigiene + publicidad + espacioPublico;
+    const total = ivaNeto + gananciasEst + sicore + cheque + iibb + segHigiene + publicidad + espacioPublico;
     const ingresos = ingresosMap.get(p) ?? 0;
     const presionFiscal = ingresos > 0 ? (total / ingresos) * 100 : null;
-    return { periodo: p, iva, ganancias, sicore, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
+    return { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
   });
 
   // ---------------------------------------------------------------------------
