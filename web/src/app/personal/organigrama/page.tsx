@@ -22,8 +22,7 @@ const ORG_TREE: OrgNode = {
   bgColor: "bg-white",
   children: [
     {
-      label: "ANDREA Y FABIAN",
-      nickname: "Dirección",
+      label: "DIRECCIÓN — Fabián y Andrea",
       color: "border-gray-400",
       bgColor: "bg-white",
       children: [
@@ -123,13 +122,13 @@ const ORG_TREE: OrgNode = {
 function NodeBox({ node }: { node: OrgNode }) {
   return (
     <div
-      className={`rounded-md border-2 px-3 py-1.5 text-sm leading-tight ${node.color} ${node.bgColor} whitespace-nowrap`}
+      className={`rounded-md border-2 px-2 py-1 text-xs leading-tight ${node.color} ${node.bgColor} whitespace-nowrap`}
     >
       <span className="font-medium">
         {node.nickname && !node.category ? node.nickname : node.label}
       </span>
       {node.nickname && !node.category && (
-        <span className="ml-1 text-xs text-muted-foreground">
+        <span className="ml-1 text-[10px] text-muted-foreground">
           ({node.label.split(" ")[0]})
         </span>
       )}
@@ -174,7 +173,7 @@ function DesktopTree() {
 
   return (
     <div className="hidden lg:block overflow-x-auto">
-      <div className="flex flex-col items-center gap-0 min-w-[1200px] py-8 px-4">
+      <div className="flex flex-col items-center gap-0 min-w-[900px] py-8 px-4">
         {/* Root: CONFITERÍA SAN LUIS */}
         <NodeBox node={root} />
         <div className="w-px h-4 bg-gray-400" />
@@ -202,7 +201,7 @@ function DesktopTree() {
         </div>
 
         {/* Two main branches side by side */}
-        <div className="flex justify-center gap-16 mt-0 w-full">
+        <div className="flex justify-center gap-8 mt-0 w-full">
           {/* PRODUCCIÓN branch */}
           <div className="flex flex-col items-center gap-0">
             <NodeBox node={produccion} />
@@ -210,9 +209,9 @@ function DesktopTree() {
 
             {/* Horizontal bar connecting all sectors */}
             <div className="relative">
-              <div className="border-t-2 border-gray-300" style={{ width: `${(produccion.children!.length - 1) * 155 + 2}px` }} />
+              <div className="border-t-2 border-gray-300" style={{ width: `${(produccion.children!.length - 1) * 120 + 2}px` }} />
               {/* Vertical taps from the bar */}
-              <div className="flex justify-between" style={{ width: `${(produccion.children!.length - 1) * 155 + 2}px` }}>
+              <div className="flex justify-between" style={{ width: `${(produccion.children!.length - 1) * 120 + 2}px` }}>
                 {produccion.children!.map((_, i) => (
                   <div key={i} className="w-px h-4 bg-gray-300" />
                 ))}
@@ -220,7 +219,7 @@ function DesktopTree() {
             </div>
 
             {/* Sector columns */}
-            <div className="flex gap-4 items-start">
+            <div className="flex gap-2 items-start">
               {produccion.children!.map((sector, i) => (
                 <SectorColumn key={i} node={sector} />
               ))}
