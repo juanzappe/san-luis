@@ -46,7 +46,7 @@ EJERCICIOS = [
 
 def _parse_esp(path: str, logger) -> list[dict]:
     """Parsea ESP $ (Estado de Situación Patrimonial / Balance)."""
-    df = pd.read_excel(path, sheet_name="ESP $", header=None, data_only=True)
+    df = pd.read_excel(path, sheet_name="ESP $", header=None)
     logger.info(f"  ESP $: {len(df)} filas")
 
     records = []
@@ -100,7 +100,7 @@ def _parse_esp(path: str, logger) -> list[dict]:
 
 def _parse_er(path: str, logger) -> list[dict]:
     """Parsea ER $ (Estado de Resultados)."""
-    df = pd.read_excel(path, sheet_name="ER $", header=None, data_only=True)
+    df = pd.read_excel(path, sheet_name="ER $", header=None)
     logger.info(f"  ER $: {len(df)} filas")
 
     records = []
