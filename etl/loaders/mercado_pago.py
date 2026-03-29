@@ -20,7 +20,7 @@ def run(conn, logger) -> int:
     for xlsx_path in xlsx_files:
         logger.info(f"  Procesando {xlsx_path.name}")
         try:
-            df = pd.read_excel(xlsx_path, sheet_name="Sheet0", dtype=str)
+            df = pd.read_excel(xlsx_path, sheet_name="Sheet0")
         except Exception as e:
             logger.warning(f"  No se pudo leer {xlsx_path.name}: {e}")
             continue
