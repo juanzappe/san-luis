@@ -77,7 +77,17 @@ const navigation: NavItem[] = [
     ],
   },
   { label: "Costos", href: "/costos", icon: Calculator },
-  { label: "Impuestos", href: "/impuestos", icon: Receipt },
+  {
+    label: "Impuestos",
+    href: "/impuestos",
+    icon: Receipt,
+    children: [
+      { label: "Resumen Fiscal", href: "/impuestos/resumen" },
+      { label: "Posición IVA", href: "/impuestos/iva" },
+      { label: "Pagos", href: "/impuestos/pagos" },
+      { label: "Calendario", href: "/impuestos/calendario" },
+    ],
+  },
   {
     label: "Unidades de Negocio",
     href: "/unidades",
