@@ -64,10 +64,12 @@ export async function fetchResumen(): Promise<ResumenData> {
     .select("producto, neto, cantidad, venta:venta_id(fecha, monto_total)");
   if (e1) throw e1;
 
-  // Servicios: factura_emitida (neto, no IVA)
+  // Servicios: factura_emitida PV 6 only (neto, no IVA)
+  //   PV 8 = Mostrador (ya capturado en venta_detalle), PV 998 = pendiente
   const { data: facturas, error: e2 } = await supabase
     .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total");
+    .select("fecha_emision, imp_neto_gravado_total")
+    .eq("punto_venta", 6);
   if (e2) throw e2;
 
   const mostradorMap = new Map<string, number>();
@@ -372,10 +374,11 @@ export interface ServiciosData {
 }
 
 export async function fetchServicios(): Promise<ServiciosData> {
-  // factura_emitida with client info
+  // factura_emitida PV 6 = Servicios/Catering only
   const { data: facturas, error: e1 } = await supabase
     .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor");
+    .select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor")
+    .eq("punto_venta", 6);
   if (e1) throw e1;
 
   // clients with segmentation
