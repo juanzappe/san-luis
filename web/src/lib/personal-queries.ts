@@ -207,18 +207,20 @@ function calcAntiguedad(fechaIngreso: string | null): string {
 }
 
 export async function fetchEmpleados(): Promise<EmpleadoRow[]> {
-  const [empRes, liqRes] = await Promise.all([
-    supabase.from("empleado").select("id, nombre, cuil, puesto, fecha_ingreso, activo"),
-    supabase.from("liquidacion_sueldo").select("empleado_id, periodo, sueldo_neto"),
+  const [empData, liqData] = await Promise.all([
+    fetchAllRows<{
+      id: number; nombre: string; cuil: string | null;
+      puesto: string | null; fecha_ingreso: string | null; activo: boolean;
+    }>("empleado", "id, nombre, cuil, puesto, fecha_ingreso, activo"),
+    fetchAllRows<{ empleado_id: number; periodo: string; sueldo_neto: number }>(
+      "liquidacion_sueldo", "empleado_id, periodo, sueldo_neto",
+    ),
   ]);
 
-  if (empRes.error) throw empRes.error;
-  if (liqRes.error) throw liqRes.error;
-
-  // Find latest liquidacion per employee
+  // Find latest liquidacion per employee (excluding SAC for period comparison)
   const lastSueldo = new Map<number, number>();
   const lastPeriodo = new Map<number, string>();
-  for (const r of liqRes.data ?? []) {
+  for (const r of liqData) {
     const eid = Number(r.empleado_id);
     const p = (r.periodo as string).slice(0, 7);
     if (!lastPeriodo.has(eid) || p > lastPeriodo.get(eid)!) {
@@ -227,16 +229,25 @@ export async function fetchEmpleados(): Promise<EmpleadoRow[]> {
     }
   }
 
-  return (empRes.data ?? []).map((e) => ({
-    id: e.id as number,
-    nombre: (e.nombre ?? "") as string,
-    cuil: (e.cuil ?? "") as string,
-    puesto: (e.puesto ?? "") as string,
-    fechaIngreso: (e.fecha_ingreso as string) ?? null,
-    activo: e.activo as boolean,
-    ultimoSueldo: lastSueldo.get(e.id as number) ?? 0,
-    antiguedad: calcAntiguedad((e.fecha_ingreso as string) ?? null),
-  }));
+  // Determine "active" = has a payslip in the last 3 months
+  const now = new Date();
+  const threeMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 3, 1);
+  const cutoff = `${threeMonthsAgo.getFullYear()}-${String(threeMonthsAgo.getMonth() + 1).padStart(2, "0")}`;
+
+  return empData.map((e) => {
+    const lp = lastPeriodo.get(e.id as number);
+    const isActive = lp ? lp >= cutoff : false;
+    return {
+      id: e.id as number,
+      nombre: (e.nombre ?? "") as string,
+      cuil: (e.cuil ?? "") as string,
+      puesto: (e.puesto ?? "") as string,
+      fechaIngreso: (e.fecha_ingreso as string) ?? null,
+      activo: isActive,
+      ultimoSueldo: lastSueldo.get(e.id as number) ?? 0,
+      antiguedad: calcAntiguedad((e.fecha_ingreso as string) ?? null),
+    };
+  });
 }
 
 export async function fetchEmpleadoDetalle(empleadoId: number): Promise<EmpleadoDetalle | null> {

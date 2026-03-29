@@ -44,6 +44,7 @@ export default function EmpleadosPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detalle, setDetalle] = useState<EmpleadoDetalle | null>(null);
   const [detalleLoading, setDetalleLoading] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
   const { adjust } = useInflation();
 
   useEffect(() => {
@@ -63,14 +64,18 @@ export default function EmpleadosPage() {
       .finally(() => setDetalleLoading(false));
   }, [selectedId]);
 
-  // Sort: activos first, then by nombre
+  // Filter + sort: activos first, then by nombre
   const sorted = useMemo(
-    () => [...empleados].sort((a, b) => {
-      if (a.activo !== b.activo) return a.activo ? -1 : 1;
-      return a.nombre.localeCompare(b.nombre);
-    }),
-    [empleados],
+    () => [...empleados]
+      .filter((e) => showInactive || e.activo)
+      .sort((a, b) => {
+        if (a.activo !== b.activo) return a.activo ? -1 : 1;
+        return a.nombre.localeCompare(b.nombre);
+      }),
+    [empleados, showInactive],
   );
+
+  const activosCount = useMemo(() => empleados.filter((e) => e.activo).length, [empleados]);
 
   // Chart data for detail view
   const salaryChart = useMemo(() => {
@@ -223,13 +228,18 @@ export default function EmpleadosPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Empleados</h1>
-          <p className="text-muted-foreground">Listado y detalle salarial por empleado</p>
+          <p className="text-muted-foreground">{activosCount} activos</p>
         </div>
         <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Users className="h-4 w-4" />
-            {empleados.filter((e) => e.activo).length} activos
-          </div>
+          <label className="flex items-center gap-2 text-sm text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showInactive}
+              onChange={(e) => setShowInactive(e.target.checked)}
+              className="rounded border-gray-300"
+            />
+            Ver inactivos
+          </label>
           <InflationToggle />
         </div>
       </div>
@@ -242,9 +252,6 @@ export default function EmpleadosPage() {
                 <TableRow>
                   <TableHead>Nombre</TableHead>
                   <TableHead>CUIL</TableHead>
-                  <TableHead>Puesto</TableHead>
-                  <TableHead>Ingreso</TableHead>
-                  <TableHead>Antigüedad</TableHead>
                   <TableHead className="text-right">Último Sueldo</TableHead>
                   <TableHead>Estado</TableHead>
                 </TableRow>
@@ -258,9 +265,6 @@ export default function EmpleadosPage() {
                   >
                     <TableCell className="font-medium">{e.nombre}</TableCell>
                     <TableCell className="whitespace-nowrap">{e.cuil || "—"}</TableCell>
-                    <TableCell>{e.puesto || "—"}</TableCell>
-                    <TableCell className="whitespace-nowrap">{e.fechaIngreso ?? "—"}</TableCell>
-                    <TableCell>{e.antiguedad}</TableCell>
                     <TableCell className="text-right">{formatARS(e.ultimoSueldo)}</TableCell>
                     <TableCell>
                       <span className={`inline-block rounded px-2 py-0.5 text-xs font-medium ${e.activo ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
