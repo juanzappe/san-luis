@@ -82,18 +82,18 @@ export interface ResumenFiscalData {
 }
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
-  const [obligRes, pagosRes, ivaMensualRes, movBancRes, resultadoData] = await Promise.all([
+  const [obligRes, pagosRes, ivaMensualRes, chequeRes, resultadoData] = await Promise.all([
     supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
     supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones, formulario"),
     supabase.rpc("get_iva_ingresos_mensual"),
-    supabase.from("movimiento_bancario").select("fecha, concepto, debito, importe").ilike("concepto", "%IMPUESTO LEY 25413%").not("concepto", "ilike", "%COMPENSACION%"),
+    supabase.rpc("get_cheque_mensual"),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
 
   if (obligRes.error) throw obligRes.error;
   if (pagosRes.error) throw pagosRes.error;
   if (ivaMensualRes.error) throw ivaMensualRes.error;
-  if (movBancRes.error) throw movBancRes.error;
+  if (chequeRes.error) throw chequeRes.error;
 
   // ---------------------------------------------------------------------------
   // Aggregate: tipo → month → sum
@@ -143,12 +143,15 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     }
   }
 
-  // --- C) Impuesto al Cheque — from movimiento_bancario (devengado) ---
-  for (const row of movBancRes.data ?? []) {
-    const month = (row.fecha as string).slice(0, 7);
-    const amount = Math.abs(Number(row.debito) || Number(row.importe) || 0);
-    if (amount > 0) addTipo("cheque", month, amount, "arca");
+  // --- C) Impuesto al Cheque — 1.2% of total bank movements (RPC) ---
+  const chequeRows = (chequeRes.data ?? []) as Array<{ periodo: string; importe_cheque: number }>;
+  const chequeMap = new Map<string, number>();
+  for (const row of chequeRows) {
+    addToMap(chequeMap, row.periodo, Number(row.importe_cheque) || 0);
   }
+  chequeMap.forEach((amount, month) => {
+    if (amount > 0) addTipo("cheque", month, amount, "arca");
+  });
 
   // --- D) SICORE — from pago_impuesto with periodo parsing ---
   for (const p of pagosRes.data ?? []) {
@@ -185,32 +188,59 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     if (amount > 0) addTipo("iibb", month, amount, "arba");
   }
 
-  // --- F) Municipal taxes from impuesto_obligacion ---
+  // --- F) Municipal taxes from impuesto_obligacion (devengado, gap-fill) ---
+  // Collect records per tasa type, sorted by periodo.
+  // If there's a gap between consecutive records, distribute the amount
+  // evenly across all months in the gap (the record covers multiple months).
   const municipalMap: Record<string, string> = {
     tasa_seguridad_higiene: "segHigiene",
     tasa_publicidad_propaganda: "publicidad",
     tasa_ocupacion_espacio_publico: "espacioPublico",
   };
+  const municipalByTipo = new Map<string, Array<{ periodo: string; amount: number }>>();
   for (const o of obligRes.data ?? []) {
-    const mapped = municipalMap[o.tipo as string];
-    if (!mapped) continue;
+    const tipoStr = o.tipo as string;
+    if (!municipalMap[tipoStr]) continue;
     const periodo = (o.periodo as string) ?? "";
     if (!periodo) continue;
     const amount = Number(o.monto_determinado) || 0;
     if (amount <= 0) continue;
+    if (!municipalByTipo.has(tipoStr)) municipalByTipo.set(tipoStr, []);
+    municipalByTipo.get(tipoStr)!.push({ periodo, amount });
+  }
 
-    const year = parseInt(periodo.slice(0, 4));
-    const monthNum = parseInt(periodo.slice(5, 7));
+  // Helper: advance YYYY-MM by n months
+  const addMonths = (ym: string, n: number): string => {
+    let y = parseInt(ym.slice(0, 4));
+    let m = parseInt(ym.slice(5, 7)) + n;
+    while (m > 12) { y++; m -= 12; }
+    while (m < 1) { y--; m += 12; }
+    return `${y}-${String(m).padStart(2, "0")}`;
+  };
 
-    if (year >= 2026 && monthNum % 2 === 1) {
-      const half = amount / 2;
-      addTipo(mapped, periodo, half, "municipio");
-      const nextMonth = monthNum < 12 ? monthNum + 1 : 1;
-      const nextYear = monthNum < 12 ? year : year + 1;
-      const nextPeriodo = `${nextYear}-${String(nextMonth).padStart(2, "0")}`;
-      addTipo(mapped, nextPeriodo, half, "municipio");
-    } else {
-      addTipo(mapped, periodo, amount, "municipio");
+  // Helper: months between two YYYY-MM strings (inclusive of start, exclusive of end)
+  const monthsBetween = (a: string, b: string): number => {
+    const [ay, am] = a.split("-").map(Number);
+    const [by, bm] = b.split("-").map(Number);
+    return (by - ay) * 12 + (bm - am);
+  };
+
+  for (const [tipoStr, records] of Array.from(municipalByTipo.entries())) {
+    const mapped = municipalMap[tipoStr];
+    records.sort((a, b) => a.periodo.localeCompare(b.periodo));
+
+    for (let i = 0; i < records.length; i++) {
+      const rec = records[i];
+      // Determine how many months this record covers
+      const nextPeriodo = i + 1 < records.length ? records[i + 1].periodo : null;
+      const span = nextPeriodo ? monthsBetween(rec.periodo, nextPeriodo) : 1;
+      const monthCount = Math.max(span, 1);
+      const perMonth = rec.amount / monthCount;
+
+      for (let j = 0; j < monthCount; j++) {
+        const month = addMonths(rec.periodo, j);
+        addTipo(mapped, month, perMonth, "municipio");
+      }
     }
   }
 
