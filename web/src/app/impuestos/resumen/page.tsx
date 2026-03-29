@@ -48,10 +48,11 @@ const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 
 const STACK_COLORS: Record<string, string> = {
   iva: "#3b82f6",
   ganancias: "#8b5cf6",
+  sicore: "#a78bfa",
   iibb: "#22c55e",
-  tasaMunicipal: "#f59e0b",
-  cargasSociales: "#ef4444",
-  debitosCreditos: "#06b6d4",
+  segHigiene: "#f59e0b",
+  publicidad: "#eab308",
+  espacioPublico: "#86efac",
 };
 
 const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6"];
@@ -96,10 +97,11 @@ export default function ResumenFiscalPage() {
         ...r,
         iva: adjust(r.iva, r.periodo),
         ganancias: adjust(r.ganancias, r.periodo),
+        sicore: adjust(r.sicore, r.periodo),
         iibb: adjust(r.iibb, r.periodo),
-        tasaMunicipal: adjust(r.tasaMunicipal, r.periodo),
-        cargasSociales: adjust(r.cargasSociales, r.periodo),
-        debitosCreditos: adjust(r.debitosCreditos, r.periodo),
+        segHigiene: adjust(r.segHigiene, r.periodo),
+        publicidad: adjust(r.publicidad, r.periodo),
+        espacioPublico: adjust(r.espacioPublico, r.periodo),
         total: adjust(r.total, r.periodo),
         ingresos: adjust(r.ingresos, r.periodo),
       })),
@@ -108,13 +110,19 @@ export default function ResumenFiscalPage() {
 
   const kpis = useMemo(() => {
     if (!data || data.mensual.length < 1) return null;
-    const last = data.mensual[data.mensual.length - 1];
-    const prev = data.mensual.length > 1 ? data.mensual[data.mensual.length - 2] : null;
+    // Find last month with tax data
+    let lastIdx = data.mensual.length - 1;
+    for (let i = data.mensual.length - 1; i >= 0; i--) {
+      if (data.mensual[i].total > 0) { lastIdx = i; break; }
+    }
+    const last = data.mensual[lastIdx];
+    const prev = lastIdx >= 1 ? data.mensual[lastIdx - 1] : null;
     return {
       total: last.total,
       deltaTotal: prev ? pctDelta(last.total, prev.total) : null,
       presion: last.presionFiscal,
-      deltaPresion: prev ? pctDelta(last.presionFiscal, prev.presionFiscal) : null,
+      deltaPresion: prev && last.presionFiscal != null && prev.presionFiscal != null
+        ? pctDelta(last.presionFiscal, prev.presionFiscal) : null,
       posIva: last.iva,
       deltaIva: prev ? pctDelta(last.iva, prev.iva) : null,
     };
@@ -126,11 +134,12 @@ export default function ResumenFiscalPage() {
       label: shortLabel(r.periodo),
       iva: r.iva,
       ganancias: r.ganancias,
+      sicore: r.sicore,
       iibb: r.iibb,
-      tasaMunicipal: r.tasaMunicipal,
-      cargasSociales: r.cargasSociales,
-      debitosCreditos: r.debitosCreditos,
-      presionFiscal: r.presionFiscal,
+      segHigiene: r.segHigiene,
+      publicidad: r.publicidad,
+      espacioPublico: r.espacioPublico,
+      presionFiscal: r.presionFiscal ?? undefined,
     }));
   }, [data]);
 
@@ -164,7 +173,9 @@ export default function ResumenFiscalPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Resumen Fiscal</h1>
-          <p className="text-muted-foreground">Panorama de carga impositiva y presión fiscal</p>
+          <p className="text-muted-foreground">
+            {data.periodoActual ? `Datos de ${data.periodoActual}` : "Panorama de carga impositiva y presión fiscal"}
+          </p>
         </div>
         <InflationToggle />
       </div>
@@ -173,7 +184,7 @@ export default function ResumenFiscalPage() {
       {kpis && (
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <KpiCard title="Impuestos del Mes" value={formatARS(kpis.total)} sub={kpis.deltaTotal != null ? formatPct(kpis.deltaTotal) : null} icon={DollarSign} />
-          <KpiCard title="Presión Fiscal" value={`${kpis.presion.toFixed(1)}%`} sub={kpis.deltaPresion != null ? formatPct(kpis.deltaPresion) : null} icon={Percent} />
+          <KpiCard title="Presión Fiscal" value={kpis.presion != null ? `${kpis.presion.toFixed(1)}%` : "—"} sub={kpis.deltaPresion != null ? formatPct(kpis.deltaPresion) : null} icon={Percent} />
           <KpiCard title="IVA del Mes" value={formatARS(kpis.posIva)} sub={kpis.deltaIva != null ? formatPct(kpis.deltaIva) : null} icon={Receipt} />
           {data.proximoVto ? (
             <KpiCard title="Próximo Vencimiento" value={data.proximoVto.impuesto} sub={data.proximoVto.fecha} icon={CalendarClock} />
@@ -198,10 +209,11 @@ export default function ResumenFiscalPage() {
                 <Legend />
                 <Bar dataKey="iva" name="IVA" stackId="a" fill={STACK_COLORS.iva} />
                 <Bar dataKey="ganancias" name="Ganancias" stackId="a" fill={STACK_COLORS.ganancias} />
+                <Bar dataKey="sicore" name="Ret./SICORE" stackId="a" fill={STACK_COLORS.sicore} />
                 <Bar dataKey="iibb" name="IIBB" stackId="a" fill={STACK_COLORS.iibb} />
-                <Bar dataKey="tasaMunicipal" name="Municipal" stackId="a" fill={STACK_COLORS.tasaMunicipal} />
-                <Bar dataKey="cargasSociales" name="Cargas Soc." stackId="a" fill={STACK_COLORS.cargasSociales} />
-                <Bar dataKey="debitosCreditos" name="Déb./Créd." stackId="a" fill={STACK_COLORS.debitosCreditos} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="segHigiene" name="Seg. e Higiene" stackId="a" fill={STACK_COLORS.segHigiene} />
+                <Bar dataKey="publicidad" name="Publicidad" stackId="a" fill={STACK_COLORS.publicidad} />
+                <Bar dataKey="espacioPublico" name="Esp. Público" stackId="a" fill={STACK_COLORS.espacioPublico} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -267,10 +279,11 @@ export default function ResumenFiscalPage() {
                   <TableHead>Período</TableHead>
                   <TableHead className="text-right">IVA</TableHead>
                   <TableHead className="text-right">Ganancias</TableHead>
+                  <TableHead className="text-right">SICORE</TableHead>
                   <TableHead className="text-right">IIBB</TableHead>
-                  <TableHead className="text-right">Municipal</TableHead>
-                  <TableHead className="text-right">Cargas Soc.</TableHead>
-                  <TableHead className="text-right">Déb./Créd.</TableHead>
+                  <TableHead className="text-right">Seg. e Hig.</TableHead>
+                  <TableHead className="text-right">Publicidad</TableHead>
+                  <TableHead className="text-right">Esp. Público</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead className="text-right">Ingresos</TableHead>
                   <TableHead className="text-right">Presión %</TableHead>
@@ -282,13 +295,14 @@ export default function ResumenFiscalPage() {
                     <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.iva)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.ganancias)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.sicore)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.iibb)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.tasaMunicipal)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cargasSociales)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.debitosCreditos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.segHigiene)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.publicidad)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.espacioPublico)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.total)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.ingresos)}</TableCell>
-                    <TableCell className="text-right">{r.presionFiscal > 0 ? `${r.presionFiscal.toFixed(1)}%` : "—"}</TableCell>
+                    <TableCell className="text-right">{r.presionFiscal != null ? `${r.presionFiscal.toFixed(1)}%` : "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
