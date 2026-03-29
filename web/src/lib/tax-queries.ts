@@ -81,7 +81,7 @@ export interface ResumenFiscalData {
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const [obligRes, pagosRes, factRes] = await Promise.all([
-    supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_enviadas, estado"),
+    supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
     supabase.from("pago_impuesto").select("id, impuesto_obligacion_id, fecha_pago, monto, observaciones, formulario"),
     supabase.from("factura_emitida").select("fecha_emision, imp_total"),
   ]);
@@ -102,24 +102,37 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addToMap(jurisdiccionTotal, jurisdiccion, monto);
   };
 
-  // --- A) Pagos de impuestos nacionales (pago_impuesto) ---
-  // Positive-match only: classify by observaciones content
+  // --- A) Impuestos nacionales from pago_impuesto (formulario 800) ---
+  // Classify by observaciones, parse periodo fiscal from observaciones
+  // Format: "Impuesto: 30 - IVA | Período: YYYYMM00 | ..."
   for (const p of pagosRes.data ?? []) {
     const obs = (p.observaciones as string) ?? "";
     const monto = Number(p.monto) || 0;
-    const month = (p.fecha_pago as string).slice(0, 7);
 
+    // Classify by impuesto code in observaciones
     let tipo: string | null = null;
-    if (obs.includes("30 - IVA") || obs.includes("30 - ")) {
-      // Be careful: "30 - " could match other codes starting with 30x
-      // But the ETL format is "Impuesto: 30 - IVA", so check for IVA specifically
-      if (obs.includes("30 - IVA")) tipo = "iva";
-    }
-    if (!tipo && obs.includes("10 - GANANCIAS")) tipo = "ganancias";
-    if (!tipo && obs.includes("217 - SICORE")) tipo = "sicore";
+    if (obs.includes("30 - IVA")) tipo = "iva";
+    else if (obs.includes("10 - GANANCIAS")) tipo = "ganancias";
+    else if (obs.includes("217 - SICORE")) tipo = "sicore";
 
-    // Skip anything else (cargas sociales F1931, F800 codes 301/302/312/351/352/28, unknown)
+    // Skip anything else (cargas sociales, unknown)
     if (!tipo) continue;
+
+    // Parse periodo fiscal from observaciones
+    let month: string;
+    const periodoMatch = obs.match(/Per[ií]odo:\s*(\d{4})(\d{2})/);
+    if (periodoMatch) {
+      const [, yyyy, mm] = periodoMatch;
+      if (mm === "00") {
+        // Annual tax (Ganancias) — no specific month, use fecha_pago
+        month = (p.fecha_pago as string).slice(0, 7);
+      } else {
+        month = `${yyyy}-${mm}`;
+      }
+    } else {
+      // Fallback to fecha_pago if no periodo in observaciones
+      month = (p.fecha_pago as string).slice(0, 7);
+    }
 
     addTipo(tipo, month, monto, "arca");
   }
@@ -131,12 +144,14 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     if (!month) continue;
     const amount = Math.max(
       Number(o.monto_determinado) || 0,
+      Number(o.compensaciones_recibidas) || 0,
       Number(o.compensaciones_enviadas) || 0,
     );
     if (amount > 0) addTipo("iibb", month, amount, "arba");
   }
 
   // --- C) Municipal taxes from impuesto_obligacion ---
+  // In 2024-2025: monthly periods. In 2026+: bimestral → split across 2 months.
   const municipalMap: Record<string, string> = {
     tasa_seguridad_higiene: "segHigiene",
     tasa_publicidad_propaganda: "publicidad",
@@ -145,10 +160,26 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   for (const o of obligRes.data ?? []) {
     const mapped = municipalMap[o.tipo as string];
     if (!mapped) continue;
-    const month = (o.periodo as string) ?? "";
-    if (!month) continue;
+    const periodo = (o.periodo as string) ?? "";
+    if (!periodo) continue;
     const amount = Number(o.monto_determinado) || 0;
-    if (amount > 0) addTipo(mapped, month, amount, "municipio");
+    if (amount <= 0) continue;
+
+    const year = parseInt(periodo.slice(0, 4));
+    const monthNum = parseInt(periodo.slice(5, 7));
+
+    if (year >= 2026 && monthNum % 2 === 1) {
+      // Bimestral: odd month covers current + next month → split in half
+      const half = amount / 2;
+      addTipo(mapped, periodo, half, "municipio");
+      // Next month
+      const nextMonth = monthNum < 12 ? monthNum + 1 : 1;
+      const nextYear = monthNum < 12 ? year : year + 1;
+      const nextPeriodo = `${nextYear}-${String(nextMonth).padStart(2, "0")}`;
+      addTipo(mapped, nextPeriodo, half, "municipio");
+    } else {
+      addTipo(mapped, periodo, amount, "municipio");
+    }
   }
 
   // --- D) Ingresos: factura_emitida imp_total (con IVA) ---
