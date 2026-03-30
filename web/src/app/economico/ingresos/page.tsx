@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -44,6 +46,10 @@ const YEAR_COLORS: Record<string, string> = {
   "2026": "#8b5cf6",
 };
 
+const YEAR_DASH: Record<string, string | undefined> = {
+  "2024": "5 5",
+};
+
 // ---------------------------------------------------------------------------
 // KPI Card
 // ---------------------------------------------------------------------------
@@ -81,13 +87,13 @@ function KpiCard({
 // ---------------------------------------------------------------------------
 // Year-over-year comparison chart for a single business unit
 // ---------------------------------------------------------------------------
-function YoYChart({ data, dataKey, title, color }: {
+function YoYChart({ data, dataKey, title, color, height = 300 }: {
   data: IngresoRow[];
   dataKey: keyof Omit<IngresoRow, "periodo">;
   title: string;
   color: string;
+  height?: number;
 }) {
-  // Group by year → month
   const years = useMemo(() => {
     const yearSet = new Set<string>();
     data.forEach((r) => yearSet.add(r.periodo.slice(0, 4)));
@@ -97,10 +103,10 @@ function YoYChart({ data, dataKey, title, color }: {
   const chartData = useMemo(() => {
     return SHORT_MONTHS.map((label, i) => {
       const monthNum = String(i + 1).padStart(2, "0");
-      const row: Record<string, string | number> = { label };
+      const row: Record<string, string | number | undefined> = { label };
       for (const y of years) {
         const match = data.find((r) => r.periodo === `${y}-${monthNum}`);
-        row[y] = match ? match[dataKey] : 0;
+        row[y] = match ? match[dataKey] : undefined;
       }
       return row;
     });
@@ -112,23 +118,27 @@ function YoYChart({ data, dataKey, title, color }: {
         <CardTitle className="text-sm font-medium">{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={chartData} barCategoryGap="20%">
+        <ResponsiveContainer width="100%" height={height}>
+          <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis dataKey="label" fontSize={11} />
             <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(0)}M`} />
             <Tooltip formatter={arsTooltip} />
             <Legend />
             {years.map((y) => (
-              <Bar
+              <Line
                 key={y}
+                type="monotone"
                 dataKey={y}
                 name={y}
-                fill={YEAR_COLORS[y] ?? color}
-                radius={[2, 2, 0, 0]}
+                stroke={YEAR_COLORS[y] ?? color}
+                strokeWidth={2}
+                strokeDasharray={YEAR_DASH[y]}
+                dot={{ r: 3 }}
+                connectNulls={false}
               />
             ))}
-          </BarChart>
+          </LineChart>
         </ResponsiveContainer>
       </CardContent>
     </Card>
@@ -265,12 +275,12 @@ export default function IngresosPage() {
         </CardContent>
       </Card>
 
-      {/* Year-over-year comparison charts (3 charts) */}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {/* Year-over-year comparison charts */}
+      <div className="grid gap-4 md:grid-cols-2">
         <YoYChart data={allData} dataKey="mostrador" title="Mostrador — Comparación Anual" color={COLORS.mostrador} />
         <YoYChart data={allData} dataKey="restobar" title="Restobar — Comparación Anual" color={COLORS.restobar} />
-        <YoYChart data={allData} dataKey="servicios" title="Servicios — Comparación Anual" color={COLORS.servicios} />
       </div>
+      <YoYChart data={allData} dataKey="servicios" title="Servicios — Comparación Anual" color={COLORS.servicios} height={350} />
     </div>
   );
 }
