@@ -38,7 +38,6 @@ const navigation: NavItem[] = [
       { label: "Estado de Resultados", href: "/economico/estado-resultados" },
       { label: "Ingresos", href: "/economico/ingresos" },
       { label: "Egresos", href: "/economico/egresos" },
-      { label: "Ventas", href: "/economico/ventas" },
       { label: "Balance", href: "/economico/balance" },
       { label: "Indicadores", href: "/economico/indicadores" },
     ],
