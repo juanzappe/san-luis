@@ -58,72 +58,35 @@ export interface ResumenData {
 }
 
 export async function fetchResumen(): Promise<ResumenData> {
-  // POS: venta_detalle with venta.fecha — split mostrador vs restobar
-  const { data: detalle, error: e1 } = await supabase
-    .from("venta_detalle")
-    .select("producto, neto, cantidad, venta:venta_id(fecha, monto_total)");
-  if (e1) throw e1;
+  // Use server-side RPC for correct aggregation (avoids 1000-row limit + NC sign)
+  const { data: ingData, error: ingErr } = await supabase.rpc("get_ingresos_mensual");
+  if (ingErr) throw ingErr;
 
-  // Servicios: factura_emitida PV 6 only (neto, no IVA)
-  //   PV 8 = Mostrador (ya capturado en venta_detalle), PV 998 = pendiente
-  const { data: facturas, error: e2 } = await supabase
-    .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total")
-    .eq("punto_venta", 6);
-  if (e2) throw e2;
+  type IngRow = { periodo: string; mostrador: number; restobar: number; servicios: number };
+  const rows = (ingData ?? []) as IngRow[];
 
-  const mostradorMap = new Map<string, number>();
-  const restobarMap = new Map<string, number>();
-  let mostradorTxCount = 0;
-  let restobarTxCount = 0;
-  const mostradorVentas = new Set<string>();
-  const restobarVentas = new Set<string>();
-
-  if (detalle) {
-    for (const d of detalle) {
-      const ventaRaw = d.venta as unknown;
-      const venta = Array.isArray(ventaRaw) ? ventaRaw[0] as { fecha: string; monto_total: number } | undefined : ventaRaw as { fecha: string; monto_total: number } | null;
-      if (!venta) continue;
-      const p = venta.fecha.slice(0, 7);
-      const monto = Number(d.neto) || 0;
-      const prod = (d.producto ?? "").toLowerCase();
-      if (prod === "restobar") {
-        restobarMap.set(p, (restobarMap.get(p) ?? 0) + monto);
-        restobarVentas.add(`${venta.fecha}`);
-      } else {
-        mostradorMap.set(p, (mostradorMap.get(p) ?? 0) + monto);
-        mostradorVentas.add(`${venta.fecha}`);
-      }
-    }
-  }
-  mostradorTxCount = mostradorVentas.size;
-  restobarTxCount = restobarVentas.size;
-
-  const serviciosMap = new Map<string, number>();
-  let serviciosTxCount = 0;
-  if (facturas) {
-    for (const f of facturas) {
-      const p = (f.fecha_emision as string).slice(0, 7);
-      serviciosMap.set(p, (serviciosMap.get(p) ?? 0) + (Number(f.imp_neto_gravado_total) || 0));
-      serviciosTxCount++;
-    }
-  }
-
-  const allP = new Set<string>();
-  for (const m of [mostradorMap, restobarMap, serviciosMap]) {
-    m.forEach((_, k) => allP.add(k));
-  }
-
-  const monthly = Array.from(allP).sort().map((p) => {
-    const mostrador = mostradorMap.get(p) ?? 0;
-    const restobar = restobarMap.get(p) ?? 0;
-    const servicios = serviciosMap.get(p) ?? 0;
-    return { periodo: p, mostrador, restobar, servicios, total: mostrador + restobar + servicios };
-  });
+  const monthly = rows
+    .map((r) => {
+      const mostrador = Number(r.mostrador) || 0;
+      const restobar = Number(r.restobar) || 0;
+      const servicios = Number(r.servicios) || 0;
+      return { periodo: r.periodo, mostrador, restobar, servicios, total: mostrador + restobar + servicios };
+    })
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
 
   const totalMostrador = monthly.reduce((s, r) => s + r.mostrador, 0);
   const totalRestobar = monthly.reduce((s, r) => s + r.restobar, 0);
   const totalServicios = monthly.reduce((s, r) => s + r.servicios, 0);
+
+  // Tx counts: we need venta count for ticket promedio — use a simple count query
+  const [mosCntRes, resCntRes, servCntRes] = await Promise.all([
+    supabase.from("venta").select("id", { count: "exact", head: true }),
+    supabase.from("venta_detalle").select("id", { count: "exact", head: true }).ilike("producto", "restobar"),
+    supabase.from("factura_emitida").select("id", { count: "exact", head: true }).eq("punto_venta", 6),
+  ]);
+  const mostradorTxCount = (mosCntRes.count ?? 0) - (resCntRes.count ?? 0);
+  const restobarTxCount = resCntRes.count ?? 0;
+  const serviciosTxCount = servCntRes.count ?? 0;
 
   return {
     monthly,
@@ -377,7 +340,7 @@ export async function fetchServicios(): Promise<ServiciosData> {
   // factura_emitida PV 6 = Servicios/Catering only
   const { data: facturas, error: e1 } = await supabase
     .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor")
+    .select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor, tipo_comprobante")
     .eq("punto_venta", 6);
   if (e1) throw e1;
 
@@ -405,7 +368,8 @@ export async function fetchServicios(): Promise<ServiciosData> {
 
   if (facturas) {
     for (const f of facturas) {
-      const monto = Number(f.imp_neto_gravado_total) || 0;
+      const raw = Number(f.imp_neto_gravado_total) || 0;
+      const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
       const periodo = (f.fecha_emision as string).slice(0, 7);
       const cuit = (f.nro_doc_receptor ?? "") as string;
       const cli = clienteMap.get(cuit);
