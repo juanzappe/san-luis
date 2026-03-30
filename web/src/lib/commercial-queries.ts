@@ -60,7 +60,7 @@ export interface ClientesData {
 
 export async function fetchClientes(): Promise<ClientesData> {
   const [factRes, cliRes] = await Promise.all([
-    supabase.from("factura_emitida").select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor, denominacion_receptor"),
+    supabase.from("factura_emitida").select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor, denominacion_receptor, tipo_comprobante"),
     supabase.from("cliente").select("cuit, razon_social, tipo_entidad, clasificacion"),
   ]);
 
@@ -86,7 +86,8 @@ export async function fetchClientes(): Promise<ClientesData> {
   const monthlyMap = new Map<string, { monto: number; clientes: Set<string>; publico: number; privado: number }>();
 
   for (const f of factRes.data ?? []) {
-    const monto = Number(f.imp_neto_gravado_total) || 0;
+    const raw = Number(f.imp_neto_gravado_total) || 0;
+    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     if (monto <= 0) continue;
     const cuit = (f.nro_doc_receptor as string) ?? "SIN_CUIT";
     const nombre = (f.denominacion_receptor as string) ?? "Sin nombre";
@@ -192,7 +193,7 @@ export async function fetchClientes(): Promise<ClientesData> {
 export async function fetchClienteDetalle(cuit: string): Promise<ClienteDetalle | null> {
   const [factRes, cliRes] = await Promise.all([
     supabase.from("factura_emitida")
-      .select("fecha_emision, imp_neto_gravado_total")
+      .select("fecha_emision, imp_neto_gravado_total, tipo_comprobante")
       .eq("nro_doc_receptor", cuit)
       .order("fecha_emision", { ascending: true }),
     supabase.from("cliente").select("razon_social, cuit, tipo_entidad, clasificacion").eq("cuit", cuit).limit(1),
@@ -213,7 +214,8 @@ export async function fetchClienteDetalle(cuit: string): Promise<ClienteDetalle 
   for (const f of facturas) {
     const p = (f.fecha_emision as string).slice(0, 7);
     const m = monthMap.get(p) ?? { monto: 0, cnt: 0 };
-    m.monto += Number(f.imp_neto_gravado_total) || 0;
+    const raw = Number(f.imp_neto_gravado_total) || 0;
+    m.monto += [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     m.cnt += 1;
     monthMap.set(p, m);
     dates.push(f.fecha_emision as string);
@@ -280,7 +282,7 @@ export interface ProveedoresData {
 
 export async function fetchProveedores(): Promise<ProveedoresData> {
   const [factRes, provRes] = await Promise.all([
-    supabase.from("factura_recibida").select("fecha_emision, imp_neto_gravado_total, nro_doc_emisor, denominacion_emisor"),
+    supabase.from("factura_recibida").select("fecha_emision, imp_neto_gravado_total, nro_doc_emisor, denominacion_emisor, tipo_comprobante"),
     supabase.from("proveedor").select("cuit, razon_social, tipo_costo, categoria_egreso"),
   ]);
 
@@ -306,7 +308,8 @@ export async function fetchProveedores(): Promise<ProveedoresData> {
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
   for (const f of factRes.data ?? []) {
-    const monto = Number(f.imp_neto_gravado_total) || 0;
+    const raw = Number(f.imp_neto_gravado_total) || 0;
+    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     if (monto <= 0) continue;
     const cuit = (f.nro_doc_emisor as string) ?? "SIN_CUIT";
     const nombre = (f.denominacion_emisor as string) ?? "Sin nombre";
@@ -399,7 +402,7 @@ export async function fetchProveedores(): Promise<ProveedoresData> {
 export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDetalle | null> {
   const [factRes, provRes] = await Promise.all([
     supabase.from("factura_recibida")
-      .select("fecha_emision, imp_neto_gravado_total")
+      .select("fecha_emision, imp_neto_gravado_total, tipo_comprobante")
       .eq("nro_doc_emisor", cuit)
       .order("fecha_emision", { ascending: true }),
     supabase.from("proveedor").select("razon_social, cuit, tipo_costo, categoria_egreso").eq("cuit", cuit).limit(1),
@@ -419,7 +422,8 @@ export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDeta
   for (const f of facturas) {
     const p = (f.fecha_emision as string).slice(0, 7);
     const m = monthMap.get(p) ?? { monto: 0, cnt: 0 };
-    m.monto += Number(f.imp_neto_gravado_total) || 0;
+    const raw = Number(f.imp_neto_gravado_total) || 0;
+    m.monto += [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     m.cnt += 1;
     monthMap.set(p, m);
     dates.push(f.fecha_emision as string);

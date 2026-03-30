@@ -120,76 +120,17 @@ export interface IngresoRow {
 }
 
 export async function fetchIngresos(): Promise<IngresoRow[]> {
-  // 1) venta_detalle joined with venta for fecha — split mostrador vs restobar
-  //    Paginated manually (JOIN prevents using fetchAllRows)
-  const PAGE = 1000;
-  const detalle: Array<{ producto: string; neto: number; venta: unknown }> = [];
-  let from = 0;
-  while (true) {
-    const { data, error } = await supabase
-      .from("venta_detalle")
-      .select("producto, neto, venta:venta_id(fecha)")
-      .range(from, from + PAGE - 1);
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    detalle.push(...(data as typeof detalle));
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-
-  // 2) factura_emitida PV 6 = Servicios (neto, no IVA) — paginated
-  const facturas = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number }>(
-    "factura_emitida",
-    "fecha_emision, imp_neto_gravado_total",
-    { column: "punto_venta", value: 6 },
-  );
-
-  const mostradorMap = new Map<string, number>();
-  const restobarMap = new Map<string, number>();
-
-  for (const d of detalle) {
-    const ventaRaw = d.venta as { fecha: string } | { fecha: string }[] | null;
-    const venta = Array.isArray(ventaRaw) ? ventaRaw[0] : ventaRaw;
-    if (!venta?.fecha) continue;
-    const p = venta.fecha.slice(0, 7);
-    const monto = Number(d.neto) || 0;
-    const prod = (d.producto ?? "").toLowerCase();
-    if (prod === "restobar") {
-      restobarMap.set(p, (restobarMap.get(p) ?? 0) + monto);
-    } else {
-      mostradorMap.set(p, (mostradorMap.get(p) ?? 0) + monto);
-    }
-  }
-
-  const serviciosMap = new Map<string, number>();
-  for (const f of facturas) {
-    const p = (f.fecha_emision as string).slice(0, 7);
-    serviciosMap.set(
-      p,
-      (serviciosMap.get(p) ?? 0) + (Number(f.imp_neto_gravado_total) || 0),
-    );
-  }
-
-  // Merge all periodos
-  const allP = new Set<string>();
-  for (const m of [mostradorMap, restobarMap, serviciosMap]) {
-    m.forEach((_, k) => allP.add(k));
-  }
-
-  return Array.from(allP)
-    .sort()
-    .map((p) => {
-      const mostrador = mostradorMap.get(p) ?? 0;
-      const restobar = restobarMap.get(p) ?? 0;
-      const servicios = serviciosMap.get(p) ?? 0;
-      return {
-        periodo: p,
-        mostrador,
-        restobar,
-        servicios,
-        total: mostrador + restobar + servicios,
-      };
-    });
+  const { data, error } = await supabase.rpc("get_ingresos_mensual");
+  if (error) throw error;
+  type Row = { periodo: string; mostrador: number; restobar: number; servicios: number };
+  return ((data ?? []) as Row[])
+    .map((r) => {
+      const mostrador = Number(r.mostrador) || 0;
+      const restobar = Number(r.restobar) || 0;
+      const servicios = Number(r.servicios) || 0;
+      return { periodo: r.periodo, mostrador, restobar, servicios, total: mostrador + restobar + servicios };
+    })
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
 // ---------------------------------------------------------------------------
@@ -232,9 +173,9 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 
   // 2) Facturas recibidas + proveedor segmentación — paginated
   const [factRecData, provData] = await Promise.all([
-    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; nro_doc_emisor: string | null }>(
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; nro_doc_emisor: string | null; tipo_comprobante: number | null }>(
       "factura_recibida",
-      "fecha_emision, imp_neto_gravado_total, nro_doc_emisor",
+      "fecha_emision, imp_neto_gravado_total, nro_doc_emisor, tipo_comprobante",
     ),
     fetchAllRows<{ cuit: string | null; categoria_egreso: string | null }>(
       "proveedor",
@@ -253,7 +194,8 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
   const proveedoresTotalMap = new Map<string, number>();
   for (const f of factRecData) {
     const periodo = (f.fecha_emision as string).slice(0, 7);
-    const monto = Number(f.imp_neto_gravado_total) || 0;
+    const raw = Number(f.imp_neto_gravado_total) || 0;
+    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     const cuit = f.nro_doc_emisor;
     const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Sin clasificar";
 
