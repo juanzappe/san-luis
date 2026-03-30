@@ -58,3 +58,25 @@ RETURNS TABLE(
   FROM factura_recibida
   GROUP BY 1
 $$ LANGUAGE sql STABLE;
+
+-- Used by fetchResumenFiscal() for Impuesto al Cheque (Ley 25413)
+-- 0.6% sobre débitos + 0.6% sobre créditos = 1.2% del movimiento total
+-- Excludes rows that ARE the tax debit themselves to avoid double-counting
+CREATE OR REPLACE FUNCTION get_cheque_mensual()
+RETURNS TABLE(periodo text, importe_cheque numeric)
+AS $$
+  SELECT
+    TO_CHAR(fecha, 'YYYY-MM'),
+    (COALESCE(SUM(ABS(debito)), 0) + COALESCE(SUM(ABS(credito)), 0)) * 0.012
+  FROM movimiento_bancario
+  WHERE concepto NOT ILIKE '%IMPUESTO LEY 25413%'
+  GROUP BY 1
+
+  UNION ALL
+
+  SELECT
+    TO_CHAR(fecha, 'YYYY-MM'),
+    SUM(ABS(importe)) * 0.012
+  FROM movimiento_mp
+  GROUP BY 1
+$$ LANGUAGE sql STABLE;

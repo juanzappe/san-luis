@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
-  LineChart,
-  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -40,6 +38,16 @@ const COLORS = {
   restobar: "#06b6d4",
   servicios: "#22c55e",
 };
+
+const SHORT_MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+const YEAR_COLORS: Record<string, string> = {
+  "2024": "#94a3b8",
+  "2025": "#3b82f6",
+  "2026": "#8b5cf6",
+};
+
+type ViewMode = "mensual" | "trimestral" | "anual";
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -76,6 +84,106 @@ function KpiCard({
 }
 
 // ---------------------------------------------------------------------------
+// Year-over-year comparison chart for a single business unit
+// ---------------------------------------------------------------------------
+function YoYChart({ data, dataKey, title, color }: {
+  data: IngresoRow[];
+  dataKey: keyof Omit<IngresoRow, "periodo">;
+  title: string;
+  color: string;
+}) {
+  // Group by year → month
+  const years = useMemo(() => {
+    const yearSet = new Set<string>();
+    data.forEach((r) => yearSet.add(r.periodo.slice(0, 4)));
+    return Array.from(yearSet).sort();
+  }, [data]);
+
+  const chartData = useMemo(() => {
+    return SHORT_MONTHS.map((label, i) => {
+      const monthNum = String(i + 1).padStart(2, "0");
+      const row: Record<string, string | number> = { label };
+      for (const y of years) {
+        const match = data.find((r) => r.periodo === `${y}-${monthNum}`);
+        row[y] = match ? match[dataKey] : 0;
+      }
+      return row;
+    });
+  }, [data, years, dataKey]);
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={chartData} barCategoryGap="20%">
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis dataKey="label" fontSize={11} />
+            <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(0)}M`} />
+            <Tooltip formatter={arsTooltip} />
+            <Legend />
+            {years.map((y) => (
+              <Bar
+                key={y}
+                dataKey={y}
+                name={y}
+                fill={YEAR_COLORS[y] ?? color}
+                radius={[2, 2, 0, 0]}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Helpers for aggregation
+// ---------------------------------------------------------------------------
+function quarterLabel(periodo: string): string {
+  const [y, m] = periodo.split("-");
+  const q = Math.ceil(parseInt(m) / 3);
+  return `Q${q} ${y}`;
+}
+
+function aggregateQuarterly(rows: IngresoRow[]): IngresoRow[] {
+  const map = new Map<string, IngresoRow>();
+  for (const r of rows) {
+    const key = quarterLabel(r.periodo);
+    const existing = map.get(key);
+    if (existing) {
+      existing.mostrador += r.mostrador;
+      existing.restobar += r.restobar;
+      existing.servicios += r.servicios;
+      existing.total += r.total;
+    } else {
+      map.set(key, { periodo: key, mostrador: r.mostrador, restobar: r.restobar, servicios: r.servicios, total: r.total });
+    }
+  }
+  return Array.from(map.values());
+}
+
+function aggregateAnnual(rows: IngresoRow[]): IngresoRow[] {
+  const map = new Map<string, IngresoRow>();
+  for (const r of rows) {
+    const year = r.periodo.slice(0, 4);
+    const existing = map.get(year);
+    if (existing) {
+      existing.mostrador += r.mostrador;
+      existing.restobar += r.restobar;
+      existing.servicios += r.servicios;
+      existing.total += r.total;
+    } else {
+      map.set(year, { periodo: year, mostrador: r.mostrador, restobar: r.restobar, servicios: r.servicios, total: r.total });
+    }
+  }
+  return Array.from(map.values());
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function IngresosPage() {
@@ -83,6 +191,8 @@ export default function IngresosPage() {
   const [raw, setRaw] = useState<IngresoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [yearFilter, setYearFilter] = useState("Todos");
+  const [viewMode, setViewMode] = useState<ViewMode>("mensual");
 
   useEffect(() => {
     fetchIngresos()
@@ -90,6 +200,37 @@ export default function IngresosPage() {
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Available years
+  const availableYears = useMemo(() => {
+    const years = new Set<string>();
+    raw.forEach((r) => years.add(r.periodo.slice(0, 4)));
+    return Array.from(years).sort();
+  }, [raw]);
+
+  // Apply inflation adjustment
+  const allData: IngresoRow[] = useMemo(() =>
+    raw.map((r) => ({
+      periodo: r.periodo,
+      mostrador: adjust(r.mostrador, r.periodo),
+      restobar: adjust(r.restobar, r.periodo),
+      servicios: adjust(r.servicios, r.periodo),
+      total: adjust(r.total, r.periodo),
+    })),
+  [raw, adjust]);
+
+  // Filtered by year
+  const filteredData = useMemo(() => {
+    if (yearFilter === "Todos") return allData;
+    return allData.filter((r) => r.periodo.startsWith(yearFilter));
+  }, [allData, yearFilter]);
+
+  // View-aggregated data for table
+  const tableData = useMemo(() => {
+    if (viewMode === "trimestral") return aggregateQuarterly(filteredData);
+    if (viewMode === "anual") return aggregateAnnual(filteredData);
+    return filteredData;
+  }, [filteredData, viewMode]);
 
   if (loading) {
     return (
@@ -125,36 +266,17 @@ export default function IngresosPage() {
     );
   }
 
-  // Apply inflation adjustment
-  const data: IngresoRow[] = raw.map((r) => ({
-    periodo: r.periodo,
-    mostrador: adjust(r.mostrador, r.periodo),
-    restobar: adjust(r.restobar, r.periodo),
-    servicios: adjust(r.servicios, r.periodo),
-    total: adjust(r.total, r.periodo),
-  }));
+  const last = allData[allData.length - 1];
+  const prev = allData.length >= 2 ? allData[allData.length - 2] : null;
 
-  const last = data[data.length - 1];
-  const prev = data.length >= 2 ? data[data.length - 2] : null;
-
-  // Last 12 months for charts
-  const chartData = data.slice(-12).map((r) => ({
+  // Last 12 months for stacked bar chart
+  const chartData = allData.slice(-12).map((r) => ({
     ...r,
     label: shortLabel(r.periodo),
   }));
 
-  // YoY comparison: current 12 months vs previous 12 months
-  const yoyData = (() => {
-    if (data.length < 13) return null;
-    const cur12 = data.slice(-12);
-    const prev12 = data.slice(-24, -12);
-    if (prev12.length < 12) return null;
-    return cur12.map((r, i) => ({
-      label: shortLabel(r.periodo),
-      actual: r.total,
-      anterior: prev12[i]?.total ?? 0,
-    }));
-  })();
+  // Annual variation for annual view
+  const annualRows = viewMode === "anual" ? aggregateAnnual(filteredData) : [];
 
   return (
     <div className="space-y-6">
@@ -196,82 +318,112 @@ export default function IngresosPage() {
         />
       </div>
 
-      {/* Charts */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Stacked bar by business unit */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Ingresos por Unidad de Negocio</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Legend />
-                <Bar dataKey="mostrador" name="Mostrador" stackId="a" fill={COLORS.mostrador} />
-                <Bar dataKey="restobar" name="Restobar" stackId="a" fill={COLORS.restobar} />
-                <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* YoY line comparison */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Comparativo Interanual</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {yoyData ? (
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={yoyData}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="label" fontSize={12} />
-                  <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                  <Tooltip formatter={arsTooltip} />
-                  <Legend />
-                  <Line type="monotone" dataKey="actual" name="Año actual" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
-                  <Line type="monotone" dataKey="anterior" name="Año anterior" stroke="#94a3b8" strokeWidth={2} strokeDasharray="5 5" dot={{ r: 3 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="py-12 text-center text-sm text-muted-foreground">
-                Se necesitan al menos 24 meses de datos para el comparativo interanual
-              </p>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Monthly summary table */}
+      {/* Stacked bar chart (last 12 months) */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Detalle Mensual</CardTitle>
+          <CardTitle className="text-base">Ingresos por Unidad de Negocio</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              <Bar dataKey="mostrador" name="Mostrador" stackId="a" fill={COLORS.mostrador} />
+              <Bar dataKey="restobar" name="Restobar" stackId="a" fill={COLORS.restobar} />
+              <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Year-over-year comparison charts (3 charts) */}
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <YoYChart data={allData} dataKey="mostrador" title="Mostrador — Comparación Anual" color={COLORS.mostrador} />
+        <YoYChart data={allData} dataKey="restobar" title="Restobar — Comparación Anual" color={COLORS.restobar} />
+        <YoYChart data={allData} dataKey="servicios" title="Servicios — Comparación Anual" color={COLORS.servicios} />
+      </div>
+
+      {/* Controls: Year filter + View toggle */}
+      <div className="flex flex-wrap items-center gap-4">
+        {/* Year filter */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium text-muted-foreground">Año:</span>
+          <select
+            value={yearFilter}
+            onChange={(e) => setYearFilter(e.target.value)}
+            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="Todos">Todos</option>
+            {availableYears.map((y) => (
+              <option key={y} value={y}>{y}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* View mode toggle */}
+        <div className="flex rounded-md border border-input shadow-sm">
+          {(["mensual", "trimestral", "anual"] as ViewMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={`px-3 py-1.5 text-sm font-medium capitalize transition-colors first:rounded-l-md last:rounded-r-md ${
+                viewMode === mode
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-background text-muted-foreground hover:bg-muted"
+              }`}
+            >
+              {mode}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Detail table */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            Detalle {viewMode === "mensual" ? "Mensual" : viewMode === "trimestral" ? "Trimestral" : "Anual"}
+          </CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Período</TableHead>
+                <TableHead>{viewMode === "anual" ? "Año" : "Período"}</TableHead>
                 <TableHead className="text-right">Mostrador</TableHead>
                 <TableHead className="text-right">Restobar</TableHead>
                 <TableHead className="text-right">Servicios</TableHead>
                 <TableHead className="text-right">Total</TableHead>
+                {viewMode === "anual" && <TableHead className="text-right">Var. %</TableHead>}
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[...data].reverse().map((row) => (
-                <TableRow key={row.periodo}>
-                  <TableCell className="font-medium">{periodoLabel(row.periodo)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.mostrador)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.restobar)}</TableCell>
-                  <TableCell className="text-right">{formatARS(row.servicios)}</TableCell>
-                  <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
-                </TableRow>
-              ))}
+              {[...(viewMode === "anual" ? annualRows : tableData)].reverse().map((row, idx, arr) => {
+                const prevRow = idx + 1 < arr.length ? arr[idx + 1] : null;
+                const varPct = prevRow && prevRow.total > 0
+                  ? ((row.total - prevRow.total) / prevRow.total) * 100
+                  : null;
+
+                return (
+                  <TableRow key={row.periodo}>
+                    <TableCell className="font-medium">
+                      {viewMode === "mensual" ? periodoLabel(row.periodo) : row.periodo}
+                    </TableCell>
+                    <TableCell className="text-right">{formatARS(row.mostrador)}</TableCell>
+                    <TableCell className="text-right">{formatARS(row.restobar)}</TableCell>
+                    <TableCell className="text-right">{formatARS(row.servicios)}</TableCell>
+                    <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
+                    {viewMode === "anual" && (
+                      <TableCell className={`text-right ${varPct !== null && varPct >= 0 ? "text-green-600" : varPct !== null ? "text-red-600" : ""}`}>
+                        {varPct !== null ? `${varPct >= 0 ? "+" : ""}${varPct.toFixed(1)}%` : "—"}
+                      </TableCell>
+                    )}
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </CardContent>
