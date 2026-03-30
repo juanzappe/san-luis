@@ -14,9 +14,6 @@ import {
 import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
   type IngresoRow,
@@ -46,8 +43,6 @@ const YEAR_COLORS: Record<string, string> = {
   "2025": "#3b82f6",
   "2026": "#8b5cf6",
 };
-
-type ViewMode = "mensual" | "trimestral" | "anual";
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -141,49 +136,6 @@ function YoYChart({ data, dataKey, title, color }: {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers for aggregation
-// ---------------------------------------------------------------------------
-function quarterLabel(periodo: string): string {
-  const [y, m] = periodo.split("-");
-  const q = Math.ceil(parseInt(m) / 3);
-  return `Q${q} ${y}`;
-}
-
-function aggregateQuarterly(rows: IngresoRow[]): IngresoRow[] {
-  const map = new Map<string, IngresoRow>();
-  for (const r of rows) {
-    const key = quarterLabel(r.periodo);
-    const existing = map.get(key);
-    if (existing) {
-      existing.mostrador += r.mostrador;
-      existing.restobar += r.restobar;
-      existing.servicios += r.servicios;
-      existing.total += r.total;
-    } else {
-      map.set(key, { periodo: key, mostrador: r.mostrador, restobar: r.restobar, servicios: r.servicios, total: r.total });
-    }
-  }
-  return Array.from(map.values());
-}
-
-function aggregateAnnual(rows: IngresoRow[]): IngresoRow[] {
-  const map = new Map<string, IngresoRow>();
-  for (const r of rows) {
-    const year = r.periodo.slice(0, 4);
-    const existing = map.get(year);
-    if (existing) {
-      existing.mostrador += r.mostrador;
-      existing.restobar += r.restobar;
-      existing.servicios += r.servicios;
-      existing.total += r.total;
-    } else {
-      map.set(year, { periodo: year, mostrador: r.mostrador, restobar: r.restobar, servicios: r.servicios, total: r.total });
-    }
-  }
-  return Array.from(map.values());
-}
-
-// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function IngresosPage() {
@@ -191,22 +143,12 @@ export default function IngresosPage() {
   const [raw, setRaw] = useState<IngresoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [yearFilter, setYearFilter] = useState("Todos");
-  const [viewMode, setViewMode] = useState<ViewMode>("mensual");
-
   useEffect(() => {
     fetchIngresos()
       .then(setRaw)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
-
-  // Available years
-  const availableYears = useMemo(() => {
-    const years = new Set<string>();
-    raw.forEach((r) => years.add(r.periodo.slice(0, 4)));
-    return Array.from(years).sort();
-  }, [raw]);
 
   // Apply inflation adjustment
   const allData: IngresoRow[] = useMemo(() =>
@@ -218,19 +160,6 @@ export default function IngresosPage() {
       total: adjust(r.total, r.periodo),
     })),
   [raw, adjust]);
-
-  // Filtered by year
-  const filteredData = useMemo(() => {
-    if (yearFilter === "Todos") return allData;
-    return allData.filter((r) => r.periodo.startsWith(yearFilter));
-  }, [allData, yearFilter]);
-
-  // View-aggregated data for table
-  const tableData = useMemo(() => {
-    if (viewMode === "trimestral") return aggregateQuarterly(filteredData);
-    if (viewMode === "anual") return aggregateAnnual(filteredData);
-    return filteredData;
-  }, [filteredData, viewMode]);
 
   if (loading) {
     return (
@@ -274,9 +203,6 @@ export default function IngresosPage() {
     ...r,
     label: shortLabel(r.periodo),
   }));
-
-  // Annual variation for annual view
-  const annualRows = viewMode === "anual" ? aggregateAnnual(filteredData) : [];
 
   return (
     <div className="space-y-6">
@@ -345,89 +271,6 @@ export default function IngresosPage() {
         <YoYChart data={allData} dataKey="restobar" title="Restobar — Comparación Anual" color={COLORS.restobar} />
         <YoYChart data={allData} dataKey="servicios" title="Servicios — Comparación Anual" color={COLORS.servicios} />
       </div>
-
-      {/* Controls: Year filter + View toggle */}
-      <div className="flex flex-wrap items-center gap-4">
-        {/* Year filter */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-muted-foreground">Año:</span>
-          <select
-            value={yearFilter}
-            onChange={(e) => setYearFilter(e.target.value)}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
-          >
-            <option value="Todos">Todos</option>
-            {availableYears.map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
-        </div>
-
-        {/* View mode toggle */}
-        <div className="flex rounded-md border border-input shadow-sm">
-          {(["mensual", "trimestral", "anual"] as ViewMode[]).map((mode) => (
-            <button
-              key={mode}
-              onClick={() => setViewMode(mode)}
-              className={`px-3 py-1.5 text-sm font-medium capitalize transition-colors first:rounded-l-md last:rounded-r-md ${
-                viewMode === mode
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-background text-muted-foreground hover:bg-muted"
-              }`}
-            >
-              {mode}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Detail table */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">
-            Detalle {viewMode === "mensual" ? "Mensual" : viewMode === "trimestral" ? "Trimestral" : "Anual"}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{viewMode === "anual" ? "Año" : "Período"}</TableHead>
-                <TableHead className="text-right">Mostrador</TableHead>
-                <TableHead className="text-right">Restobar</TableHead>
-                <TableHead className="text-right">Servicios</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                {viewMode === "anual" && <TableHead className="text-right">Var. %</TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[...(viewMode === "anual" ? annualRows : tableData)].reverse().map((row, idx, arr) => {
-                const prevRow = idx + 1 < arr.length ? arr[idx + 1] : null;
-                const varPct = prevRow && prevRow.total > 0
-                  ? ((row.total - prevRow.total) / prevRow.total) * 100
-                  : null;
-
-                return (
-                  <TableRow key={row.periodo}>
-                    <TableCell className="font-medium">
-                      {viewMode === "mensual" ? periodoLabel(row.periodo) : row.periodo}
-                    </TableCell>
-                    <TableCell className="text-right">{formatARS(row.mostrador)}</TableCell>
-                    <TableCell className="text-right">{formatARS(row.restobar)}</TableCell>
-                    <TableCell className="text-right">{formatARS(row.servicios)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
-                    {viewMode === "anual" && (
-                      <TableCell className={`text-right ${varPct !== null && varPct >= 0 ? "text-green-600" : varPct !== null ? "text-red-600" : ""}`}>
-                        {varPct !== null ? `${varPct >= 0 ? "+" : ""}${varPct.toFixed(1)}%` : "—"}
-                      </TableCell>
-                    )}
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
     </div>
   );
 }
