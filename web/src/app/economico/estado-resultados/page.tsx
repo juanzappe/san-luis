@@ -14,7 +14,7 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Loader2, AlertCircle, Info } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -44,6 +44,7 @@ function PnlLine({
   border,
   indent,
   negative,
+  infoTip,
 }: {
   label: string;
   values: number[];
@@ -51,11 +52,19 @@ function PnlLine({
   border?: boolean;
   indent?: boolean;
   negative?: boolean;
+  infoTip?: string;
 }) {
   return (
     <TableRow className={border ? "border-t-2 border-foreground/20" : ""}>
       <TableCell className={`${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
-        {negative && !bold ? `(−) ${label}` : label}
+        <span className="inline-flex items-center gap-1">
+          {negative && !bold ? `(−) ${label}` : label}
+          {infoTip && (
+            <span title={infoTip} className="cursor-help">
+              <Info className="h-3.5 w-3.5 text-muted-foreground" />
+            </span>
+          )}
+        </span>
       </TableCell>
       {values.map((v, i) => (
         <TableCell
@@ -318,6 +327,7 @@ export default function EstadoResultadosPage() {
                 values={tablePeriods.map((r) => r.ganancias)}
                 indent
                 negative
+                infoTip="Retenciones SICORE efectivamente pagadas. No incluye el impuesto determinado anual."
               />
               <PnlLine
                 label="Resultado Neto"
@@ -357,7 +367,7 @@ export default function EstadoResultadosPage() {
                 data={tablePeriods.map((r) => ({
                   label: shortLabel(r.periodo),
                   ingresos: r.ingresos,
-                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros,
+                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + r.ganancias,
                 }))}
               >
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
