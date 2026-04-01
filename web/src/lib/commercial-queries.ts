@@ -1,8 +1,12 @@
 /**
  * Queries for the Comercial module.
  * Clientes, Proveedores, Segmentación.
+ *
+ * Uses server-side RPCs to avoid fetching full tables (93k+ rows)
+ * which caused timeouts and silent truncation at 1000 rows.
  */
 import { supabase } from "./supabase";
+import { fetchWithRetry } from "./fetchWithRetry";
 import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
@@ -58,61 +62,57 @@ export interface ClientesData {
   concentracionDonut: { name: string; value: number }[];
 }
 
+// RPC row type for get_comercial_clientes
+type RpcClienteRow = {
+  periodo: string;
+  cuit: string;
+  denominacion: string;
+  total_neto: number;
+  cantidad: number;
+  tipo_comprobante: number;
+  tipo_entidad: string;
+  clasificacion: string;
+};
+
 export async function fetchClientes(): Promise<ClientesData> {
-  const [factRes, cliRes] = await Promise.all([
-    supabase.from("factura_emitida").select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor, denominacion_receptor, tipo_comprobante"),
-    supabase.from("cliente").select("cuit, razon_social, tipo_entidad, clasificacion"),
-  ]);
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_comercial_clientes");
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  if (factRes.error) throw factRes.error;
-  if (cliRes.error) throw cliRes.error;
+  const rows = (data ?? []) as RpcClienteRow[];
 
-  // Build client lookup by CUIT
-  const cliMap = new Map<string, { nombre: string; tipoEntidad: string; clasificacion: string }>();
-  for (const c of cliRes.data ?? []) {
-    const cuit = c.cuit as string | null;
-    if (cuit) {
-      cliMap.set(cuit, {
-        nombre: (c.razon_social as string) ?? cuit,
-        tipoEntidad: (c.tipo_entidad as string) ?? "Sin clasificar",
-        clasificacion: (c.clasificacion as string) ?? "Sin clasificar",
-      });
-    }
-  }
-
-  // Aggregate by client (CUIT)
+  // Aggregate by client (CUIT), applying credit note sign reversal
   const clientTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoEntidad: string; clasificacion: string }>();
-  // Monthly aggregation
   const monthlyMap = new Map<string, { monto: number; clientes: Set<string>; publico: number; privado: number }>();
 
-  for (const f of factRes.data ?? []) {
-    const raw = Number(f.imp_neto_gravado_total) || 0;
-    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
+  for (const r of rows) {
+    const raw = Number(r.total_neto) || 0;
+    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
     if (monto <= 0) continue;
-    const cuit = (f.nro_doc_receptor as string) ?? "SIN_CUIT";
-    const nombre = (f.denominacion_receptor as string) ?? "Sin nombre";
-    const periodo = (f.fecha_emision as string).slice(0, 7);
-
-    const seg = cliMap.get(cuit);
-    const tipoEntidad = seg?.tipoEntidad ?? "Sin clasificar";
-    const clasificacion = seg?.clasificacion ?? "Sin clasificar";
+    const cnt = Number(r.cantidad) || 0;
+    const cuit = r.cuit;
+    const tipoEntidad = r.tipo_entidad;
+    const clasificacion = r.clasificacion;
 
     // Client total
     const existing = clientTotals.get(cuit);
     if (existing) {
       existing.monto += monto;
-      existing.cnt += 1;
+      existing.cnt += cnt;
     } else {
       clientTotals.set(cuit, {
-        nombre: seg?.nombre ?? nombre,
+        nombre: r.denominacion,
         monto,
-        cnt: 1,
+        cnt,
         tipoEntidad,
         clasificacion,
       });
     }
 
     // Monthly
+    const periodo = r.periodo;
     if (!monthlyMap.has(periodo)) {
       monthlyMap.set(periodo, { monto: 0, clientes: new Set(), publico: 0, privado: 0 });
     }
@@ -190,46 +190,62 @@ export async function fetchClientes(): Promise<ClientesData> {
   return { ranking, mensual, concentracionTop10, pctPublico, porTipoEntidad, porClasificacion, concentracionDonut };
 }
 
+// RPC row type for get_detalle_cliente / get_detalle_proveedor
+type RpcDetalleRow = {
+  periodo: string;
+  total_neto: number;
+  cantidad: number;
+  tipo_comprobante: number;
+  primera_fecha: string;
+  ultima_fecha: string;
+  cant_fechas_distintas: number;
+};
+
 export async function fetchClienteDetalle(cuit: string): Promise<ClienteDetalle | null> {
-  const [factRes, cliRes] = await Promise.all([
-    supabase.from("factura_emitida")
-      .select("fecha_emision, imp_neto_gravado_total, tipo_comprobante")
-      .eq("nro_doc_receptor", cuit)
-      .order("fecha_emision", { ascending: true }),
+  const [rpcRes, cliRes] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_detalle_cliente", { p_cuit: cuit });
+      if (res.error) throw res.error;
+      return res.data;
+    }),
     supabase.from("cliente").select("razon_social, cuit, tipo_entidad, clasificacion").eq("cuit", cuit).limit(1),
   ]);
 
-  if (factRes.error) throw factRes.error;
-  const facturas = factRes.data ?? [];
-  if (facturas.length === 0) return null;
+  const rows = (rpcRes ?? []) as RpcDetalleRow[];
+  if (rows.length === 0) return null;
 
   const cli = (cliRes.data ?? [])[0];
   const nombre = (cli?.razon_social as string) ?? cuit;
   const tipoEntidad = (cli?.tipo_entidad as string) ?? "Sin clasificar";
   const clasificacion = (cli?.clasificacion as string) ?? "Sin clasificar";
 
-  // Monthly aggregation
+  // Monthly aggregation from pre-grouped RPC rows
   const monthMap = new Map<string, { monto: number; cnt: number }>();
-  const dates: string[] = [];
-  for (const f of facturas) {
-    const p = (f.fecha_emision as string).slice(0, 7);
+  let totalDates = 0;
+  let minDate: string | null = null;
+  let maxDate: string | null = null;
+
+  for (const r of rows) {
+    const raw = Number(r.total_neto) || 0;
+    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
+    const cnt = Number(r.cantidad) || 0;
+    const p = r.periodo;
+
     const m = monthMap.get(p) ?? { monto: 0, cnt: 0 };
-    const raw = Number(f.imp_neto_gravado_total) || 0;
-    m.monto += [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
-    m.cnt += 1;
+    m.monto += monto;
+    m.cnt += cnt;
     monthMap.set(p, m);
-    dates.push(f.fecha_emision as string);
+
+    totalDates += Number(r.cant_fechas_distintas) || 0;
+    if (!minDate || r.primera_fecha < minDate) minDate = r.primera_fecha;
+    if (!maxDate || r.ultima_fecha > maxDate) maxDate = r.ultima_fecha;
   }
 
-  // Frequency
+  // Frequency: approximate from date range and distinct dates
   let frecuenciaDias: number | null = null;
-  if (dates.length >= 2) {
-    const sorted = dates.sort();
-    let totalDiff = 0;
-    for (let i = 1; i < sorted.length; i++) {
-      totalDiff += (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / (1000 * 60 * 60 * 24);
-    }
-    frecuenciaDias = Math.round(totalDiff / (sorted.length - 1));
+  if (totalDates >= 2 && minDate && maxDate) {
+    const totalDiff = (new Date(maxDate).getTime() - new Date(minDate).getTime()) / (1000 * 60 * 60 * 24);
+    frecuenciaDias = Math.round(totalDiff / (totalDates - 1));
   }
 
   const mensual = Array.from(monthMap.entries())
@@ -280,59 +296,54 @@ export interface ProveedoresData {
   concentracionDonut: { name: string; value: number }[];
 }
 
+// RPC row type for get_comercial_proveedores
+type RpcProveedorRow = {
+  periodo: string;
+  cuit: string;
+  denominacion: string;
+  total_neto: number;
+  cantidad: number;
+  tipo_comprobante: number;
+  tipo_costo: string;
+  categoria_egreso: string;
+};
+
 export async function fetchProveedores(): Promise<ProveedoresData> {
-  const [factRes, provRes] = await Promise.all([
-    supabase.from("factura_recibida").select("fecha_emision, imp_neto_gravado_total, nro_doc_emisor, denominacion_emisor, tipo_comprobante"),
-    supabase.from("proveedor").select("cuit, razon_social, tipo_costo, categoria_egreso"),
-  ]);
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_comercial_proveedores");
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  if (factRes.error) throw factRes.error;
-  if (provRes.error) throw provRes.error;
-
-  // Build proveedor lookup
-  const provMap = new Map<string, { nombre: string; tipoCosto: string; categoriaEgreso: string }>();
-  for (const p of provRes.data ?? []) {
-    const cuit = p.cuit as string | null;
-    if (cuit) {
-      provMap.set(cuit, {
-        nombre: (p.razon_social as string) ?? cuit,
-        tipoCosto: (p.tipo_costo as string) ?? "Sin clasificar",
-        categoriaEgreso: (p.categoria_egreso as string) ?? "Sin clasificar",
-      });
-    }
-  }
+  const rows = (data ?? []) as RpcProveedorRow[];
 
   // Aggregate by proveedor
   const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string }>();
-  // Monthly
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
-  for (const f of factRes.data ?? []) {
-    const raw = Number(f.imp_neto_gravado_total) || 0;
-    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
+  for (const r of rows) {
+    const raw = Number(r.total_neto) || 0;
+    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
     if (monto <= 0) continue;
-    const cuit = (f.nro_doc_emisor as string) ?? "SIN_CUIT";
-    const nombre = (f.denominacion_emisor as string) ?? "Sin nombre";
-    const periodo = (f.fecha_emision as string).slice(0, 7);
-
-    const seg = provMap.get(cuit);
-    const tipoCosto = seg?.tipoCosto ?? "Sin clasificar";
-    const categoriaEgreso = seg?.categoriaEgreso ?? "Sin clasificar";
+    const cnt = Number(r.cantidad) || 0;
+    const cuit = r.cuit;
+    const categoriaEgreso = r.categoria_egreso;
 
     const existing = provTotals.get(cuit);
     if (existing) {
       existing.monto += monto;
-      existing.cnt += 1;
+      existing.cnt += cnt;
     } else {
       provTotals.set(cuit, {
-        nombre: seg?.nombre ?? nombre,
+        nombre: r.denominacion,
         monto,
-        cnt: 1,
-        tipoCosto,
+        cnt,
+        tipoCosto: r.tipo_costo,
         categoriaEgreso,
       });
     }
 
+    const periodo = r.periodo;
     if (!monthlyMap.has(periodo)) {
       monthlyMap.set(periodo, { monto: 0, proveedores: new Set(), porCat: new Map() });
     }
@@ -400,17 +411,17 @@ export async function fetchProveedores(): Promise<ProveedoresData> {
 }
 
 export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDetalle | null> {
-  const [factRes, provRes] = await Promise.all([
-    supabase.from("factura_recibida")
-      .select("fecha_emision, imp_neto_gravado_total, tipo_comprobante")
-      .eq("nro_doc_emisor", cuit)
-      .order("fecha_emision", { ascending: true }),
+  const [rpcRes, provRes] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_detalle_proveedor", { p_cuit: cuit });
+      if (res.error) throw res.error;
+      return res.data;
+    }),
     supabase.from("proveedor").select("razon_social, cuit, tipo_costo, categoria_egreso").eq("cuit", cuit).limit(1),
   ]);
 
-  if (factRes.error) throw factRes.error;
-  const facturas = factRes.data ?? [];
-  if (facturas.length === 0) return null;
+  const rows = (rpcRes ?? []) as RpcDetalleRow[];
+  if (rows.length === 0) return null;
 
   const prov = (provRes.data ?? [])[0];
   const nombre = (prov?.razon_social as string) ?? cuit;
@@ -418,25 +429,30 @@ export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDeta
   const categoriaEgreso = (prov?.categoria_egreso as string) ?? "Sin clasificar";
 
   const monthMap = new Map<string, { monto: number; cnt: number }>();
-  const dates: string[] = [];
-  for (const f of facturas) {
-    const p = (f.fecha_emision as string).slice(0, 7);
+  let totalDates = 0;
+  let minDate: string | null = null;
+  let maxDate: string | null = null;
+
+  for (const r of rows) {
+    const raw = Number(r.total_neto) || 0;
+    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
+    const cnt = Number(r.cantidad) || 0;
+    const p = r.periodo;
+
     const m = monthMap.get(p) ?? { monto: 0, cnt: 0 };
-    const raw = Number(f.imp_neto_gravado_total) || 0;
-    m.monto += [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
-    m.cnt += 1;
+    m.monto += monto;
+    m.cnt += cnt;
     monthMap.set(p, m);
-    dates.push(f.fecha_emision as string);
+
+    totalDates += Number(r.cant_fechas_distintas) || 0;
+    if (!minDate || r.primera_fecha < minDate) minDate = r.primera_fecha;
+    if (!maxDate || r.ultima_fecha > maxDate) maxDate = r.ultima_fecha;
   }
 
   let frecuenciaDias: number | null = null;
-  if (dates.length >= 2) {
-    const sorted = dates.sort();
-    let totalDiff = 0;
-    for (let i = 1; i < sorted.length; i++) {
-      totalDiff += (new Date(sorted[i]).getTime() - new Date(sorted[i - 1]).getTime()) / (1000 * 60 * 60 * 24);
-    }
-    frecuenciaDias = Math.round(totalDiff / (sorted.length - 1));
+  if (totalDates >= 2 && minDate && maxDate) {
+    const totalDiff = (new Date(maxDate).getTime() - new Date(minDate).getTime()) / (1000 * 60 * 60 * 24);
+    frecuenciaDias = Math.round(totalDiff / (totalDates - 1));
   }
 
   const mensual = Array.from(monthMap.entries())

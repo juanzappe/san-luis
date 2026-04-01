@@ -3,6 +3,7 @@
  * Flujo de fondos, Tenencias, Inversiones, Cuentas por cobrar/pagar.
  */
 import { supabase } from "./supabase";
+import { fetchWithRetry } from "./fetchWithRetry";
 import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel } from "./economic-queries";
 
 // Re-export helpers so pages import from a single module
@@ -27,114 +28,44 @@ export interface FlujoDeFondosRow {
   acumulado: number;
 }
 
-const COMISION_KEYWORDS = [
-  "comision", "interes", "mantenimiento", "seguro",
-  "sellado", "impuesto s/deb", "impuesto s/cred",
-];
-
-function isComisionBancaria(concepto: string): boolean {
-  const lower = concepto.toLowerCase();
-  return COMISION_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-function addToMap(map: Map<string, number>, key: string, val: number) {
-  map.set(key, (map.get(key) ?? 0) + val);
-}
+// RPC row type for get_flujo_fondos
+type RpcFlujoRow = {
+  periodo: string;
+  cobros_efectivo: number;
+  cobros_banco: number;
+  cobros_mp: number;
+  pagos_proveedores: number;
+  sueldos: number;
+  impuestos: number;
+  comisiones_bancarias: number;
+};
 
 export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
-  const [cajaRes, bancoRes, mpRes, sueldosRes, impRes] = await Promise.all([
-    supabase.from("movimiento_caja").select("fecha, condicion_pago, tipo, importe"),
-    supabase.from("movimiento_bancario").select("fecha, credito, debito, concepto"),
-    supabase.from("movimiento_mp").select("fecha, importe"),
-    supabase.from("liquidacion_sueldo").select("periodo, sueldo_neto"),
-    supabase.from("pago_impuesto").select("fecha_pago, monto"),
-  ]);
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_flujo_fondos");
+    if (res.error) throw res.error;
+    return (res.data ?? []) as RpcFlujoRow[];
+  });
 
-  if (cajaRes.error) throw cajaRes.error;
-  if (bancoRes.error) throw bancoRes.error;
-  if (mpRes.error) throw mpRes.error;
-  if (sueldosRes.error) throw sueldosRes.error;
-  if (impRes.error) throw impRes.error;
-
-  // 1) Cobros efectivo: movimiento_caja EFECTIVO + Venta Contado
-  const cobrosEfectivoMap = new Map<string, number>();
-  for (const r of cajaRes.data ?? []) {
-    if (r.condicion_pago === "EFECTIVO" && r.tipo === "Venta Contado") {
-      const p = (r.fecha as string).slice(0, 7);
-      addToMap(cobrosEfectivoMap, p, Number(r.importe) || 0);
-    }
-  }
-
-  // 2) Banco: split credits (cobros) vs debits (pagos or comisiones)
-  const cobrosBancoMap = new Map<string, number>();
-  const pagosProvMap = new Map<string, number>();
-  const comisionesMap = new Map<string, number>();
-  for (const r of bancoRes.data ?? []) {
-    const p = (r.fecha as string).slice(0, 7);
-    const cred = Number(r.credito) || 0;
-    const deb = Number(r.debito) || 0;
-    if (cred > 0) {
-      addToMap(cobrosBancoMap, p, cred);
-    }
-    if (deb > 0) {
-      if (isComisionBancaria(r.concepto ?? "")) {
-        addToMap(comisionesMap, p, deb);
-      } else {
-        addToMap(pagosProvMap, p, deb);
-      }
-    }
-  }
-
-  // 3) MP: positive importe = cobro
-  const cobrosMPMap = new Map<string, number>();
-  for (const r of mpRes.data ?? []) {
-    const imp = Number(r.importe) || 0;
-    if (imp > 0) {
-      const p = (r.fecha as string).slice(0, 7);
-      addToMap(cobrosMPMap, p, imp);
-    }
-  }
-
-  // 4) Sueldos
-  const sueldosMap = new Map<string, number>();
-  for (const r of sueldosRes.data ?? []) {
-    const p = (r.periodo as string).slice(0, 7);
-    addToMap(sueldosMap, p, Number(r.sueldo_neto) || 0);
-  }
-
-  // 5) Impuestos
-  const impuestosMap = new Map<string, number>();
-  for (const r of impRes.data ?? []) {
-    const p = (r.fecha_pago as string).slice(0, 7);
-    addToMap(impuestosMap, p, Number(r.monto) || 0);
-  }
-
-  // Merge all periodos
-  const allP = new Set<string>();
-  for (const m of [cobrosEfectivoMap, cobrosBancoMap, cobrosMPMap, pagosProvMap, sueldosMap, impuestosMap, comisionesMap]) {
-    m.forEach((_, k) => allP.add(k));
-  }
-
-  const sorted = Array.from(allP).sort();
   let acum = 0;
 
-  return sorted.map((p) => {
-    const cobrosEfectivo = cobrosEfectivoMap.get(p) ?? 0;
-    const cobrosBanco = cobrosBancoMap.get(p) ?? 0;
-    const cobrosMP = cobrosMPMap.get(p) ?? 0;
+  return rows.map((r) => {
+    const cobrosEfectivo = Number(r.cobros_efectivo) || 0;
+    const cobrosBanco = Number(r.cobros_banco) || 0;
+    const cobrosMP = Number(r.cobros_mp) || 0;
     const totalCobros = cobrosEfectivo + cobrosBanco + cobrosMP;
 
-    const pagosProveedores = pagosProvMap.get(p) ?? 0;
-    const sueldos = sueldosMap.get(p) ?? 0;
-    const impuestos = impuestosMap.get(p) ?? 0;
-    const comisionesBancarias = comisionesMap.get(p) ?? 0;
+    const pagosProveedores = Number(r.pagos_proveedores) || 0;
+    const sueldos = Number(r.sueldos) || 0;
+    const impuestos = Number(r.impuestos) || 0;
+    const comisionesBancarias = Number(r.comisiones_bancarias) || 0;
     const totalPagos = pagosProveedores + sueldos + impuestos + comisionesBancarias;
 
     const flujoNeto = totalCobros - totalPagos;
     acum += flujoNeto;
 
     return {
-      periodo: p,
+      periodo: r.periodo,
       cobrosEfectivo, cobrosBanco, cobrosMP, totalCobros,
       pagosProveedores, sueldos, impuestos, comisionesBancarias, totalPagos,
       flujoNeto,
@@ -183,12 +114,15 @@ export function tenenciaTipoLabel(tipo: string): string {
 }
 
 export async function fetchTenencias(): Promise<TenenciasData> {
-  const { data, error } = await supabase
-    .from("tenencia")
-    .select("fecha, tipo, denominacion, moneda, saldo, saldo_ars")
-    .order("fecha", { ascending: true });
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase
+      .from("tenencia")
+      .select("fecha, tipo, denominacion, moneda, saldo, saldo_ars")
+      .order("fecha", { ascending: true });
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  if (error) throw error;
   if (!data || data.length === 0) return { current: [], history: [], hasData: false };
 
   // Latest date for "current" snapshot
@@ -260,21 +194,26 @@ export interface InversionesData {
 }
 
 export async function fetchInversiones(): Promise<InversionesData> {
-  const [holdRes, movRes] = await Promise.all([
-    supabase
-      .from("inversion")
-      .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct")
-      .eq("estado", "vigente"),
-    supabase
-      .from("inversion_movimiento")
-      .select("id, fecha_liquidacion, ticker, descripcion, tipo_operacion, cantidad_vn, precio, importe_neto, moneda")
-      .order("fecha_liquidacion", { ascending: false }),
+  const [holdData, movData] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("inversion")
+        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct")
+        .eq("estado", "vigente");
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("inversion_movimiento")
+        .select("id, fecha_liquidacion, ticker, descripcion, tipo_operacion, cantidad_vn, precio, importe_neto, moneda")
+        .order("fecha_liquidacion", { ascending: false });
+      if (res.error) throw res.error;
+      return res.data;
+    }),
   ]);
 
-  if (holdRes.error) throw holdRes.error;
-  if (movRes.error) throw movRes.error;
-
-  const holdings: InversionRow[] = (holdRes.data ?? []).map((r) => ({
+  const holdings: InversionRow[] = (holdData ?? []).map((r) => ({
     id: r.id as number,
     ticker: (r.ticker ?? "") as string,
     nombre: (r.nombre ?? "") as string,
@@ -289,7 +228,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     variacionPct: Number(r.variacion_pct) || 0,
   }));
 
-  const movimientos: InversionMovRow[] = (movRes.data ?? []).map((r) => ({
+  const movimientos: InversionMovRow[] = (movData ?? []).map((r) => ({
     id: r.id as number,
     fecha: (r.fecha_liquidacion ?? "") as string,
     ticker: (r.ticker ?? "") as string,
@@ -355,12 +294,15 @@ function buildAgingBuckets(rows: { monto: number; diasPendientes: number }[]): A
 export { buildAgingBuckets };
 
 export async function fetchCuentasCobrar(): Promise<CuentaCobrarRow[]> {
-  const { data, error } = await supabase
-    .from("factura_emitida")
-    .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_receptor, nro_doc_receptor, tipo_comprobante, punto_venta, numero_desde, estado")
-    .in("estado", ["pendiente", "parcial"]);
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase
+      .from("factura_emitida")
+      .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_receptor, nro_doc_receptor, tipo_comprobante, punto_venta, numero_desde, estado")
+      .in("estado", ["pendiente", "parcial"]);
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  if (error) throw error;
   if (!data) return [];
 
   const today = new Date();
@@ -399,12 +341,15 @@ export interface CuentaPagarRow {
 }
 
 export async function fetchCuentasPagar(): Promise<CuentaPagarRow[]> {
-  const { data, error } = await supabase
-    .from("factura_recibida")
-    .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_emisor, nro_doc_emisor, tipo_comprobante, punto_venta, numero_desde, estado")
-    .in("estado", ["pendiente", "parcial"]);
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase
+      .from("factura_recibida")
+      .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_emisor, nro_doc_emisor, tipo_comprobante, punto_venta, numero_desde, estado")
+      .in("estado", ["pendiente", "parcial"]);
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  if (error) throw error;
   if (!data) return [];
 
   const today = new Date();
