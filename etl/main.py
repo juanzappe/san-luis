@@ -1,9 +1,10 @@
 """Orquestador principal del pipeline ETL de San Luis.
 
 Uso:
-    python main.py                  # Corre todos los loaders
-    python main.py productos        # Corre un loader específico
-    python main.py arca_ingresos arca_egresos  # Varios loaders
+    python main.py                  # Incremental: solo datos nuevos
+    python main.py --full           # Full reload: borra e importa todo
+    python main.py mostrador        # Incremental de un loader
+    python main.py mostrador --full # Full reload de un loader
 """
 
 import sys
@@ -54,9 +55,16 @@ def main():
     logger = setup_logging()
     conn = get_db_connection()
 
+    # Parse arguments: loader names + --full flag
+    args = sys.argv[1:]
+    full_reload = "--full" in args
+    loader_names = [a for a in args if not a.startswith("--")]
+
+    mode = "FULL RELOAD" if full_reload else "INCREMENTAL"
+
     # Filtrar loaders si se pasan como argumento
-    if len(sys.argv) > 1:
-        selected = set(sys.argv[1:])
+    if loader_names:
+        selected = set(loader_names)
         loaders_to_run = [(n, m) for n, m in LOADERS if n in selected]
         unknown = selected - {n for n, _ in LOADERS}
         if unknown:
@@ -66,14 +74,14 @@ def main():
     else:
         loaders_to_run = LOADERS
 
-    logger.info(f"=== Pipeline ETL San Luis — {len(loaders_to_run)} loaders ===")
+    logger.info(f"=== Pipeline ETL San Luis — {len(loaders_to_run)} loaders ({mode}) ===")
     results = []
 
     for name, module in loaders_to_run:
-        logger.info(f"--- Iniciando: {name} ---")
+        logger.info(f"--- Iniciando: {name} ({mode}) ---")
         t0 = time.time()
         try:
-            count = module.run(conn, logger)
+            count = module.run(conn, logger, full=full_reload)
             elapsed = time.time() - t0
             logger.info(f"✓ {name}: {count} registros en {elapsed:.1f}s")
             results.append((name, count, elapsed, None))

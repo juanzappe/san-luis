@@ -90,7 +90,7 @@ def _parse_banco_txt(path: Path) -> tuple[list[dict], int]:
     return records, skipped
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS BANCARIOS" / "BANCO PROVINCIA"
     txt_files = sorted(data_dir.rglob("*.txt"))
     logger.info(f"  {len(txt_files)} archivos TXT encontrados")

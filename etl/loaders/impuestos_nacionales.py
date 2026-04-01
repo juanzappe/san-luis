@@ -25,7 +25,7 @@ def _parse_importe_impuesto(val: str) -> float | None:
     return parse_monto_argentino(v)
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "IMPUESTOS NACIONALES"
     csv_files = sorted(data_dir.glob("*.csv"))
     logger.info(f"  {len(csv_files)} archivos CSV encontrados")

@@ -137,7 +137,7 @@ def _parse_er(path: str, logger) -> list[dict]:
     return records
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     path = get_data_raw_path() / "EECC" / "ANALISIS EECC.xlsx"
     logger.info(f"  Leyendo {path}")
 

@@ -11,7 +11,7 @@ from utils import (
 )
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "ARCA_INGRESOS"
     csv_files = sorted(data_dir.glob("*.csv"))
     logger.info(f"  {len(csv_files)} archivos CSV encontrados")

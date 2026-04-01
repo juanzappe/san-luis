@@ -177,7 +177,7 @@ def _parse_voucher(path: Path, logger) -> list[dict]:
     return records
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "INVERSIONES"
 
     total = 0

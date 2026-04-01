@@ -221,10 +221,17 @@ def _read_zip_file(zf: zipfile.ZipFile, filename: str) -> str:
 # Main loader
 # ---------------------------------------------------------------------------
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "SERVICIOS"
     zip_files = sorted(data_dir.rglob("*.zip"))
     logger.info(f"  {len(zip_files)} archivos ZIP encontrados")
+
+    if full:
+        logger.info("  Modo FULL RELOAD: borrando facturas PV=6 y detalles")
+        delete_all(conn, "factura_emitida_detalle")
+        # Only delete PV=6 facturas (servicios), not arca_ingresos ones
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM factura_emitida WHERE punto_venta = 6")
 
     # Load existing factura_emitida keys for dedup
     existing = fetch_all(

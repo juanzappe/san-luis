@@ -26,7 +26,7 @@ def _parse_fecha_caja(val) -> str | None:
     return s
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS DE CAJA"
     xlsx_files = sorted(data_dir.glob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")

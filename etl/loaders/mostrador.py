@@ -4,6 +4,9 @@ Fuente: data_raw/MOSTRADOR/{year}/*.xlsx
 Sheet: "ventas_detalle" — cada fila es una línea de detalle.
 Paso 1: Agrupar por idVenta → insertar venta (header)
 Paso 2: Insertar venta_detalle con FK al venta_id
+
+Modo incremental (default): solo inserta ventas con fecha > max(fecha) existente.
+Modo full (--full): borra todo y recarga.
 """
 
 from datetime import datetime
@@ -12,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 from utils import (
     get_data_raw_path, safe_int, safe_float, safe_str,
-    delete_all, batch_insert, batch_insert_returning,
+    delete_all, batch_insert, batch_insert_returning, get_max_value,
 )
 
 
@@ -31,17 +34,26 @@ def _parse_fecha_mostrador(val) -> str | None:
     return s
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "MOSTRADOR"
     xlsx_files = sorted(data_dir.rglob("*.xlsx"))
     logger.info(f"  {len(xlsx_files)} archivos XLSX encontrados")
 
-    # Delete existing to handle full reload
-    delete_all(conn, "venta_detalle")
-    delete_all(conn, "venta")
+    if full:
+        logger.info("  Modo FULL RELOAD: borrando datos existentes")
+        delete_all(conn, "venta_detalle")
+        delete_all(conn, "venta")
+        max_fecha = None
+    else:
+        max_fecha = get_max_value(conn, "venta", "fecha")
+        if max_fecha:
+            logger.info(f"  Modo incremental: solo fecha > {max_fecha}")
+        else:
+            logger.info("  Tabla vacía, cargando todo")
 
     total_ventas = 0
     total_detalles = 0
+    skipped = 0
 
     for xlsx_path in xlsx_files:
         logger.info(f"  Procesando {xlsx_path.name}")
@@ -67,14 +79,23 @@ def run(conn, logger) -> int:
                 }
             ventas_grouped[id_venta]["detalles"].append(row)
 
-        # Insertar ventas y obtener IDs
+        # Build and filter venta records
         venta_records = []
+        filtered_ids = set()  # ids that pass the date filter
         for id_venta, data in ventas_grouped.items():
             h = data["header"]
+            fecha = _parse_fecha_mostrador(h.get("Fecha"))
+
+            # Incremental: skip if fecha <= max_fecha
+            if max_fecha and fecha and fecha <= max_fecha:
+                skipped += 1
+                continue
+
+            filtered_ids.add(id_venta)
             anulado = safe_str(h.get("Anulado"))
             venta_records.append({
                 "id_venta_pos": id_venta,
-                "fecha": _parse_fecha_mostrador(h.get("Fecha")),
+                "fecha": fecha,
                 "fuente": "pos",
                 "tipo_comprobante": safe_str(h.get("Tipo")),
                 "punto_venta": safe_int(h.get("PV")),
@@ -89,6 +110,9 @@ def run(conn, logger) -> int:
                 "operador": safe_str(h.get("OperadorCreacion")),
             })
 
+        if not venta_records:
+            continue
+
         # Insert ventas with RETURNING to get IDs
         venta_id_map = {}  # id_venta_pos → db id
         rows = batch_insert_returning(conn, "venta", venta_records,
@@ -97,9 +121,12 @@ def run(conn, logger) -> int:
             venta_id_map[row["id_venta_pos"]] = row["id"]
         total_ventas += len(venta_records)
 
-        # Insertar detalles
+        # Insertar detalles (solo de ventas que pasaron el filtro)
         detalle_records = []
-        for id_venta, data in ventas_grouped.items():
+        for id_venta in filtered_ids:
+            data = ventas_grouped.get(id_venta)
+            if not data:
+                continue
             venta_db_id = venta_id_map.get(id_venta)
             if not venta_db_id:
                 continue
@@ -124,5 +151,5 @@ def run(conn, logger) -> int:
 
         total_detalles += batch_insert(conn, "venta_detalle", detalle_records)
 
-    logger.info(f"  {total_ventas} ventas, {total_detalles} detalles")
+    logger.info(f"  {total_ventas} ventas nuevas, {total_detalles} detalles, {skipped} ventas ya existían")
     return total_ventas + total_detalles
