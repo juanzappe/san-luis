@@ -2,6 +2,7 @@
  * Queries for the Económico module (Ingresos, Egresos, Resultado).
  */
 import { supabase } from "./supabase";
+import { fetchWithRetry } from "./fetchWithRetry";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -46,57 +47,6 @@ export function pctDelta(cur: number, prev: number): number | null {
   return ((cur - prev) / Math.abs(prev)) * 100;
 }
 
-/**
- * Paginated fetch to overcome Supabase REST 1000-row limit.
- */
-async function fetchAllRows<T>(
-  table: string,
-  columns: string,
-  filter?: { column: string; value: string | number },
-): Promise<T[]> {
-  const PAGE = 1000;
-  const all: T[] = [];
-  let from = 0;
-  while (true) {
-    let query = supabase.from(table).select(columns).range(from, from + PAGE - 1);
-    if (filter) {
-      query = query.eq(filter.column, filter.value);
-    }
-    const { data, error } = await query;
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    all.push(...(data as T[]));
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return all;
-}
-
-/**
- * Devengamiento: assign salary to the month it corresponds to.
- * - SAC (aguinaldo): accrue to payment month
- * - day < 20: accrue to previous month
- * - day >= 20: accrue to transfer month
- * - null fecha_transferencia: fall back to periodo
- */
-function accrualPeriod(r: { periodo: string; fecha_transferencia: string | null }): string {
-  const isSAC = r.periodo.endsWith("-SAC");
-  if (!r.fecha_transferencia) return r.periodo.slice(0, 7);
-
-  const ft = new Date(r.fecha_transferencia + "T12:00:00");
-  const day = ft.getDate();
-  const ftMonth = r.fecha_transferencia.slice(0, 7);
-
-  if (isSAC) return ftMonth;
-
-  if (day < 20) {
-    const y = ft.getFullYear();
-    const m = ft.getMonth(); // 0-indexed
-    return m === 0 ? `${y - 1}-12` : `${y}-${String(m).padStart(2, "0")}`;
-  }
-  return ftMonth;
-}
-
 // ---------------------------------------------------------------------------
 // Ingresos by source
 // ---------------------------------------------------------------------------
@@ -110,8 +60,11 @@ export interface IngresoRow {
 }
 
 export async function fetchIngresos(): Promise<IngresoRow[]> {
-  const { data, error } = await supabase.rpc("get_ingresos_mensual");
-  if (error) throw error;
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_ingresos_mensual");
+    if (res.error) throw res.error;
+    return res.data;
+  });
   type Row = { periodo: string; mostrador: number; restobar: number; servicios: number };
   return ((data ?? []) as Row[])
     .map((r) => {
@@ -142,145 +95,47 @@ export interface EgresoRow {
   sueldosNeto: number; // sueldo_neto with devengamiento (for P&L)
 }
 
+// RPC row type for get_egresos_mensual
+type RpcEgresoRow = {
+  periodo: string;
+  sueldos_costo: number;
+  sueldos_neto: number;
+  proveedores: number;
+  impuestos_comerciales: number;
+  ganancias: number;
+  financieros: number;
+};
+
 export async function fetchEgresos(): Promise<EgresoRow[]> {
-  // 1) Sueldos — paginated, with devengamiento
-  const sueldosData = await fetchAllRows<{
-    periodo: string;
-    costo_total_empresa: number | null;
-    sueldo_neto: number;
-    fecha_transferencia: string | null;
-  }>("liquidacion_sueldo", "periodo, costo_total_empresa, sueldo_neto, fecha_transferencia");
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_egresos_mensual");
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
-  // costo_total_empresa with devengamiento (for egresos page)
-  const sueldosMap = new Map<string, number>();
-  // sueldo_neto with devengamiento (for P&L)
-  const sueldosNetoMap = new Map<string, number>();
-  for (const s of sueldosData) {
-    const p = accrualPeriod(s);
-    sueldosMap.set(p, (sueldosMap.get(p) ?? 0) + (Number(s.costo_total_empresa ?? s.sueldo_neto) || 0));
-    sueldosNetoMap.set(p, (sueldosNetoMap.get(p) ?? 0) + (Number(s.sueldo_neto) || 0));
-  }
-
-  // 2) Facturas recibidas + proveedor segmentación — paginated
-  const [factRecData, provData] = await Promise.all([
-    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; nro_doc_emisor: string | null; tipo_comprobante: number | null }>(
-      "factura_recibida",
-      "fecha_emision, imp_neto_gravado_total, nro_doc_emisor, tipo_comprobante",
-    ),
-    fetchAllRows<{ cuit: string | null; categoria_egreso: string | null }>(
-      "proveedor",
-      "cuit, categoria_egreso",
-    ),
-  ]);
-
-  // Build CUIT → categoria lookup
-  const cuitToCategoria = new Map<string, string>();
-  for (const p of provData) {
-    if (p.cuit && p.categoria_egreso) cuitToCategoria.set(p.cuit, p.categoria_egreso);
-  }
-
-  // Group facturas by periodo + categoria
-  const catMap = new Map<string, Map<string, number>>();
-  const proveedoresTotalMap = new Map<string, number>();
-  for (const f of factRecData) {
-    const periodo = (f.fecha_emision as string).slice(0, 7);
-    const raw = Number(f.imp_neto_gravado_total) || 0;
-    const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
-    const cuit = f.nro_doc_emisor;
-    const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Costos Operativos";
-
-    if (!catMap.has(periodo)) catMap.set(periodo, new Map());
-    const pm = catMap.get(periodo)!;
-    pm.set(cat, (pm.get(cat) ?? 0) + monto);
-
-    proveedoresTotalMap.set(periodo, (proveedoresTotalMap.get(periodo) ?? 0) + monto);
-  }
-
-  // 3) Impuestos — two separate paginated fetches (avoids fragile JOIN)
-  const [pagosData, oblData] = await Promise.all([
-    fetchAllRows<{ fecha_pago: string; monto: number; impuesto_obligacion_id: number | null }>(
-      "pago_impuesto",
-      "fecha_pago, monto, impuesto_obligacion_id",
-    ),
-    fetchAllRows<{ id: number; tipo: string }>(
-      "impuesto_obligacion",
-      "id, tipo",
-    ),
-  ]);
-
-  const oblMap = new Map(oblData.map((o) => [o.id, o.tipo]));
-  const impComercialMap = new Map<string, number>();
-  const gananciasMap = new Map<string, number>();
-
-  for (const pago of pagosData) {
-    const p = (pago.fecha_pago as string).slice(0, 7);
-    const monto = Number(pago.monto) || 0;
-    const tipo = pago.impuesto_obligacion_id
-      ? (oblMap.get(pago.impuesto_obligacion_id) ?? "")
-      : "";
-    if (tipo === "ganancias") {
-      gananciasMap.set(p, (gananciasMap.get(p) ?? 0) + monto);
-    } else {
-      impComercialMap.set(p, (impComercialMap.get(p) ?? 0) + monto);
-    }
-  }
-
-  // 4) Bank fees — paginated
-  const movBanco = await fetchAllRows<{ fecha: string; concepto: string; debito: number }>(
-    "movimiento_bancario",
-    "fecha, concepto, debito",
-  );
-
-  const financierosMap = new Map<string, number>();
-  for (const m of movBanco) {
-    const concepto = (m.concepto ?? "").toLowerCase();
-    const debito = Number(m.debito) || 0;
-    if (debito <= 0) continue;
-    if (
-      concepto.includes("comision") ||
-      concepto.includes("interes") ||
-      concepto.includes("impuesto s/deb") ||
-      concepto.includes("impuesto s/cred") ||
-      concepto.includes("mantenimiento") ||
-      concepto.includes("seguro") ||
-      concepto.includes("sellado")
-    ) {
-      const p = (m.fecha as string).slice(0, 7);
-      financierosMap.set(p, (financierosMap.get(p) ?? 0) + debito);
-    }
-  }
-
-  // Merge all periodos
-  const allP = new Set<string>();
-  for (const mp of [sueldosMap, proveedoresTotalMap, impComercialMap, gananciasMap, financierosMap]) {
-    mp.forEach((_, k) => allP.add(k));
-  }
-
-  return Array.from(allP)
-    .sort()
-    .map((p) => {
-      const sueldosMes = sueldosMap.get(p) ?? 0;
-      const proveedoresMes = proveedoresTotalMap.get(p) ?? 0;
-      const comerciales = impComercialMap.get(p) ?? 0;
-      const gan = gananciasMap.get(p) ?? 0;
-      const financieros = financierosMap.get(p) ?? 0;
-      const impuestosMes = comerciales + gan;
-      const categorias: Record<string, number> = {};
-      const pm = catMap.get(p);
-      if (pm) pm.forEach((v, k) => { categorias[k] = v; });
-      return {
-        periodo: p,
-        operativos: sueldosMes + proveedoresMes,
-        comerciales,
-        financieros,
-        ganancias: gan,
-        total: sueldosMes + proveedoresMes + comerciales + financieros + gan,
-        categorias,
-        sueldos: sueldosMes,
-        impuestos: impuestosMes,
-        sueldosNeto: sueldosNetoMap.get(p) ?? 0,
-      };
-    });
+  return ((data ?? []) as RpcEgresoRow[]).map((r) => {
+    const sueldosMes = Number(r.sueldos_costo) || 0;
+    const proveedoresMes = Number(r.proveedores) || 0;
+    const comerciales = Number(r.impuestos_comerciales) || 0;
+    const gan = Number(r.ganancias) || 0;
+    const financieros = Number(r.financieros) || 0;
+    const impuestosMes = comerciales + gan;
+    // Proveedores total goes under "Costos Operativos" category
+    const categorias: Record<string, number> = {};
+    if (proveedoresMes !== 0) categorias["Costos Operativos"] = proveedoresMes;
+    return {
+      periodo: r.periodo,
+      operativos: sueldosMes + proveedoresMes,
+      comerciales,
+      financieros,
+      ganancias: gan,
+      total: sueldosMes + proveedoresMes + comerciales + financieros + gan,
+      categorias,
+      sueldos: sueldosMes,
+      impuestos: impuestosMes,
+      sueldosNeto: Number(r.sueldos_neto) || 0,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -302,10 +157,9 @@ export interface ResultadoRow {
 }
 
 export async function fetchResultado(): Promise<ResultadoRow[]> {
-  const [ingresos, egresos] = await Promise.all([
-    fetchIngresos(),
-    fetchEgresos(),
-  ]);
+  const [ingresos, egresos] = await fetchWithRetry(() =>
+    Promise.all([fetchIngresos(), fetchEgresos()])
+  );
 
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
   const egrMap = new Map(egresos.map((r) => [r.periodo, r]));
