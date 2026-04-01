@@ -16,6 +16,9 @@ import {
 import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
   type IngresoRow,
@@ -49,6 +52,45 @@ const YEAR_COLORS: Record<string, string> = {
 const YEAR_DASH: Record<string, string | undefined> = {
   "2024": "5 5",
 };
+
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const QUARTER_LABELS: Record<string, string> = { "01": "Q1", "02": "Q1", "03": "Q1", "04": "Q2", "05": "Q2", "06": "Q2", "07": "Q3", "08": "Q3", "09": "Q3", "10": "Q4", "11": "Q4", "12": "Q4" };
+
+const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+function aggregateRows(
+  data: IngresoRow[],
+  granularity: Granularity,
+): { key: string; label: string; mostrador: number; restobar: number; servicios: number; total: number }[] {
+  if (granularity === "mensual") {
+    return data.map((r) => {
+      const [y, m] = r.periodo.split("-");
+      return { key: r.periodo, label: `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`, mostrador: r.mostrador, restobar: r.restobar, servicios: r.servicios, total: r.total };
+    }).sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  const buckets = new Map<string, { mostrador: number; restobar: number; servicios: number; total: number }>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
+    const cur = buckets.get(bucketKey) ?? { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+    cur.mostrador += r.mostrador;
+    cur.restobar += r.restobar;
+    cur.servicios += r.servicios;
+    cur.total += r.total;
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([k, v]) => {
+      const label = granularity === "trimestral"
+        ? `${k.split("-")[1]} ${k.split("-")[0]}`
+        : k;
+      return { key: k, label, ...v };
+    })
+    .sort((a, b) => b.key.localeCompare(a.key));
+}
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -153,6 +195,7 @@ export default function IngresosPage() {
   const [raw, setRaw] = useState<IngresoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
   useEffect(() => {
     fetchIngresos()
       .then(setRaw)
@@ -281,6 +324,52 @@ export default function IngresosPage() {
         <YoYChart data={allData} dataKey="restobar" title="Restobar — Comparación Anual" color={COLORS.restobar} />
       </div>
       <YoYChart data={allData} dataKey="servicios" title="Servicios — Comparación Anual" color={COLORS.servicios} height={350} />
+
+      {/* Detail table with period selector */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle de Ingresos</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Período</TableHead>
+                <TableHead className="text-right">Mostrador</TableHead>
+                <TableHead className="text-right">Restobar</TableHead>
+                <TableHead className="text-right">Servicios</TableHead>
+                <TableHead className="text-right font-bold">Total</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {aggregateRows(allData, granularity).map((r) => (
+                <TableRow key={r.key}>
+                  <TableCell>{r.label}</TableCell>
+                  <TableCell className="text-right">{formatARS(r.mostrador)}</TableCell>
+                  <TableCell className="text-right">{formatARS(r.restobar)}</TableCell>
+                  <TableCell className="text-right">{formatARS(r.servicios)}</TableCell>
+                  <TableCell className="text-right font-bold">{formatARS(r.total)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
     </div>
   );
 }

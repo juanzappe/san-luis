@@ -533,32 +533,6 @@ export default function Dashboard() {
                 Sin datos de ventas por origen
               </p>
             )}
-            {incomeChartData.length > 0 && (
-              <Table className="mt-4">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Período</TableHead>
-                    <TableHead className="text-right">Mostrador</TableHead>
-                    <TableHead className="text-right">Restobar</TableHead>
-                    <TableHead className="text-right">Servicios</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...incomeChartData].reverse().map((r) => (
-                    <TableRow key={r.periodo}>
-                      <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
-                      <TableCell className="text-right">{formatARS(r.mostrador)}</TableCell>
-                      <TableCell className="text-right">{formatARS(r.restobar)}</TableCell>
-                      <TableCell className="text-right">{formatARS(r.servicios)}</TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatARS(r.mostrador + r.restobar + r.servicios)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
           </CardContent>
         </Card>
       </div>
