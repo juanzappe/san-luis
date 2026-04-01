@@ -3,6 +3,7 @@
  * Resumen Fiscal, Posición IVA, Historial de Pagos, Calendario.
  */
 import { supabase } from "./supabase";
+import { fetchWithRetry } from "./fetchWithRetry";
 import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, type ResultadoRow } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
@@ -82,18 +83,39 @@ export interface ResumenFiscalData {
 }
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
-  const [obligRes, pagosRes, ivaMensualRes, chequeRes, resultadoData] = await Promise.all([
-    supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, compensaciones_recibidas, compensaciones_enviadas, estado"),
-    supabase.from("pago_impuesto").select("id, fecha_pago, monto, observaciones, formulario"),
-    supabase.rpc("get_iva_ingresos_mensual"),
-    supabase.rpc("get_cheque_mensual"),
+  const [obligaciones, pagos, ivaMensualRows, chequeRows, resultadoData] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_obligaciones_resumen");
+      if (res.error) throw res.error;
+      return (res.data ?? []) as Array<{
+        id: number; tipo: string; periodo: string; fuente: string;
+        fecha_vencimiento: string | null; monto_determinado: number;
+        compensaciones_recibidas: number; compensaciones_enviadas: number; estado: string;
+      }>;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_pagos_impuestos");
+      if (res.error) throw res.error;
+      return (res.data ?? []) as Array<{
+        id: number; fecha_pago: string; monto: number; medio_pago: string;
+        numero_vep: string; formulario: string; observaciones: string;
+        obligacion_tipo: string; obligacion_periodo: string; obligacion_fuente: string;
+      }>;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_iva_ingresos_mensual");
+      if (res.error) throw res.error;
+      return (res.data ?? []) as Array<{
+        periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
+      }>;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_cheque_mensual");
+      if (res.error) throw res.error;
+      return (res.data ?? []) as Array<{ periodo: string; importe_cheque: number }>;
+    }),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
-
-  if (obligRes.error) throw obligRes.error;
-  if (pagosRes.error) throw pagosRes.error;
-  if (ivaMensualRes.error) throw ivaMensualRes.error;
-  if (chequeRes.error) throw chequeRes.error;
 
   // ---------------------------------------------------------------------------
   // Aggregate: tipo → month → sum
@@ -108,9 +130,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   };
 
   // --- A) IVA — Posición neta from RPC (server-side aggregation) ---
-  const ivaMensualRows = (ivaMensualRes.data ?? []) as Array<{
-    periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
-  }>;
   // Group by periodo (RPC returns one row per table per month via UNION ALL)
   const ivaDebitoMap = new Map<string, number>();
   const ivaCreditoMap = new Map<string, number>();
@@ -144,7 +163,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   }
 
   // --- C) Impuesto al Cheque — 1.2% of total bank movements (RPC) ---
-  const chequeRows = (chequeRes.data ?? []) as Array<{ periodo: string; importe_cheque: number }>;
   const chequeMap = new Map<string, number>();
   for (const row of chequeRows) {
     addToMap(chequeMap, row.periodo, Number(row.importe_cheque) || 0);
@@ -154,8 +172,8 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   });
 
   // --- D) SICORE — from pago_impuesto with periodo parsing ---
-  for (const p of pagosRes.data ?? []) {
-    const obs = (p.observaciones as string) ?? "";
+  for (const p of pagos) {
+    const obs = (p.observaciones ?? "") as string;
     const monto = Number(p.monto) || 0;
     if (!obs.includes("217 - SICORE")) continue;
 
@@ -176,9 +194,9 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   }
 
   // --- E) IIBB from impuesto_obligacion ---
-  for (const o of obligRes.data ?? []) {
+  for (const o of obligaciones) {
     if (o.tipo !== "iibb") continue;
-    const month = (o.periodo as string) ?? "";
+    const month = (o.periodo ?? "") as string;
     if (!month) continue;
     const amount = Math.max(
       Number(o.monto_determinado) || 0,
@@ -198,7 +216,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     tasa_ocupacion_espacio_publico: "espacioPublico",
   };
   const municipalByTipo = new Map<string, Array<{ periodo: string; amount: number }>>();
-  for (const o of obligRes.data ?? []) {
+  for (const o of obligaciones) {
     const tipoStr = o.tipo as string;
     if (!municipalMap[tipoStr]) continue;
     const periodo = (o.periodo as string) ?? "";
@@ -292,7 +310,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   // Próximo vencimiento
   // ---------------------------------------------------------------------------
   const today = new Date().toISOString().slice(0, 10);
-  const pendientes = (obligRes.data ?? [])
+  const pendientes = obligaciones
     .filter((o) => (o.estado === "pendiente" || o.estado === "vencido") && o.fecha_vencimiento)
     .sort((a, b) => (a.fecha_vencimiento as string).localeCompare(b.fecha_vencimiento as string));
 
@@ -327,8 +345,11 @@ export interface IvaMensualRow {
 }
 
 export async function fetchPosicionIva(): Promise<IvaMensualRow[]> {
-  const { data, error } = await supabase.rpc("get_posicion_iva_mensual");
-  if (error) throw error;
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_posicion_iva_mensual");
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
   type RpcRow = {
     periodo: string; tipo: string;
@@ -424,42 +445,33 @@ export interface PagoImpuestoRow {
 }
 
 export async function fetchPagosImpuestos(): Promise<PagoImpuestoRow[]> {
-  const [pagosRes, obligRes] = await Promise.all([
-    supabase.from("pago_impuesto").select("id, impuesto_obligacion_id, fecha_pago, monto, medio_pago, numero_vep, formulario, observaciones"),
-    supabase.from("impuesto_obligacion").select("id, tipo, periodo, fuente"),
-  ]);
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_pagos_impuestos");
+    if (res.error) throw res.error;
+    return (res.data ?? []) as Array<{
+      id: number; fecha_pago: string; monto: number; medio_pago: string;
+      numero_vep: string; formulario: string; observaciones: string;
+      obligacion_tipo: string; obligacion_periodo: string; obligacion_fuente: string;
+    }>;
+  });
 
-  if (pagosRes.error) throw pagosRes.error;
-  if (obligRes.error) throw obligRes.error;
-
-  const obligMap = new Map<number, { tipo: string; periodo: string; fuente: string }>();
-  for (const o of obligRes.data ?? []) {
-    obligMap.set(o.id as number, {
-      tipo: o.tipo as string,
-      periodo: (o.periodo as string) ?? "",
-      fuente: (o.fuente as string) ?? "",
-    });
-  }
-
-  return (pagosRes.data ?? []).map((p) => {
-    const obligId = p.impuesto_obligacion_id as number | null;
-    const ob = obligId ? obligMap.get(obligId) : null;
-    const tipo = ob?.tipo ?? "otro";
-    const fuente = ob?.fuente ?? jurisdiccionFromTipo(tipo);
+  return rows.map((p) => {
+    const tipo = (p.obligacion_tipo ?? "otro") as string;
+    const fuente = (p.obligacion_fuente ?? jurisdiccionFromTipo(tipo)) as string;
     return {
-      id: p.id as number,
+      id: p.id,
       fechaPago: p.fecha_pago as string,
       tipo,
       tipoLabel: tipoLabel(tipo),
       jurisdiccion: fuente,
       jurisdiccionLabel: fuenteLabel(fuente),
-      periodoFiscal: ob?.periodo ?? "",
-      concepto: (p.observaciones as string) ?? (p.formulario as string) ?? "",
+      periodoFiscal: (p.obligacion_periodo ?? "") as string,
+      concepto: (p.observaciones ?? p.formulario ?? "") as string,
       monto: Number(p.monto) || 0,
-      medioPago: (p.medio_pago as string) ?? "",
-      comprobante: (p.numero_vep as string) ?? "",
+      medioPago: (p.medio_pago ?? "") as string,
+      comprobante: (p.numero_vep ?? "") as string,
     };
-  }).sort((a, b) => b.fechaPago.localeCompare(a.fechaPago));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -479,13 +491,15 @@ export interface VencimientoRow {
 }
 
 export async function fetchVencimientos(): Promise<VencimientoRow[]> {
-  const { data, error } = await supabase
-    .from("impuesto_obligacion")
-    .select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, estado")
-    .not("fecha_vencimiento", "is", null)
-    .order("fecha_vencimiento", { ascending: true });
-
-  if (error) throw error;
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase
+      .from("impuesto_obligacion")
+      .select("id, tipo, periodo, fuente, fecha_vencimiento, monto_determinado, estado")
+      .not("fecha_vencimiento", "is", null)
+      .order("fecha_vencimiento", { ascending: true });
+    if (res.error) throw res.error;
+    return res.data;
+  });
 
   return (data ?? []).map((o) => {
     const tipo = o.tipo as string;
