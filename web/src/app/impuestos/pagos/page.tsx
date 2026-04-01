@@ -10,6 +10,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer,
 } from "recharts";
 import { Loader2, AlertCircle } from "lucide-react";
@@ -22,8 +23,8 @@ import {
   type PagoImpuestoRow,
   fetchPagosImpuestos,
   formatARS,
-  tipoLabel,
   shortLabel,
+  periodoLabel,
 } from "@/lib/tax-queries";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import type {
@@ -32,15 +33,210 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-const JURISDICCIONES = ["ALL", "arca", "arba", "municipio"] as const;
-const JURIS_LABELS: Record<string, string> = { ALL: "Todas", arca: "Nacional", arba: "Provincial", municipio: "Municipal" };
+// ---------------------------------------------------------------------------
+// Observaciones parser
+// ---------------------------------------------------------------------------
+
+interface ParsedObs {
+  codigoImpuesto: number | null;
+  nombreImpuesto: string;
+  periodoFiscal: string; // "YYYYMM"
+  tipoComprobante: string;
+}
+
+const OBS_RE = /Impuesto:\s*(\d+)\s*-\s*([^|]+)\|\s*Per[ií]odo:\s*(\d+)\s*\|?\s*(.*)/;
+
+function parseObservaciones(obs: string): ParsedObs {
+  const m = obs.match(OBS_RE);
+  if (!m) return { codigoImpuesto: null, nombreImpuesto: obs || "—", periodoFiscal: "", tipoComprobante: "" };
+  return {
+    codigoImpuesto: parseInt(m[1], 10),
+    nombreImpuesto: m[2].trim(),
+    periodoFiscal: m[3].slice(0, 6), // YYYYMM
+    tipoComprobante: m[4].trim(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Classification
+// ---------------------------------------------------------------------------
+
+const CODIGO_LABELS: Record<number, string> = {
+  30: "IVA",
+  217: "SICORE/Ganancias",
+  10: "Ganancias",
+  11: "Ganancias",
+  301: "Aportes Seg. Social",
+  302: "Aportes Obra Social",
+  312: "ART",
+  351: "Contribuciones Seg. Social",
+  352: "Contribuciones Obra Social",
+  28: "Seguro de Vida Colectivo",
+};
+
+type Categoria = "Impuestos" | "Cargas Sociales";
+
+const CARGAS_SOCIALES_CODIGOS = new Set([301, 302, 312, 351, 352, 28]);
+
+function classifyPago(parsed: ParsedObs, formulario: string): { label: string; categoria: Categoria } {
+  const code = parsed.codigoImpuesto;
+  if (formulario === "931" || (code !== null && CARGAS_SOCIALES_CODIGOS.has(code))) {
+    return { label: code !== null && CODIGO_LABELS[code] ? CODIGO_LABELS[code] : parsed.nombreImpuesto, categoria: "Cargas Sociales" };
+  }
+  if (code !== null && CODIGO_LABELS[code]) {
+    return { label: CODIGO_LABELS[code], categoria: "Impuestos" };
+  }
+  return { label: parsed.nombreImpuesto || "Nacional - Otro", categoria: "Impuestos" };
+}
+
+// ---------------------------------------------------------------------------
+// Enriched row
+// ---------------------------------------------------------------------------
+
+interface EnrichedPago {
+  id: number;
+  fechaPago: string;       // YYYY-MM-DD
+  fechaPagoLabel: string;  // DD/MM/YYYY
+  impuestoLabel: string;
+  codigo: number | null;
+  periodoFiscalLabel: string;
+  formulario: string;
+  formularioLabel: string;
+  monto: number;
+  categoria: Categoria;
+  // for charts
+  chartGroup: string; // simplified grouping for stacked bars
+}
+
+const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
+function periodoFiscalToLabel(pf: string): string {
+  if (!pf || pf.length < 6) return pf || "—";
+  const y = pf.slice(0, 4);
+  const m = parseInt(pf.slice(4, 6), 10);
+  if (m < 1 || m > 12) return pf;
+  return `${MONTH_NAMES[m - 1]} ${y}`;
+}
+
+function formatDateAR(d: string): string {
+  const [y, m, day] = d.split("-");
+  return `${day}/${m}/${y}`;
+}
+
+function enrichPagos(raw: PagoImpuestoRow[]): EnrichedPago[] {
+  return raw.map((p) => {
+    const parsed = parseObservaciones(p.concepto);
+    const { label, categoria } = classifyPago(parsed, p.concepto.includes("931") ? "931" : (p.concepto.includes("800") ? "800" : ""));
+    // Derive formulario from observaciones or from the raw formulario field
+    const formMatch = p.concepto.match(/F\.?\s*(\d{3,4})/i);
+    const rawForm = formMatch ? formMatch[1] : "";
+    // Better: check if it's F.931 or F.800 pattern
+    let formulario = rawForm;
+    if (!formulario) {
+      // Fallback: cargas sociales → 931, impuestos → 800
+      if (categoria === "Cargas Sociales") formulario = "931";
+      else formulario = "800";
+    }
+
+    // Chart grouping: IVA, SICORE, Cargas Sociales, Otro
+    let chartGroup = label;
+    if (CARGAS_SOCIALES_CODIGOS.has(parsed.codigoImpuesto ?? 0)) chartGroup = "Cargas Sociales";
+
+    return {
+      id: p.id,
+      fechaPago: p.fechaPago,
+      fechaPagoLabel: formatDateAR(p.fechaPago),
+      impuestoLabel: label,
+      codigo: parsed.codigoImpuesto,
+      periodoFiscalLabel: periodoFiscalToLabel(parsed.periodoFiscal),
+      formulario,
+      formularioLabel: formulario ? `F.${formulario}` : "—",
+      monto: p.monto,
+      categoria,
+      chartGroup,
+    };
+  }).sort((a, b) => b.fechaPago.localeCompare(a.fechaPago));
+}
+
+// ---------------------------------------------------------------------------
+// Period aggregation
+// ---------------------------------------------------------------------------
+
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const GRANULARITY_LABELS: Record<Granularity, string> = {
+  mensual: "Mensual",
+  trimestral: "Trimestral",
+  anual: "Anual",
+};
+
+const QUARTER_MAP: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggPagoRow {
+  key: string;
+  label: string;
+  impuestos: number;
+  cargasSociales: number;
+  total: number;
+}
+
+function aggregatePagos(rows: EnrichedPago[], granularity: Granularity, adjust: (m: number, p: string) => number): AggPagoRow[] {
+  const buckets = new Map<string, { impuestos: number; cargasSociales: number }>();
+
+  for (const r of rows) {
+    const m = r.fechaPago.slice(0, 7); // YYYY-MM
+    const [y, mm] = m.split("-");
+    const bucketKey = granularity === "mensual" ? m : granularity === "trimestral" ? `${y}-${QUARTER_MAP[mm]}` : y;
+    const cur = buckets.get(bucketKey) ?? { impuestos: 0, cargasSociales: 0 };
+    const adjusted = adjust(r.monto, m);
+    if (r.categoria === "Cargas Sociales") cur.cargasSociales += adjusted;
+    else cur.impuestos += adjusted;
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([key, v]) => {
+      let label: string;
+      if (granularity === "mensual") label = periodoLabel(key);
+      else if (granularity === "trimestral") label = `${key.split("-")[1]} ${key.split("-")[0]}`;
+      else label = key;
+      return { key, label, impuestos: v.impuestos, cargasSociales: v.cargasSociales, total: v.impuestos + v.cargasSociales };
+    })
+    .sort((a, b) => b.key.localeCompare(a.key));
+}
+
+// ---------------------------------------------------------------------------
+// Chart colors
+// ---------------------------------------------------------------------------
+
+const CHART_GROUP_COLORS: Record<string, string> = {
+  "IVA": "#3b82f6",
+  "SICORE/Ganancias": "#8b5cf6",
+  "Ganancias": "#a78bfa",
+  "Cargas Sociales": "#f59e0b",
+  "Nacional - Otro": "#6366f1",
+};
+
+function chartColor(group: string): string {
+  return CHART_GROUP_COLORS[group] ?? "#94a3b8";
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
 export default function PagosPage() {
   const [raw, setRaw] = useState<PagoImpuestoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [jurisFilter, setJurisFilter] = useState<string>("ALL");
-  const [tipoFilter, setTipoFilter] = useState<string>("ALL");
+  const [catFilter, setCatFilter] = useState<string>("Todos");
+  const [impFilter, setImpFilter] = useState<string>("Todos");
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
   const { adjust } = useInflation();
 
   useEffect(() => {
@@ -50,57 +246,63 @@ export default function PagosPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Unique tipos for filter
-  const tiposDisponibles = useMemo(() => {
+  // Enrich all rows
+  const enriched = useMemo(() => enrichPagos(raw), [raw]);
+
+  // Dynamic impuesto labels
+  const impuestoLabels = useMemo(() => {
     const set = new Set<string>();
-    for (const p of raw) set.add(p.tipo);
+    for (const p of enriched) set.add(p.impuestoLabel);
     return Array.from(set).sort();
-  }, [raw]);
+  }, [enriched]);
 
   // Filtered data
   const filtered = useMemo(() => {
-    let d = raw;
-    if (jurisFilter !== "ALL") d = d.filter((p) => p.jurisdiccion === jurisFilter);
-    if (tipoFilter !== "ALL") d = d.filter((p) => p.tipo === tipoFilter);
+    let d = enriched;
+    if (catFilter !== "Todos") d = d.filter((p) => p.categoria === catFilter);
+    if (impFilter !== "Todos") d = d.filter((p) => p.impuestoLabel === impFilter);
     return d;
-  }, [raw, jurisFilter, tipoFilter]);
+  }, [enriched, catFilter, impFilter]);
 
-  // Monthly chart from filtered
-  const monthlyChart = useMemo(() => {
+  // Stacked bar chart by chart group (monthly, by fecha_pago)
+  const stackedChart = useMemo(() => {
+    // Get unique chart groups
+    const groups = new Set<string>();
+    filtered.forEach((p) => groups.add(p.chartGroup));
+    const groupList = Array.from(groups).sort();
+
+    const map = new Map<string, Record<string, number>>();
+    for (const p of filtered) {
+      const m = p.fechaPago.slice(0, 7);
+      if (!map.has(m)) {
+        const row: Record<string, number> = {};
+        for (const g of groupList) row[g] = 0;
+        map.set(m, row);
+      }
+      const row = map.get(m)!;
+      row[p.chartGroup] = (row[p.chartGroup] ?? 0) + adjust(p.monto, m);
+    }
+
+    const data = Array.from(map.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .slice(-24)
+      .map(([periodo, vals]) => ({ label: shortLabel(periodo), ...vals }));
+
+    return { data, groups: groupList };
+  }, [filtered, adjust]);
+
+  // Line chart: monthly total
+  const lineChart = useMemo(() => {
     const map = new Map<string, number>();
     for (const p of filtered) {
       const m = p.fechaPago.slice(0, 7);
-      map.set(m, (map.get(m) ?? 0) + p.monto);
+      map.set(m, (map.get(m) ?? 0) + adjust(p.monto, m));
     }
     return Array.from(map.entries())
       .sort((a, b) => a[0].localeCompare(b[0]))
       .slice(-24)
-      .map(([periodo, monto]) => ({
-        label: shortLabel(periodo),
-        periodo,
-        monto: adjust(monto, periodo),
-      }));
+      .map(([periodo, monto]) => ({ label: shortLabel(periodo), monto }));
   }, [filtered, adjust]);
-
-  // Annual totals by tipo
-  const annualByTipo = useMemo(() => {
-    const map = new Map<string, Map<string, number>>(); // year -> tipo -> sum
-    for (const p of raw) {
-      const year = p.fechaPago.slice(0, 4);
-      if (!map.has(year)) map.set(year, new Map());
-      const tm = map.get(year)!;
-      tm.set(p.tipo, (tm.get(p.tipo) ?? 0) + p.monto);
-    }
-    return Array.from(map.entries())
-      .sort((a, b) => b[0].localeCompare(a[0]))
-      .map(([year, tipos]) => ({
-        year,
-        tipos: Array.from(tipos.entries())
-          .map(([tipo, monto]) => ({ tipo, label: tipoLabel(tipo), monto }))
-          .sort((a, b) => b.monto - a.monto),
-        total: Array.from(tipos.values()).reduce((s, v) => s + v, 0),
-      }));
-  }, [raw]);
 
   if (loading) {
     return (
@@ -132,7 +334,7 @@ export default function PagosPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Historial de Pagos</h1>
-          <p className="text-muted-foreground">Todos los pagos de impuestos registrados</p>
+          <p className="text-muted-foreground">Pagos registrados por fecha de pago (criterio percibido)</p>
         </div>
         <InflationToggle />
       </div>
@@ -140,41 +342,41 @@ export default function PagosPage() {
       {/* Filters */}
       <div className="flex flex-wrap gap-4">
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Jurisdicción</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Tipo</label>
           <div className="flex gap-1">
-            {JURISDICCIONES.map((j) => (
+            {["Todos", "Impuestos", "Cargas Sociales"].map((c) => (
               <button
-                key={j}
-                onClick={() => setJurisFilter(j)}
+                key={c}
+                onClick={() => { setCatFilter(c); setImpFilter("Todos"); }}
                 className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
-                  jurisFilter === j ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                  catFilter === c ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
                 }`}
               >
-                {JURIS_LABELS[j]}
+                {c}
               </button>
             ))}
           </div>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-muted-foreground">Tipo de Impuesto</label>
+          <label className="mb-1 block text-xs font-medium text-muted-foreground">Impuesto</label>
           <div className="flex flex-wrap gap-1">
             <button
-              onClick={() => setTipoFilter("ALL")}
+              onClick={() => setImpFilter("Todos")}
               className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
-                tipoFilter === "ALL" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                impFilter === "Todos" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
               }`}
             >
               Todos
             </button>
-            {tiposDisponibles.map((t) => (
+            {impuestoLabels.map((l) => (
               <button
-                key={t}
-                onClick={() => setTipoFilter(t)}
+                key={l}
+                onClick={() => setImpFilter(l)}
                 className={`rounded px-3 py-1 text-xs font-medium transition-colors ${
-                  tipoFilter === t ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
+                  impFilter === l ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-accent"
                 }`}
               >
-                {tipoLabel(t)}
+                {l}
               </button>
             ))}
           </div>
@@ -187,12 +389,22 @@ export default function PagosPage() {
           <CardHeader><CardTitle className="text-base">Pagos Mensuales</CardTitle></CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={monthlyChart}>
+              <BarChart data={stackedChart.data}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
                 <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
                 <Tooltip formatter={arsTooltip} />
-                <Bar dataKey="monto" name="Monto" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                <Legend />
+                {stackedChart.groups.map((g, i) => (
+                  <Bar
+                    key={g}
+                    dataKey={g}
+                    name={g}
+                    stackId="a"
+                    fill={chartColor(g)}
+                    radius={i === stackedChart.groups.length - 1 ? [4, 4, 0, 0] : undefined}
+                  />
+                ))}
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -202,21 +414,21 @@ export default function PagosPage() {
           <CardHeader><CardTitle className="text-base">Evolución</CardTitle></CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={monthlyChart}>
+              <LineChart data={lineChart}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
                 <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
                 <Tooltip formatter={arsTooltip} />
-                <Line type="monotone" dataKey="monto" name="Monto" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} />
+                <Line type="monotone" dataKey="monto" name="Total" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
           </CardContent>
         </Card>
       </div>
 
-      {/* Payments table */}
+      {/* Detail table */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">
             Detalle de Pagos
             <span className="ml-2 text-sm font-normal text-muted-foreground">({filtered.length} registros)</span>
@@ -229,25 +441,21 @@ export default function PagosPage() {
                 <TableRow>
                   <TableHead>Fecha Pago</TableHead>
                   <TableHead>Impuesto</TableHead>
-                  <TableHead>Jurisdicción</TableHead>
+                  <TableHead className="text-right">Código</TableHead>
                   <TableHead>Período Fiscal</TableHead>
-                  <TableHead>Concepto</TableHead>
+                  <TableHead>Formulario</TableHead>
                   <TableHead className="text-right">Monto</TableHead>
-                  <TableHead>Medio de Pago</TableHead>
-                  <TableHead>Comprobante</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filtered.slice(0, 200).map((p) => (
                   <TableRow key={p.id}>
-                    <TableCell className="whitespace-nowrap">{p.fechaPago}</TableCell>
-                    <TableCell>{p.tipoLabel}</TableCell>
-                    <TableCell>{p.jurisdiccionLabel}</TableCell>
-                    <TableCell>{p.periodoFiscal}</TableCell>
-                    <TableCell className="max-w-[200px] truncate">{p.concepto || "—"}</TableCell>
+                    <TableCell className="whitespace-nowrap">{p.fechaPagoLabel}</TableCell>
+                    <TableCell>{p.impuestoLabel}</TableCell>
+                    <TableCell className="text-right font-mono text-muted-foreground">{p.codigo ?? "—"}</TableCell>
+                    <TableCell>{p.periodoFiscalLabel}</TableCell>
+                    <TableCell>{p.formularioLabel}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(adjust(p.monto, p.fechaPago.slice(0, 7)))}</TableCell>
-                    <TableCell>{p.medioPago || "—"}</TableCell>
-                    <TableCell>{p.comprobante || "—"}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>
@@ -261,38 +469,55 @@ export default function PagosPage() {
         </CardContent>
       </Card>
 
-      {/* Annual summary */}
-      {annualByTipo.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">Totales Anuales por Impuesto</CardTitle></CardHeader>
-          <CardContent>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Año</TableHead>
-                    {annualByTipo[0]?.tipos.map((t) => (
-                      <TableHead key={t.tipo} className="text-right">{t.label}</TableHead>
-                    ))}
-                    <TableHead className="text-right">Total</TableHead>
+      {/* Aggregated table with period selector */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Resumen {GRANULARITY_LABELS[granularity]}</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Período</TableHead>
+                  <TableHead className="text-right">Impuestos</TableHead>
+                  <TableHead className="text-right">Cargas Sociales</TableHead>
+                  <TableHead className="text-right font-bold">Total</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {aggregatePagos(filtered, granularity, adjust).map((r) => (
+                  <TableRow key={r.key}>
+                    <TableCell className="font-medium whitespace-nowrap">{r.label}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.impuestos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.cargasSociales)}</TableCell>
+                    <TableCell className="text-right font-bold">{formatARS(r.total)}</TableCell>
                   </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {annualByTipo.map((row) => (
-                    <TableRow key={row.year}>
-                      <TableCell className="font-medium">{row.year}</TableCell>
-                      {row.tipos.map((t) => (
-                        <TableCell key={t.tipo} className="text-right">{formatARS(t.monto)}</TableCell>
-                      ))}
-                      <TableCell className="text-right font-bold">{formatARS(row.total)}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      <p className="text-xs text-muted-foreground italic">
+        Datos basados en VEPs de ARCA. No incluye pagos provinciales ni municipales.
+      </p>
     </div>
   );
 }
