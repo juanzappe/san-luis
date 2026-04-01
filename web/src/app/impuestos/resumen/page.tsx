@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/table";
 import {
   type ResumenFiscalData,
+  type ResumenMensualRow,
   fetchResumenFiscal,
   formatARS,
   formatPct,
@@ -45,6 +46,81 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const GRANULARITY_LABELS: Record<Granularity, string> = {
+  mensual: "Mensual",
+  trimestral: "Trimestral",
+  anual: "Anual",
+};
+
+const QUARTER_MAP: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggRow {
+  key: string;
+  label: string;
+  ivaNeto: number;
+  gananciasEst: number;
+  sicore: number;
+  cheque: number;
+  iibb: number;
+  segHigiene: number;
+  publicidad: number;
+  espacioPublico: number;
+  total: number;
+  ingresos: number;
+  presionFiscal: number | null;
+}
+
+function aggregateFiscal(
+  rows: ResumenMensualRow[],
+  granularity: Granularity,
+): AggRow[] {
+  if (granularity === "mensual") {
+    return [...rows]
+      .map((r) => ({
+        key: r.periodo,
+        label: periodoLabel(r.periodo),
+        ...r,
+      }))
+      .sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  const buckets = new Map<string, Omit<AggRow, "presionFiscal" | "label">>();
+  for (const r of rows) {
+    const [y, m] = r.periodo.split("-");
+    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
+    const cur = buckets.get(bucketKey) ?? {
+      key: bucketKey, ivaNeto: 0, gananciasEst: 0, sicore: 0, cheque: 0,
+      iibb: 0, segHigiene: 0, publicidad: 0, espacioPublico: 0, total: 0, ingresos: 0,
+    };
+    cur.ivaNeto += r.ivaNeto;
+    cur.gananciasEst += r.gananciasEst;
+    cur.sicore += r.sicore;
+    cur.cheque += r.cheque;
+    cur.iibb += r.iibb;
+    cur.segHigiene += r.segHigiene;
+    cur.publicidad += r.publicidad;
+    cur.espacioPublico += r.espacioPublico;
+    cur.total += r.total;
+    cur.ingresos += r.ingresos;
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.values())
+    .map((b) => ({
+      ...b,
+      label: b.key.includes("Q") ? `${b.key.split("-")[1]} ${b.key.split("-")[0]}` : b.key,
+      presionFiscal: b.ingresos > 0 ? (b.total / b.ingresos) * 100 : null,
+    }))
+    .sort((a, b) => b.key.localeCompare(a.key));
+}
+
 const STACK_COLORS: Record<string, string> = {
   ivaNeto: "#3b82f6",
   gananciasEst: "#8b5cf6",
@@ -58,7 +134,12 @@ const STACK_COLORS: Record<string, string> = {
 
 const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6"];
 
-function KpiCard({ title, value, sub, icon: Icon }: { title: string; value: string; sub?: string | null; icon: React.ElementType }) {
+function formatDateAR(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+function KpiCard({ title, value, sub, subRaw, icon: Icon }: { title: string; value: string; sub?: string | null; subRaw?: string | null; icon: React.ElementType }) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -72,6 +153,9 @@ function KpiCard({ title, value, sub, icon: Icon }: { title: string; value: stri
             {sub} vs mes anterior
           </p>
         )}
+        {subRaw && (
+          <p className="text-xs text-muted-foreground">{subRaw}</p>
+        )}
       </CardContent>
     </Card>
   );
@@ -81,6 +165,7 @@ export default function ResumenFiscalPage() {
   const [raw, setRaw] = useState<ResumenFiscalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
   const { adjust } = useInflation();
 
   useEffect(() => {
@@ -190,7 +275,7 @@ export default function ResumenFiscalPage() {
           <KpiCard title="Presión Fiscal" value={kpis.presion != null ? `${kpis.presion.toFixed(1)}%` : "—"} sub={kpis.deltaPresion != null ? formatPct(kpis.deltaPresion) : null} icon={Percent} />
           <KpiCard title="IVA Pos. Neta" value={formatARS(kpis.posIva)} sub={kpis.deltaIva != null ? formatPct(kpis.deltaIva) : null} icon={Receipt} />
           {data.proximoVto ? (
-            <KpiCard title="Próximo Vencimiento" value={data.proximoVto.impuesto} sub={data.proximoVto.fecha} icon={CalendarClock} />
+            <KpiCard title="Próximo Vencimiento" value={data.proximoVto.impuesto} subRaw={formatDateAR(data.proximoVto.fecha)} icon={CalendarClock} />
           ) : (
             <KpiCard title="Próximo Vencimiento" value="—" icon={CalendarClock} />
           )}
@@ -274,7 +359,24 @@ export default function ResumenFiscalPage() {
 
       {/* Table */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Detalle Mensual</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle {GRANULARITY_LABELS[granularity]}</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
@@ -295,9 +397,9 @@ export default function ResumenFiscalPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {[...data.mensual].reverse().map((r) => (
-                  <TableRow key={r.periodo}>
-                    <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
+                {aggregateFiscal(data.mensual, granularity).map((r) => (
+                  <TableRow key={r.key}>
+                    <TableCell className="font-medium whitespace-nowrap">{r.label}</TableCell>
                     <TableCell className="text-right">{formatARS(r.ivaNeto)}</TableCell>
                     <TableCell className="text-right italic">{formatARS(r.gananciasEst)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.sicore)}</TableCell>
