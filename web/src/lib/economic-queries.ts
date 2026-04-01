@@ -46,16 +46,6 @@ export function pctDelta(cur: number, prev: number): number | null {
   return ((cur - prev) / Math.abs(prev)) * 100;
 }
 
-function groupSum(
-  rows: { periodo: string; monto: number }[],
-): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const r of rows) {
-    map.set(r.periodo, (map.get(r.periodo) ?? 0) + r.monto);
-  }
-  return map;
-}
-
 /**
  * Paginated fetch to overcome Supabase REST 1000-row limit.
  */

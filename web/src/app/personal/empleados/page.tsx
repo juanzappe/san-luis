@@ -11,7 +11,6 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import {
-  Users,
   ArrowLeft,
   Loader2,
   AlertCircle,

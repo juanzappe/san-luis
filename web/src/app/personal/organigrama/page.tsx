@@ -1,7 +1,5 @@
 "use client";
 
-import Link from "next/link";
-
 // ---------------------------------------------------------------------------
 // Org chart data — hardcoded (structure doesn't change frequently)
 // ---------------------------------------------------------------------------

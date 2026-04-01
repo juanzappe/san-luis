@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -86,13 +86,14 @@ function fmtDate(fecha: string | null): string {
   return `${d}/${m}/${y}`;
 }
 
-function fmtPeriodo(p: string): string {
-  const [y, m] = p.split("-");
+function fmtPeriodo(p: unknown): string {
+  const s = String(p ?? "");
+  const [y, m] = s.split("-");
   const meses = [
     "Ene", "Feb", "Mar", "Abr", "May", "Jun",
     "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
   ];
-  return `${meses[parseInt(m) - 1]} ${y}`;
+  return m ? `${meses[parseInt(m) - 1]} ${y}` : s;
 }
 
 const tooltipFmt: Formatter<ValueType, NameType> = (v) =>
@@ -344,7 +345,7 @@ export default function IndicadoresMacroPage() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="periodo" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={60} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}%`} />
-                  <Tooltip formatter={(v: number) => [`${fmtNum(v)}%`, "Inflación"]} labelFormatter={fmtPeriodo} />
+                  <Tooltip formatter={(v) => [`${fmtNum(Number(v ?? 0))}%`, "Inflación"]} labelFormatter={fmtPeriodo} />
                   <Bar dataKey="valor" fill="#f97316" name="Inflación %" radius={[2, 2, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -394,8 +395,8 @@ export default function IndicadoresMacroPage() {
                   <XAxis dataKey="periodo" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={60} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${v}%`} />
                   <Tooltip
-                    formatter={(v: number, name: string) => [
-                      `${fmtNum(v)}%`,
+                    formatter={(v, name) => [
+                      `${fmtNum(Number(v ?? 0))}%`,
                       name === "tasa" ? "Tasa TNA" : "Inflación mensual",
                     ]}
                     labelFormatter={fmtPeriodo}
@@ -423,7 +424,7 @@ export default function IndicadoresMacroPage() {
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="anio" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v)}%`} />
-                  <Tooltip formatter={(v: number) => [`${fmtNum(v, 1)}%`, "Acumulada"]} />
+                  <Tooltip formatter={(v) => [`${fmtNum(Number(v ?? 0), 1)}%`, "Acumulada"]} />
                   <Bar dataKey="acumulada" fill="#ef4444" name="Inflación anual %" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
