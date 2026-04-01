@@ -1,8 +1,10 @@
 /**
- * Retry wrapper con exponential backoff para llamadas a Supabase.
+ * Retry wrapper con backoff para llamadas a Supabase.
  * Reintenta automáticamente en errores de timeout o red,
  * pero NO en errores de auth o lógica.
  */
+
+const RETRY_DELAYS = [3000, 5000]; // 3s after 1st fail, 5s after 2nd
 
 function isRetryableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -16,20 +18,19 @@ function isRetryableError(err: unknown): boolean {
     lower.includes("econnrefused") ||
     lower.includes("econnreset") ||
     lower.includes("socket") ||
-    lower.includes("abort")
+    lower.includes("abort") ||
+    lower.includes("failed to fetch") ||
+    lower.includes("load failed")
   );
 }
 
 export async function fetchWithRetry<T>(
   fn: () => Promise<T>,
   options?: {
-    maxAttempts?: number;
-    baseDelay?: number;
     onRetry?: (attempt: number) => void;
   },
 ): Promise<T> {
-  const maxAttempts = options?.maxAttempts ?? 3;
-  const baseDelay = options?.baseDelay ?? 2000;
+  const maxAttempts = RETRY_DELAYS.length + 1; // 3 total
 
   let lastError: unknown;
 
@@ -40,9 +41,8 @@ export async function fetchWithRetry<T>(
       lastError = err;
 
       if (attempt < maxAttempts && isRetryableError(err)) {
-        const delay = baseDelay * Math.pow(2, attempt - 1);
         options?.onRetry?.(attempt);
-        await new Promise((r) => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt - 1]));
       } else {
         throw err;
       }

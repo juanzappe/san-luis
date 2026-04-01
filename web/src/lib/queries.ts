@@ -1,6 +1,7 @@
 /**
  * Queries para el dashboard Home — Resumen Ejecutivo.
- * Usa el cliente Supabase (REST) del lado del cliente.
+ * Usa una sola llamada RPC (get_resumen_ejecutivo) que devuelve
+ * todos los datos mensuales pre-agregados del lado del servidor.
  */
 import { supabase } from "./supabase";
 import { fetchWithRetry } from "./fetchWithRetry";
@@ -12,10 +13,10 @@ import { fetchWithRetry } from "./fetchWithRetry";
 export interface MonthRow {
   periodo: string; // YYYY-MM
   ingresos: number;
-  egresosOp: number; // proveedores (factura_recibida neto)
-  sueldos: number; // liquidacion_sueldo sueldo_neto (devengado)
-  comerciales: number; // all pago_impuesto (incl ganancias, excl IVA)
-  financieros: number; // comisiones bancarias
+  egresosOp: number;
+  sueldos: number;
+  comerciales: number;
+  financieros: number;
   egresosTotal: number;
   resultado: number;
   margen: number; // %
@@ -64,186 +65,22 @@ function pctDelta(cur: number, prev: number): number | null {
   return ((cur - prev) / Math.abs(prev)) * 100;
 }
 
-/** Agrupa un array por una key y suma un campo numérico. */
-function sumBy<T>(rows: T[], keyFn: (r: T) => string, valFn: (r: T) => number) {
-  const map = new Map<string, number>();
-  for (const r of rows) {
-    const k = keyFn(r);
-    map.set(k, (map.get(k) ?? 0) + valFn(r));
-  }
-  return map;
-}
-
-/**
- * Fetch paginado para superar el límite de 1000 filas de Supabase REST.
- * Soporta un filtro eq opcional.
- */
-async function fetchAllRows<T>(
-  table: string,
-  columns: string,
-  filter?: { column: string; value: string | number },
-): Promise<T[]> {
-  const PAGE = 1000;
-  const all: T[] = [];
-  let from = 0;
-  while (true) {
-    let query = supabase.from(table).select(columns).range(from, from + PAGE - 1);
-    if (filter) {
-      query = query.eq(filter.column, filter.value);
-    }
-    const { data, error } = await query;
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-    all.push(...(data as T[]));
-    if (data.length < PAGE) break;
-    from += PAGE;
-  }
-  return all;
+// ---------------------------------------------------------------------------
+// Tipo crudo del RPC
+// ---------------------------------------------------------------------------
+interface ResumenRow {
+  periodo: string;
+  mostrador: number;
+  restobar: number;
+  servicios: number;
+  egresos_op: number;
+  sueldos: number;
+  comerciales: number;
+  financieros: number;
 }
 
 // ---------------------------------------------------------------------------
-// Fetch ingresos mensuales:
-//   factura_emitida PV=6 (Servicios) + venta (Mostrador/Restobar)
-//   Usa imp_neto_gravado_total para facturas, monto_total para ventas.
-// ---------------------------------------------------------------------------
-type IngresoRpcRow = { periodo: string; mostrador: number; restobar: number; servicios: number };
-
-async function fetchIngresosRpc(): Promise<IngresoRpcRow[]> {
-  const { data, error } = await supabase.rpc("get_ingresos_mensual");
-  if (error) throw error;
-  return (data ?? []) as IngresoRpcRow[];
-}
-
-// ---------------------------------------------------------------------------
-// Egresos segmentados (4 categorías)
-// ---------------------------------------------------------------------------
-
-interface EgresosMonth {
-  egresosOp: number; // proveedores only (factura_recibida neto)
-  sueldos: number; // sueldo_neto with devengamiento
-  comerciales: number; // all taxes incl ganancias (excl IVA)
-  financieros: number; // bank fees
-}
-
-/**
- * Devengamiento: determina a qué mes acreditar un sueldo.
- * - Aguinaldo (periodo ends "-SAC"): accrue to payment month
- * - fecha_transferencia day < 20: accrue to previous month
- * - fecha_transferencia day >= 20: accrue to transfer month
- * - NULL fecha_transferencia: fall back to periodo field
- */
-function accrualPeriod(r: { periodo: string; fecha_transferencia: string | null }): string {
-  const isSAC = r.periodo.endsWith("-SAC");
-
-  if (!r.fecha_transferencia) return r.periodo.slice(0, 7);
-
-  const ft = new Date(r.fecha_transferencia + "T12:00:00");
-  const day = ft.getDate();
-  const ftMonth = r.fecha_transferencia.slice(0, 7);
-
-  if (isSAC) return ftMonth; // Aguinaldo: accrue to payment month
-
-  if (day < 20) {
-    // Paid before 20th: accrue to PREVIOUS month
-    const y = ft.getFullYear();
-    const m = ft.getMonth(); // 0-indexed
-    return m === 0
-      ? `${y - 1}-12`
-      : `${y}-${String(m).padStart(2, "0")}`;
-  }
-  return ftMonth;
-}
-
-async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
-  // Fetch all 4 data sources in parallel
-  const [sueldosData, provData, pagos, movBanco] = await Promise.all([
-    // 1) Sueldos with devengamiento
-    fetchAllRows<{
-      periodo: string;
-      sueldo_neto: number;
-      fecha_transferencia: string | null;
-    }>("liquidacion_sueldo", "periodo, sueldo_neto, fecha_transferencia"),
-
-    // 2) Proveedores (factura_recibida neto) → egresosOp (with NC sign)
-    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; tipo_comprobante: number | null }>(
-      "factura_recibida",
-      "fecha_emision, imp_neto_gravado_total, tipo_comprobante",
-    ),
-
-    // 3) Impuestos — ALL pago_impuesto (incl ganancias, excl IVA which isn't in this table)
-    fetchAllRows<{ fecha_pago: string; monto: number }>(
-      "pago_impuesto",
-      "fecha_pago, monto",
-    ),
-
-    // 4) Costos financieros (comisiones, intereses, etc. en movimientos bancarios)
-    fetchAllRows<{ fecha: string; concepto: string; debito: number }>(
-      "movimiento_bancario",
-      "fecha, concepto, debito",
-    ),
-  ]);
-
-  const sueldosMap = new Map<string, number>();
-  for (const r of sueldosData) {
-    const p = accrualPeriod(r);
-    sueldosMap.set(p, (sueldosMap.get(p) ?? 0) + (Number(r.sueldo_neto) || 0));
-  }
-
-  const provMap = sumBy(
-    provData,
-    (r) => (r.fecha_emision as string).slice(0, 7),
-    (r) => {
-      const raw = Number(r.imp_neto_gravado_total) || 0;
-      return [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
-    },
-  );
-
-  const taxMap = new Map<string, number>();
-  for (const pago of pagos) {
-    const p = (pago.fecha_pago as string).slice(0, 7);
-    taxMap.set(p, (taxMap.get(p) ?? 0) + (Number(pago.monto) || 0));
-  }
-
-  const financierosMap = new Map<string, number>();
-  for (const m of movBanco) {
-    const concepto = (m.concepto ?? "").toLowerCase();
-    const debito = Number(m.debito) || 0;
-    if (debito <= 0) continue;
-    if (
-      concepto.includes("comision") ||
-      concepto.includes("interes") ||
-      concepto.includes("impuesto s/deb") ||
-      concepto.includes("impuesto s/cred") ||
-      concepto.includes("mantenimiento") ||
-      concepto.includes("seguro") ||
-      concepto.includes("sellado")
-    ) {
-      const p = (m.fecha as string).slice(0, 7);
-      financierosMap.set(p, (financierosMap.get(p) ?? 0) + debito);
-    }
-  }
-
-  // Merge all periodos
-  const allP = new Set<string>();
-  for (const mp of [sueldosMap, provMap, taxMap, financierosMap]) {
-    mp.forEach((_, k) => allP.add(k));
-  }
-
-  const result = new Map<string, EgresosMonth>();
-  for (const p of Array.from(allP)) {
-    result.set(p, {
-      egresosOp: provMap.get(p) ?? 0,
-      sueldos: sueldosMap.get(p) ?? 0,
-      comerciales: taxMap.get(p) ?? 0,
-      financieros: financierosMap.get(p) ?? 0,
-    });
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Consolidar datos del dashboard
+// Consolidar datos del dashboard — una sola llamada RPC
 // ---------------------------------------------------------------------------
 export interface DashboardData {
   kpis: KpiData | null;
@@ -253,57 +90,41 @@ export interface DashboardData {
 }
 
 async function fetchDashboardDataInner(): Promise<DashboardData> {
-  // Single RPC call for ingresos (was previously called twice)
-  const [ingresosRpc, egresosMap] = await Promise.all([
-    fetchIngresosRpc(),
-    fetchEgresosSegmentados(),
-  ]);
+  const { data, error } = await supabase.rpc("get_resumen_ejecutivo");
+  if (error) throw error;
 
-  // Derive both ingresos totales and income-by-source from the same RPC result
-  const ingresos = new Map<string, number>();
-  for (const r of ingresosRpc) {
-    ingresos.set(r.periodo, (Number(r.mostrador) || 0) + (Number(r.restobar) || 0) + (Number(r.servicios) || 0));
-  }
-
-  const incomeBySource: IncomeBySource[] = ingresosRpc
-    .map((r) => ({
-      periodo: r.periodo,
-      mostrador: Number(r.mostrador) || 0,
-      restobar: Number(r.restobar) || 0,
-      servicios: Number(r.servicios) || 0,
-    }))
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
-
-  // Juntar todos los períodos
-  const allPeriodos = new Set<string>();
-  ingresos.forEach((_, k) => allPeriodos.add(k));
-  egresosMap.forEach((_, k) => allPeriodos.add(k));
-
-  if (allPeriodos.size === 0) {
+  const rows = (data ?? []) as ResumenRow[];
+  if (rows.length === 0) {
     return { kpis: null, monthly: [], incomeBySource: [], hasData: false };
   }
 
-  const sorted = Array.from(allPeriodos).sort();
-
-  // Construir tabla mensual
-  const monthly: MonthRow[] = sorted.map((p) => {
-    const ing = ingresos.get(p) ?? 0;
-    const eg = egresosMap.get(p) ?? { egresosOp: 0, sueldos: 0, comerciales: 0, financieros: 0 };
-    const egTotal = eg.egresosOp + eg.sueldos + eg.comerciales + eg.financieros;
+  const monthly: MonthRow[] = rows.map((r) => {
+    const ing = (Number(r.mostrador) || 0) + (Number(r.restobar) || 0) + (Number(r.servicios) || 0);
+    const eOp = Number(r.egresos_op) || 0;
+    const sue = Number(r.sueldos) || 0;
+    const com = Number(r.comerciales) || 0;
+    const fin = Number(r.financieros) || 0;
+    const egTotal = eOp + sue + com + fin;
     const res = ing - egTotal;
-    const margen = ing > 0 ? (res / ing) * 100 : 0;
     return {
-      periodo: p,
+      periodo: r.periodo,
       ingresos: ing,
-      egresosOp: eg.egresosOp,
-      sueldos: eg.sueldos,
-      comerciales: eg.comerciales,
-      financieros: eg.financieros,
+      egresosOp: eOp,
+      sueldos: sue,
+      comerciales: com,
+      financieros: fin,
       egresosTotal: egTotal,
       resultado: res,
-      margen,
+      margen: ing > 0 ? (res / ing) * 100 : 0,
     };
   });
+
+  const incomeBySource: IncomeBySource[] = rows.map((r) => ({
+    periodo: r.periodo,
+    mostrador: Number(r.mostrador) || 0,
+    restobar: Number(r.restobar) || 0,
+    servicios: Number(r.servicios) || 0,
+  }));
 
   // Find last "complete" month (has ingresos AND at least egresosOp or sueldos)
   let lastCompleteIdx = monthly.length - 1;
