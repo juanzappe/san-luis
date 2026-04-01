@@ -203,7 +203,7 @@ export async function fetchDolarEvolucion(): Promise<
   const blueMap = groupByMonth(blueAll);
 
   // Merge all periods
-  const allPeriods = new Set([...oficialMap.keys(), ...blueMap.keys()]);
+  const allPeriods = new Set([...Array.from(oficialMap.keys()), ...Array.from(blueMap.keys())]);
   const sorted = Array.from(allPeriods).sort();
   const last12 = sorted.slice(-12);
 
@@ -238,7 +238,7 @@ export async function fetchTasaVsInflacion(): Promise<
     tasaMap.set(r.fecha.slice(0, 7), r.valor);
   }
 
-  const allPeriods = new Set([...ipcMap.keys(), ...tasaMap.keys()]);
+  const allPeriods = new Set([...Array.from(ipcMap.keys()), ...Array.from(tasaMap.keys())]);
   const sorted = Array.from(allPeriods).sort();
   const last24 = sorted.slice(-24);
 
@@ -305,10 +305,10 @@ export async function fetchMacroTable(): Promise<MacroTableRow[]> {
 
   // All periods
   const allPeriods = new Set([
-    ...ipcMonthly.keys(),
-    ...oficialMap.keys(),
-    ...blueMap.keys(),
-    ...tasaMap.keys(),
+    ...Array.from(ipcMonthly.keys()),
+    ...Array.from(oficialMap.keys()),
+    ...Array.from(blueMap.keys()),
+    ...Array.from(tasaMap.keys()),
   ]);
   const sorted = Array.from(allPeriods).sort();
   const last24 = sorted.slice(-24);
