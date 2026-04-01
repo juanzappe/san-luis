@@ -8,7 +8,7 @@ import pandas as pd
 from utils import get_data_raw_path, safe_float, safe_str, batch_upsert
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     path = get_data_raw_path() / "PRODUCTOS" / "LISTADO_PRODUCTOS.xlsx"
     logger.info(f"Leyendo {path}")
 

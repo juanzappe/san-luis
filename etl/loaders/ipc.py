@@ -39,7 +39,7 @@ IPC_DATA = {
 }
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     records = []
     sorted_keys = sorted(IPC_DATA.keys())
 

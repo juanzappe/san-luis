@@ -126,6 +126,17 @@ def fetch_all(conn, sql: str, params=None) -> list[dict]:
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_max_value(conn, tabla: str, columna: str) -> str | None:
+    """Retorna MAX(columna) de la tabla, o None si está vacía.
+
+    Sirve para determinar hasta dónde se cargó en modo incremental.
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT MAX({columna})::text FROM {tabla}")
+        row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+
 # ---------------------------------------------------------------------------
 # Parseo de formatos argentinos
 # ---------------------------------------------------------------------------

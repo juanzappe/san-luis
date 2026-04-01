@@ -20,7 +20,7 @@ def _read_csv(path):
     return pd.read_csv(path, encoding="utf-8-sig", dtype=str, keep_default_na=False)
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "SEGMENTACION"
     if not data_dir.exists():
         logger.warning(f"  Directorio {data_dir} no encontrado, saltando")

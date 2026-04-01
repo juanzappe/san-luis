@@ -121,7 +121,7 @@ def _parse_pdf(path: Path, logger) -> dict | None:
     }
 
 
-def run(conn, logger) -> int:
+def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "IMPUESTOS MUNICIPALES"
     pdf_files = sorted(data_dir.rglob("*.pdf"))
     logger.info(f"  {len(pdf_files)} archivos PDF encontrados")
