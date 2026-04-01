@@ -42,6 +42,72 @@ const SUELDOS_COLOR = "#6366f1";
 const IMPUESTOS_COLOR = "#ef4444";
 const FINANCIEROS_COLOR = "#8b5cf6";
 
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const GRANULARITY_LABELS: Record<Granularity, string> = {
+  mensual: "Mensual",
+  trimestral: "Trimestral",
+  anual: "Anual",
+};
+
+const QUARTER_LABELS: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggregatedEgreso {
+  key: string;
+  label: string;
+  categorias: Record<string, number>;
+  sueldos: number;
+  impuestos: number;
+  financieros: number;
+  total: number;
+}
+
+function aggregateEgresos(data: EgresoRow[], granularity: Granularity): AggregatedEgreso[] {
+  if (granularity === "mensual") {
+    return [...data]
+      .map((r) => ({
+        key: r.periodo,
+        label: periodoLabel(r.periodo),
+        categorias: r.categorias,
+        sueldos: r.sueldos,
+        impuestos: r.impuestos,
+        financieros: r.financieros,
+        total: r.total,
+      }))
+      .sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  const buckets = new Map<string, AggregatedEgreso>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
+    const cur = buckets.get(bucketKey) ?? {
+      key: bucketKey,
+      label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
+      categorias: {},
+      sueldos: 0,
+      impuestos: 0,
+      financieros: 0,
+      total: 0,
+    };
+    for (const [cat, monto] of Object.entries(r.categorias)) {
+      cur.categorias[cat] = (cur.categorias[cat] ?? 0) + monto;
+    }
+    cur.sueldos += r.sueldos;
+    cur.impuestos += r.impuestos;
+    cur.financieros += r.financieros;
+    cur.total += r.total;
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
+}
+
 // ---------------------------------------------------------------------------
 // KPI Card
 // ---------------------------------------------------------------------------
@@ -87,6 +153,7 @@ export default function EgresosPage() {
   const [raw, setRaw] = useState<EgresoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
 
   useEffect(() => {
     fetchEgresos()
@@ -246,10 +313,25 @@ export default function EgresosPage() {
         </CardContent>
       </Card>
 
-      {/* Monthly table */}
+      {/* Detail table with period selector */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Detalle Mensual por Categoría</CardTitle>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle {GRANULARITY_LABELS[granularity]} por Categoría</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -267,9 +349,9 @@ export default function EgresosPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {[...data].reverse().map((row) => (
-                  <TableRow key={row.periodo}>
-                    <TableCell className="font-medium whitespace-nowrap">{periodoLabel(row.periodo)}</TableCell>
+                {aggregateEgresos(data, granularity).map((row) => (
+                  <TableRow key={row.key}>
+                    <TableCell className="font-medium whitespace-nowrap">{row.label}</TableCell>
                     {allCategories.map((cat) => (
                       <TableCell key={cat} className="text-right">
                         {formatARS(row.categorias[cat] ?? 0)}
