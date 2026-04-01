@@ -144,26 +144,13 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Ganancias (SICORE-217) from pago_impuesto.observaciones
+// Ganancias — estimated at effective tax rate
 // ---------------------------------------------------------------------------
 
-export async function fetchGananciasSicore(): Promise<Map<string, number>> {
-  const data = await fetchWithRetry(async () => {
-    const { data, error } = await supabase
-      .from("pago_impuesto")
-      .select("fecha_pago, monto, observaciones");
-    if (error) throw error;
-    return data ?? [];
-  });
+// Tasa efectiva Imp. Ganancias — promedio 2023-2024 de estados contables auditados
+const TASA_GANANCIAS = 0.367;
 
-  const map = new Map<string, number>();
-  for (const row of data as Array<{ fecha_pago: string; monto: number; observaciones: string | null }>) {
-    if (!row.observaciones?.includes("217 - SICORE")) continue;
-    const periodo = (row.fecha_pago as string).slice(0, 7);
-    map.set(periodo, (map.get(periodo) ?? 0) + (Number(row.monto) || 0));
-  }
-  return map;
-}
+export { TASA_GANANCIAS };
 
 // ---------------------------------------------------------------------------
 // Estado de Resultados — full P&L structure
@@ -184,8 +171,8 @@ export interface ResultadoRow {
 }
 
 export async function fetchResultado(): Promise<ResultadoRow[]> {
-  const [ingresos, egresos, gananciasSicore] = await fetchWithRetry(() =>
-    Promise.all([fetchIngresos(), fetchEgresos(), fetchGananciasSicore()])
+  const [ingresos, egresos] = await fetchWithRetry(() =>
+    Promise.all([fetchIngresos(), fetchEgresos()])
   );
 
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
@@ -194,7 +181,6 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
   const allP = new Set<string>();
   ingMap.forEach((_, k) => allP.add(k));
   egrMap.forEach((_, k) => allP.add(k));
-  gananciasSicore.forEach((_, k) => allP.add(k));
 
   return Array.from(allP)
     .sort()
@@ -206,11 +192,11 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const sueldos = egr?.sueldosNeto ?? 0;
       const costosCom = egr?.comerciales ?? 0;
       const costosFin = egr?.financieros ?? 0;
-      // Use real SICORE-217 payments (percibido) instead of RPC ganancias
-      const gan = gananciasSicore.get(p) ?? 0;
 
       const margenBruto = ing - costosOp - sueldos;
       const resultadoAntesGanancias = margenBruto - costosCom - costosFin;
+      // Ganancias estimated at effective tax rate (36.7%)
+      const gan = resultadoAntesGanancias > 0 ? resultadoAntesGanancias * TASA_GANANCIAS : 0;
       const resultadoNeto = resultadoAntesGanancias - gan;
       const margenPct = ing > 0 ? (resultadoNeto / ing) * 100 : 0;
 
