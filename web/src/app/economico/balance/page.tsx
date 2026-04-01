@@ -12,13 +12,12 @@ import {
   ResponsiveContainer,
   Cell,
 } from "recharts";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Loader2, AlertCircle, Info } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
   type BalanceRubroRow,
   type EstadoResultadosContableRow,
@@ -131,9 +130,8 @@ function EjercicioSelector({
 // ---------------------------------------------------------------------------
 
 export default function BalancePage() {
-  const { adjust } = useInflation();
-  const [rawBalance, setRawBalance] = useState<BalanceRubroRow[]>([]);
-  const [rawER, setRawER] = useState<EstadoResultadosContableRow[]>([]);
+  const [balanceData, setBalanceData] = useState<BalanceRubroRow[]>([]);
+  const [erData, setErData] = useState<EstadoResultadosContableRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [ejercicio, setEjercicio] = useState<EjercicioFilter>("Todos");
@@ -141,40 +139,12 @@ export default function BalancePage() {
   useEffect(() => {
     Promise.all([fetchBalanceRubros(), fetchEstadoResultadosContable()])
       .then(([b, er]) => {
-        setRawBalance(b);
-        setRawER(er);
+        setBalanceData(b);
+        setErData(er);
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
-
-  // Inflation-adjusted balance data
-  const balanceData = useMemo(
-    () =>
-      rawBalance.map((r) => ({
-        ...r,
-        monto: adjust(r.monto, `${r.ejercicio}-12`),
-        monto_ejercicio_anterior: adjust(
-          r.monto_ejercicio_anterior,
-          `${Number(r.ejercicio) - 1}-12`,
-        ),
-      })),
-    [rawBalance, adjust],
-  );
-
-  // Inflation-adjusted ER data
-  const erData = useMemo(
-    () =>
-      rawER.map((r) => ({
-        ...r,
-        monto: adjust(r.monto, `${r.ejercicio}-12`),
-        monto_ejercicio_anterior: adjust(
-          r.monto_ejercicio_anterior,
-          `${Number(r.ejercicio) - 1}-12`,
-        ),
-      })),
-    [rawER, adjust],
-  );
 
   // Available ejercicios in the data
   const availableEjercicios = useMemo(() => {
@@ -348,7 +318,7 @@ export default function BalancePage() {
     );
   }
 
-  if (rawBalance.length === 0 && rawER.length === 0) {
+  if (balanceData.length === 0 && erData.length === 0) {
     return (
       <Card>
         <CardContent className="py-8 text-center">
@@ -388,7 +358,13 @@ export default function BalancePage() {
             {availableEjercicios[availableEjercicios.length - 1]}
           </p>
         </div>
-        <InflationToggle />
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs text-muted-foreground"
+          title="Los estados contables auditados ya están ajustados por inflación (moneda homogénea RT 6)"
+        >
+          <Info className="h-3.5 w-3.5" />
+          Moneda homogénea de cierre (Dic 2024) — RT 6
+        </span>
       </div>
 
       {/* Ejercicio selector */}
