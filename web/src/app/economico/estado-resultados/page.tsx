@@ -27,12 +27,21 @@ import {
   formatARS,
   periodoLabel,
   shortLabel,
+  TASA_GANANCIAS,
 } from "@/lib/economic-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
+
+// Datos de estados contables auditados (hardcoded)
+const AMORTIZACIONES: Record<string, number> = {
+  "2024": 32205313,
+  "2023": 30166319,
+  "2022": 23218786,
+  "2021": 18171378,
+};
 
 // ---------------------------------------------------------------------------
 // Period aggregation
@@ -372,6 +381,17 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
+              {granularity === "anual" && (
+                <PnlLine
+                  label="EBITDA"
+                  values={tablePeriods.map((r) => {
+                    const amort = AMORTIZACIONES[r.periodo] ?? 0;
+                    return r.margenBruto + amort;
+                  })}
+                  bold
+                  infoTip="Resultado Operativo + Depreciaciones y Amortizaciones (datos de estados contables auditados)"
+                />
+              )}
               <PnlLine
                 label="Costos Comerciales"
                 values={tablePeriods.map((r) => r.costosComercialesAdmin)}
@@ -395,7 +415,7 @@ export default function EstadoResultadosPage() {
                 values={tablePeriods.map((r) => r.ganancias)}
                 indent
                 negative
-                infoTip="Retenciones SICORE efectivamente pagadas. No incluye el impuesto determinado anual."
+                infoTip={`Estimado al ${(TASA_GANANCIAS * 100).toFixed(1)}% (tasa efectiva promedio 2023-2024). No incluye diferencias temporarias ni ajuste por inflación impositiva.`}
               />
               <PnlLine
                 label="Resultado Neto"
@@ -421,6 +441,34 @@ export default function EstadoResultadosPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Nota informativa — solo vista anual */}
+      {granularity === "anual" && (
+        <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
+          <div className="flex items-start gap-2">
+            <Info className="mt-0.5 h-4 w-4 shrink-0" />
+            <div className="space-y-2">
+              <p className="font-medium text-foreground">Datos de estados contables auditados</p>
+              <div>
+                <p className="font-medium">Gastos Financieros y Otros, incluido RECPAM (Anexo III):</p>
+                <p>
+                  2021: $ 56.777.162 (neto favorable) &nbsp;|&nbsp; 2022: $ 38.857.176 (neto favorable)
+                  &nbsp;|&nbsp; 2023: -$ 540.757.210 (neto desfavorable) &nbsp;|&nbsp; 2024: -$ 401.210.536 (neto desfavorable)
+                </p>
+                <p className="mt-1 text-xs">
+                  Estos valores incluyen tanto gastos financieros como RECPAM y no están reflejados en el Estado de Resultados operativo mensual.
+                </p>
+              </div>
+              <div>
+                <p className="font-medium">Amortizaciones incluidas en Costos Operativos:</p>
+                <p>
+                  2021: $ 18.171.378 &nbsp;|&nbsp; 2022: $ 23.218.786 &nbsp;|&nbsp; 2023: $ 30.166.319 &nbsp;|&nbsp; 2024: $ 32.205.313
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Ingresos vs Egresos & Resultado Neto — 2 column */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
