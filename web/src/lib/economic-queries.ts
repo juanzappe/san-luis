@@ -37,6 +37,11 @@ export function formatARS(n: number): string {
   });
 }
 
+export function formatARSAccounting(n: number): string {
+  if (n < 0) return `(${formatARS(Math.abs(n))})`;
+  return formatARS(n);
+}
+
 export function formatPct(n: number | null): string {
   if (n === null) return "—";
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
@@ -139,6 +144,28 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 }
 
 // ---------------------------------------------------------------------------
+// Ganancias (SICORE-217) from pago_impuesto.observaciones
+// ---------------------------------------------------------------------------
+
+export async function fetchGananciasSicore(): Promise<Map<string, number>> {
+  const data = await fetchWithRetry(async () => {
+    const { data, error } = await supabase
+      .from("pago_impuesto")
+      .select("fecha_pago, monto, observaciones");
+    if (error) throw error;
+    return data ?? [];
+  });
+
+  const map = new Map<string, number>();
+  for (const row of data as Array<{ fecha_pago: string; monto: number; observaciones: string | null }>) {
+    if (!row.observaciones?.includes("217 - SICORE")) continue;
+    const periodo = (row.fecha_pago as string).slice(0, 7);
+    map.set(periodo, (map.get(periodo) ?? 0) + (Number(row.monto) || 0));
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
 // Estado de Resultados — full P&L structure
 // ---------------------------------------------------------------------------
 
@@ -157,8 +184,8 @@ export interface ResultadoRow {
 }
 
 export async function fetchResultado(): Promise<ResultadoRow[]> {
-  const [ingresos, egresos] = await fetchWithRetry(() =>
-    Promise.all([fetchIngresos(), fetchEgresos()])
+  const [ingresos, egresos, gananciasSicore] = await fetchWithRetry(() =>
+    Promise.all([fetchIngresos(), fetchEgresos(), fetchGananciasSicore()])
   );
 
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
@@ -167,6 +194,7 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
   const allP = new Set<string>();
   ingMap.forEach((_, k) => allP.add(k));
   egrMap.forEach((_, k) => allP.add(k));
+  gananciasSicore.forEach((_, k) => allP.add(k));
 
   return Array.from(allP)
     .sort()
@@ -178,7 +206,8 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const sueldos = egr?.sueldosNeto ?? 0;
       const costosCom = egr?.comerciales ?? 0;
       const costosFin = egr?.financieros ?? 0;
-      const gan = egr?.ganancias ?? 0;
+      // Use real SICORE-217 payments (percibido) instead of RPC ganancias
+      const gan = gananciasSicore.get(p) ?? 0;
 
       const margenBruto = ing - costosOp - sueldos;
       const resultadoAntesGanancias = margenBruto - costosCom - costosFin;
@@ -199,4 +228,72 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
         margenPct,
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Balance — Estados contables (balance_rubro + estado_resultados_contable)
+// ---------------------------------------------------------------------------
+
+export interface BalanceRubroRow {
+  ejercicio: string;
+  fecha_cierre: string;
+  seccion: string;
+  rubro: string;
+  monto: number;
+  monto_ejercicio_anterior: number;
+  orden: number;
+}
+
+export interface EstadoResultadosContableRow {
+  ejercicio: string;
+  fecha_cierre: string;
+  seccion: string;
+  linea: string;
+  monto: number;
+  monto_ejercicio_anterior: number;
+  orden: number;
+}
+
+export async function fetchBalanceRubros(): Promise<BalanceRubroRow[]> {
+  return fetchWithRetry(async () => {
+    const { data, error } = await supabase
+      .from("balance_rubro")
+      .select("ejercicio, fecha_cierre, seccion, rubro, monto, monto_ejercicio_anterior, orden")
+      .order("ejercicio")
+      .order("orden");
+    if (error) throw error;
+    return ((data ?? []) as Record<string, unknown>[])
+      .filter((r) => r.rubro !== "nan" && !Number.isNaN(Number(r.monto)))
+      .map((r) => ({
+        ejercicio: String(r.ejercicio),
+        fecha_cierre: String(r.fecha_cierre),
+        seccion: String(r.seccion),
+        rubro: String(r.rubro),
+        monto: Number(r.monto) || 0,
+        monto_ejercicio_anterior: Number(r.monto_ejercicio_anterior) || 0,
+        orden: Number(r.orden) || 0,
+      }));
+  });
+}
+
+export async function fetchEstadoResultadosContable(): Promise<EstadoResultadosContableRow[]> {
+  return fetchWithRetry(async () => {
+    const { data, error } = await supabase
+      .from("estado_resultados_contable")
+      .select("ejercicio, fecha_cierre, seccion, linea, monto, monto_ejercicio_anterior, orden")
+      .order("ejercicio")
+      .order("orden");
+    if (error) throw error;
+    return ((data ?? []) as Record<string, unknown>[])
+      .filter((r) => r.linea !== "nan" && !Number.isNaN(Number(r.monto)))
+      .map((r) => ({
+        ejercicio: String(r.ejercicio),
+        fecha_cierre: String(r.fecha_cierre),
+        seccion: String(r.seccion),
+        linea: String(r.linea),
+        monto: Number(r.monto) || 0,
+        monto_ejercicio_anterior: Number(r.monto_ejercicio_anterior) || 0,
+        orden: Number(r.orden) || 0,
+      }));
+  });
 }

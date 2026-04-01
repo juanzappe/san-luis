@@ -14,7 +14,7 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import { Loader2, AlertCircle } from "lucide-react";
+import { Loader2, AlertCircle, Info } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -35,6 +35,56 @@ import type {
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
 // ---------------------------------------------------------------------------
+// Period aggregation
+// ---------------------------------------------------------------------------
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const QUARTER_MAP: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+function aggregateResultado(
+  data: ResultadoRow[],
+  granularity: Granularity,
+): ResultadoRow[] {
+  if (granularity === "mensual") return data;
+
+  const buckets = new Map<string, ResultadoRow>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const key = granularity === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
+    const cur = buckets.get(key);
+    if (!cur) {
+      buckets.set(key, { ...r, periodo: key });
+    } else {
+      cur.ingresos += r.ingresos;
+      cur.costosOperativos += r.costosOperativos;
+      cur.sueldos += r.sueldos;
+      cur.costosComercialesAdmin += r.costosComercialesAdmin;
+      cur.costosFinancieros += r.costosFinancieros;
+      cur.ganancias += r.ganancias;
+      cur.margenBruto += r.margenBruto;
+      cur.resultadoAntesGanancias += r.resultadoAntesGanancias;
+      cur.resultadoNeto += r.resultadoNeto;
+      cur.margenPct = cur.ingresos > 0 ? (cur.resultadoNeto / cur.ingresos) * 100 : 0;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
+}
+
+function granularityLabel(p: string, g: Granularity): string {
+  if (g === "anual") return p;
+  if (g === "trimestral") {
+    const [y, q] = p.split("-");
+    return `${q} ${y}`;
+  }
+  return periodoLabel(p);
+}
+
+// ---------------------------------------------------------------------------
 // P&L line item component
 // ---------------------------------------------------------------------------
 function PnlLine({
@@ -44,6 +94,7 @@ function PnlLine({
   border,
   indent,
   negative,
+  infoTip,
 }: {
   label: string;
   values: number[];
@@ -51,11 +102,19 @@ function PnlLine({
   border?: boolean;
   indent?: boolean;
   negative?: boolean;
+  infoTip?: string;
 }) {
   return (
     <TableRow className={border ? "border-t-2 border-foreground/20" : ""}>
       <TableCell className={`${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
-        {negative && !bold ? `(−) ${label}` : label}
+        <span className="inline-flex items-center gap-1">
+          {negative && !bold ? `(−) ${label}` : label}
+          {infoTip && (
+            <span title={infoTip} className="cursor-help">
+              <Info className="h-3.5 w-3.5 text-muted-foreground" />
+            </span>
+          )}
+        </span>
       </TableCell>
       {values.map((v, i) => (
         <TableCell
@@ -158,6 +217,7 @@ export default function EstadoResultadosPage() {
   const [raw, setRaw] = useState<ResultadoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
 
   useEffect(() => {
     fetchResultado()
@@ -231,8 +291,10 @@ export default function EstadoResultadosPage() {
     );
   }
 
-  // Take last 6 months for the P&L table columns
-  const tablePeriods = data.slice(-6);
+  // Aggregate by selected granularity and take last N periods for table
+  const aggregated = aggregateResultado(data, granularity);
+  const tableCount = granularity === "mensual" ? 6 : granularity === "trimestral" ? 8 : 4;
+  const tablePeriods = aggregated.slice(-tableCount);
   const lastRow = data[data.length - 1];
   const waterfall = buildWaterfall(lastRow);
 
@@ -248,7 +310,7 @@ export default function EstadoResultadosPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Estado de Resultados</h1>
           <p className="text-muted-foreground">
-            Calculado desde datos operativos — últimos 6 meses
+            Calculado desde datos operativos
           </p>
         </div>
         <InflationToggle />
@@ -256,8 +318,23 @@ export default function EstadoResultadosPage() {
 
       {/* P&L Table */}
       <Card>
-        <CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Estado de Resultados</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
         </CardHeader>
         <CardContent>
           <Table>
@@ -266,7 +343,7 @@ export default function EstadoResultadosPage() {
                 <TableHead className="w-[220px]">Concepto</TableHead>
                 {tablePeriods.map((r) => (
                   <TableHead key={r.periodo} className="text-right">
-                    {periodoLabel(r.periodo)}
+                    {granularityLabel(r.periodo, granularity)}
                   </TableHead>
                 ))}
               </TableRow>
@@ -318,6 +395,7 @@ export default function EstadoResultadosPage() {
                 values={tablePeriods.map((r) => r.ganancias)}
                 indent
                 negative
+                infoTip="Retenciones SICORE efectivamente pagadas. No incluye el impuesto determinado anual."
               />
               <PnlLine
                 label="Resultado Neto"
@@ -343,6 +421,62 @@ export default function EstadoResultadosPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Ingresos vs Egresos & Resultado Neto — 2 column */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Ingresos vs Egresos */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Ingresos vs Egresos</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart
+                data={tablePeriods.map((r) => ({
+                  label: shortLabel(r.periodo),
+                  ingresos: r.ingresos,
+                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + r.ganancias,
+                }))}
+              >
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <Bar dataKey="ingresos" name="Ingresos Netos" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="egresos" name="Total Egresos" fill="#ef4444" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Resultado Neto Mensual */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Resultado Neto Mensual</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart
+                data={tablePeriods.map((r) => ({
+                  label: shortLabel(r.periodo),
+                  resultado: r.resultadoNeto,
+                }))}
+              >
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" />
+                <Bar dataKey="resultado" name="Resultado Neto" radius={[4, 4, 0, 0]}>
+                  {tablePeriods.map((r, i) => (
+                    <Cell key={i} fill={r.resultadoNeto >= 0 ? "#22c55e" : "#ef4444"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Charts — 2 column */}
       <div className="grid gap-4 lg:grid-cols-2">
