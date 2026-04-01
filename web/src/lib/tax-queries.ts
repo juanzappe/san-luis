@@ -16,6 +16,45 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
   map.set(key, (map.get(key) ?? 0) + val);
 }
 
+// ---------------------------------------------------------------------------
+// Impuesto al Cheque — direct query (bypasses broken RPC)
+// ---------------------------------------------------------------------------
+
+async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
+  const [bancoRows, mpRows] = await Promise.all([
+    fetchWithRetry(async () => {
+      const { data, error } = await supabase
+        .from("movimiento_bancario")
+        .select("fecha, importe, concepto");
+      if (error) throw error;
+      return data ?? [];
+    }),
+    fetchWithRetry(async () => {
+      const { data, error } = await supabase
+        .from("movimiento_mp")
+        .select("fecha, importe");
+      if (error) throw error;
+      return data ?? [];
+    }),
+  ]);
+
+  const map = new Map<string, number>();
+
+  for (const row of bancoRows as Array<{ fecha: string; importe: number; concepto: string | null }>) {
+    const c = (row.concepto ?? "").toUpperCase();
+    if (c.includes("IMPUESTO LEY 25413") || c.includes("COMPENSACION DE VALORES")) continue;
+    const periodo = (row.fecha as string).slice(0, 7);
+    addToMap(map, periodo, Math.abs(Number(row.importe) || 0) * 0.012);
+  }
+
+  for (const row of mpRows as Array<{ fecha: string; importe: number }>) {
+    const periodo = (row.fecha as string).slice(0, 10).slice(0, 7);
+    addToMap(map, periodo, Math.abs(Number(row.importe) || 0) * 0.012);
+  }
+
+  return Array.from(map.entries()).map(([periodo, importe_cheque]) => ({ periodo, importe_cheque }));
+}
+
 // Labels for tipo_impuesto_enum
 const TIPO_LABELS: Record<string, string> = {
   iva: "IVA",
@@ -109,11 +148,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
         periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
       }>;
     }),
-    fetchWithRetry(async () => {
-      const res = await supabase.rpc("get_cheque_mensual");
-      if (res.error) throw res.error;
-      return (res.data ?? []) as Array<{ periodo: string; importe_cheque: number }>;
-    }),
+    fetchChequeMensual(),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
 
