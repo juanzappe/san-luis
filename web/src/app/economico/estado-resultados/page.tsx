@@ -344,6 +344,62 @@ export default function EstadoResultadosPage() {
         </CardContent>
       </Card>
 
+      {/* Ingresos vs Egresos & Resultado Neto — 2 column */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {/* Ingresos vs Egresos */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Ingresos vs Egresos</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart
+                data={tablePeriods.map((r) => ({
+                  label: shortLabel(r.periodo),
+                  ingresos: r.ingresos,
+                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros,
+                }))}
+              >
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <Bar dataKey="ingresos" name="Ingresos Netos" fill="#22c55e" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="egresos" name="Total Egresos" fill="#ef4444" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        {/* Resultado Neto Mensual */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Resultado Neto Mensual</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart
+                data={tablePeriods.map((r) => ({
+                  label: shortLabel(r.periodo),
+                  resultado: r.resultadoNeto,
+                }))}
+              >
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" />
+                <Bar dataKey="resultado" name="Resultado Neto" radius={[4, 4, 0, 0]}>
+                  {tablePeriods.map((r, i) => (
+                    <Cell key={i} fill={r.resultadoNeto >= 0 ? "#22c55e" : "#ef4444"} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      </div>
+
       {/* Charts — 2 column */}
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Waterfall */}
