@@ -3,6 +3,7 @@
  * Usa el cliente Supabase (REST) del lado del cliente.
  */
 import { supabase } from "./supabase";
+import { fetchWithRetry } from "./fetchWithRetry";
 
 // ---------------------------------------------------------------------------
 // Tipos
@@ -105,14 +106,12 @@ async function fetchAllRows<T>(
 //   factura_emitida PV=6 (Servicios) + venta (Mostrador/Restobar)
 //   Usa imp_neto_gravado_total para facturas, monto_total para ventas.
 // ---------------------------------------------------------------------------
-async function fetchIngresosMensuales(): Promise<Map<string, number>> {
+type IngresoRpcRow = { periodo: string; mostrador: number; restobar: number; servicios: number };
+
+async function fetchIngresosRpc(): Promise<IngresoRpcRow[]> {
   const { data, error } = await supabase.rpc("get_ingresos_mensual");
   if (error) throw error;
-  const map = new Map<string, number>();
-  for (const r of (data ?? []) as Array<{ periodo: string; mostrador: number; restobar: number; servicios: number }>) {
-    map.set(r.periodo, (Number(r.mostrador) || 0) + (Number(r.restobar) || 0) + (Number(r.servicios) || 0));
-  }
-  return map;
+  return (data ?? []) as IngresoRpcRow[];
 }
 
 // ---------------------------------------------------------------------------
@@ -156,27 +155,39 @@ function accrualPeriod(r: { periodo: string; fecha_transferencia: string | null 
 }
 
 async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
-  // 1) Sueldos with devengamiento
-  const sueldosData = await fetchAllRows<{
-    periodo: string;
-    sueldo_neto: number;
-    fecha_transferencia: string | null;
-  }>(
-    "liquidacion_sueldo",
-    "periodo, sueldo_neto, fecha_transferencia",
-  );
+  // Fetch all 4 data sources in parallel
+  const [sueldosData, provData, pagos, movBanco] = await Promise.all([
+    // 1) Sueldos with devengamiento
+    fetchAllRows<{
+      periodo: string;
+      sueldo_neto: number;
+      fecha_transferencia: string | null;
+    }>("liquidacion_sueldo", "periodo, sueldo_neto, fecha_transferencia"),
+
+    // 2) Proveedores (factura_recibida neto) → egresosOp (with NC sign)
+    fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; tipo_comprobante: number | null }>(
+      "factura_recibida",
+      "fecha_emision, imp_neto_gravado_total, tipo_comprobante",
+    ),
+
+    // 3) Impuestos — ALL pago_impuesto (incl ganancias, excl IVA which isn't in this table)
+    fetchAllRows<{ fecha_pago: string; monto: number }>(
+      "pago_impuesto",
+      "fecha_pago, monto",
+    ),
+
+    // 4) Costos financieros (comisiones, intereses, etc. en movimientos bancarios)
+    fetchAllRows<{ fecha: string; concepto: string; debito: number }>(
+      "movimiento_bancario",
+      "fecha, concepto, debito",
+    ),
+  ]);
 
   const sueldosMap = new Map<string, number>();
   for (const r of sueldosData) {
     const p = accrualPeriod(r);
     sueldosMap.set(p, (sueldosMap.get(p) ?? 0) + (Number(r.sueldo_neto) || 0));
   }
-
-  // 2) Proveedores (factura_recibida neto) → egresosOp (with NC sign)
-  const provData = await fetchAllRows<{ fecha_emision: string; imp_neto_gravado_total: number; tipo_comprobante: number | null }>(
-    "factura_recibida",
-    "fecha_emision, imp_neto_gravado_total, tipo_comprobante",
-  );
 
   const provMap = sumBy(
     provData,
@@ -187,23 +198,11 @@ async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
     },
   );
 
-  // 3) Impuestos — ALL pago_impuesto (incl ganancias, excl IVA which isn't in this table)
-  const pagos = await fetchAllRows<{ fecha_pago: string; monto: number }>(
-    "pago_impuesto",
-    "fecha_pago, monto",
-  );
-
   const taxMap = new Map<string, number>();
   for (const pago of pagos) {
     const p = (pago.fecha_pago as string).slice(0, 7);
     taxMap.set(p, (taxMap.get(p) ?? 0) + (Number(pago.monto) || 0));
   }
-
-  // 4) Costos financieros (comisiones, intereses, etc. en movimientos bancarios)
-  const movBanco = await fetchAllRows<{ fecha: string; concepto: string; debito: number }>(
-    "movimiento_bancario",
-    "fecha, concepto, debito",
-  );
 
   const financierosMap = new Map<string, number>();
   for (const m of movBanco) {
@@ -244,22 +243,6 @@ async function fetchEgresosSegmentados(): Promise<Map<string, EgresosMonth>> {
 }
 
 // ---------------------------------------------------------------------------
-// Fetch ventas por fuente + servicios de factura_emitida PV=6
-// ---------------------------------------------------------------------------
-async function fetchVentasPorFuente(): Promise<IncomeBySource[]> {
-  const { data, error } = await supabase.rpc("get_ingresos_mensual");
-  if (error) throw error;
-  return ((data ?? []) as Array<{ periodo: string; mostrador: number; restobar: number; servicios: number }>)
-    .map((r) => ({
-      periodo: r.periodo,
-      mostrador: Number(r.mostrador) || 0,
-      restobar: Number(r.restobar) || 0,
-      servicios: Number(r.servicios) || 0,
-    }))
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
-}
-
-// ---------------------------------------------------------------------------
 // Consolidar datos del dashboard
 // ---------------------------------------------------------------------------
 export interface DashboardData {
@@ -269,12 +252,27 @@ export interface DashboardData {
   hasData: boolean;
 }
 
-export async function fetchDashboardData(): Promise<DashboardData> {
-  const [ingresos, egresosMap, incomeBySource] = await Promise.all([
-    fetchIngresosMensuales(),
+async function fetchDashboardDataInner(): Promise<DashboardData> {
+  // Single RPC call for ingresos (was previously called twice)
+  const [ingresosRpc, egresosMap] = await Promise.all([
+    fetchIngresosRpc(),
     fetchEgresosSegmentados(),
-    fetchVentasPorFuente(),
   ]);
+
+  // Derive both ingresos totales and income-by-source from the same RPC result
+  const ingresos = new Map<string, number>();
+  for (const r of ingresosRpc) {
+    ingresos.set(r.periodo, (Number(r.mostrador) || 0) + (Number(r.restobar) || 0) + (Number(r.servicios) || 0));
+  }
+
+  const incomeBySource: IncomeBySource[] = ingresosRpc
+    .map((r) => ({
+      periodo: r.periodo,
+      mostrador: Number(r.mostrador) || 0,
+      restobar: Number(r.restobar) || 0,
+      servicios: Number(r.servicios) || 0,
+    }))
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
 
   // Juntar todos los períodos
   const allPeriodos = new Set<string>();
@@ -337,6 +335,12 @@ export async function fetchDashboardData(): Promise<DashboardData> {
   };
 
   return { kpis, monthly, incomeBySource, hasData: true };
+}
+
+export async function fetchDashboardData(
+  onRetry?: (attempt: number) => void,
+): Promise<DashboardData> {
+  return fetchWithRetry(() => fetchDashboardDataInner(), { onRetry });
 }
 
 // ---------------------------------------------------------------------------

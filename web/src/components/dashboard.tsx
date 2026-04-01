@@ -25,8 +25,8 @@ import {
   Receipt,
   Landmark,
   CreditCard,
-  Loader2,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -138,19 +138,90 @@ function chartLabel(periodo: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Skeleton components
+// ---------------------------------------------------------------------------
+function SkeletonCard() {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <div className="h-4 w-28 animate-pulse rounded bg-muted" />
+        <div className="h-4 w-4 animate-pulse rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="h-7 w-36 animate-pulse rounded bg-muted" />
+        <div className="mt-2 h-3 w-24 animate-pulse rounded bg-muted" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function SkeletonChart() {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="h-5 w-44 animate-pulse rounded bg-muted" />
+      </CardHeader>
+      <CardContent>
+        <div className="h-[300px] w-full animate-pulse rounded bg-muted" />
+      </CardContent>
+    </Card>
+  );
+}
+
+function DashboardSkeleton({ retrying }: { retrying: boolean }) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="h-6 w-40 animate-pulse rounded bg-muted" />
+        <div className="h-8 w-32 animate-pulse rounded bg-muted" />
+      </div>
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {Array.from({ length: 6 }).map((_, i) => (
+          <SkeletonCard key={i} />
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <SkeletonChart key={i} />
+        ))}
+      </div>
+      {retrying && (
+        <p className="text-center text-sm text-muted-foreground">
+          Conectando con la base de datos…
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main Dashboard Component
 // ---------------------------------------------------------------------------
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const { adjust } = useInflation();
 
-  useEffect(() => {
-    fetchDashboardData()
+  const loadData = () => {
+    setLoading(true);
+    setError(null);
+    setRetrying(false);
+    fetchDashboardData((attempt) => {
+      if (attempt >= 1) setRetrying(true);
+    })
       .then(setData)
       .catch((e) => setError(e.message ?? "Error al cargar datos"))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setRetrying(false);
+      });
+  };
+
+  useEffect(() => {
+    loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Apply inflation adjustment to all monetary values
@@ -212,17 +283,12 @@ export default function Dashboard() {
     };
   }, [data, adjust]);
 
-  // --- Loading state ---
+  // --- Loading / retrying state ---
   if (loading) {
-    return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-3 text-muted-foreground">Cargando datos…</span>
-      </div>
-    );
+    return <DashboardSkeleton retrying={retrying} />;
   }
 
-  // --- Error state ---
+  // --- Error state (only after all retries failed) ---
   if (error) {
     return (
       <Card>
@@ -236,6 +302,13 @@ export default function Dashboard() {
               <code className="rounded bg-muted px-1">NEXT_PUBLIC_SUPABASE_URL</code> y{" "}
               <code className="rounded bg-muted px-1">NEXT_PUBLIC_SUPABASE_ANON_KEY</code>.
             </p>
+            <button
+              onClick={loadData}
+              className="mt-3 inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reintentar
+            </button>
           </div>
         </CardContent>
       </Card>
