@@ -43,6 +43,15 @@ const AMORTIZACIONES: Record<string, number> = {
   "2021": 18171378,
 };
 
+// Positivo = neto favorable (ganancia), Negativo = neto desfavorable (pérdida)
+// NOTA: estos valores incluyen RECPAM + gastos financieros del Anexo III
+const RECPAM: Record<string, number> = {
+  "2024": -401210536,
+  "2023": -540757210,
+  "2022": 38857176,
+  "2021": 56777162,
+};
+
 // ---------------------------------------------------------------------------
 // Period aggregation
 // ---------------------------------------------------------------------------
@@ -104,6 +113,8 @@ function PnlLine({
   indent,
   negative,
   infoTip,
+  subtle,
+  colorBySign,
 }: {
   label: string;
   values: number[];
@@ -112,9 +123,11 @@ function PnlLine({
   indent?: boolean;
   negative?: boolean;
   infoTip?: string;
+  subtle?: boolean;
+  colorBySign?: boolean;
 }) {
   return (
-    <TableRow className={border ? "border-t-2 border-foreground/20" : ""}>
+    <TableRow className={`${border ? "border-t-2 border-foreground/20" : ""} ${subtle ? "text-muted-foreground italic" : ""}`}>
       <TableCell className={`${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
         <span className="inline-flex items-center gap-1">
           {negative && !bold ? `(−) ${label}` : label}
@@ -129,10 +142,12 @@ function PnlLine({
         <TableCell
           key={i}
           className={`text-right ${bold ? "font-bold" : ""} ${
-            v < 0 ? "text-red-600" : ""
+            colorBySign
+              ? v > 0 ? "text-green-600" : v < 0 ? "text-red-600" : ""
+              : v < 0 ? "text-red-600" : ""
           }`}
         >
-          {formatARS(Math.abs(v))}
+          {formatARS(colorBySign ? v : Math.abs(v))}
         </TableCell>
       ))}
     </TableRow>
@@ -381,7 +396,7 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
-              {granularity === "anual" && (
+              {granularity === "anual" && tablePeriods.some((r) => AMORTIZACIONES[r.periodo]) && (
                 <PnlLine
                   label="EBITDA"
                   values={tablePeriods.map((r) => {
@@ -389,7 +404,10 @@ export default function EstadoResultadosPage() {
                     return r.margenBruto + amort;
                   })}
                   bold
-                  infoTip="Resultado Operativo + Depreciaciones y Amortizaciones (datos de estados contables auditados)"
+                  infoTip={`EBITDA = Margen Bruto + Amortizaciones (${tablePeriods
+                    .filter((r) => AMORTIZACIONES[r.periodo])
+                    .map((r) => `$${(AMORTIZACIONES[r.periodo] / 1e6).toFixed(1)}M en ${r.periodo}`)
+                    .join(", ")}). Datos de estados contables auditados.`}
                 />
               )}
               <PnlLine
@@ -404,6 +422,16 @@ export default function EstadoResultadosPage() {
                 indent
                 negative
               />
+              {granularity === "anual" && tablePeriods.some((r) => RECPAM[r.periodo] !== undefined) && (
+                <PnlLine
+                  label="(+/−) RECPAM y Gastos Financ. (Anexo III)"
+                  values={tablePeriods.map((r) => RECPAM[r.periodo] ?? 0)}
+                  indent
+                  subtle
+                  colorBySign
+                  infoTip="Incluye RECPAM y gastos financieros según estados contables auditados. No se refleja en vista mensual/trimestral. No altera el Resultado Neto operativo."
+                />
+              )}
               <PnlLine
                 label="Resultado antes de Ganancias"
                 values={tablePeriods.map((r) => r.resultadoAntesGanancias)}
@@ -442,34 +470,6 @@ export default function EstadoResultadosPage() {
         </CardContent>
       </Card>
 
-      {/* Nota informativa — solo vista anual */}
-      {granularity === "anual" && (
-        <div className="rounded-lg border bg-muted/50 p-4 text-sm text-muted-foreground">
-          <div className="flex items-start gap-2">
-            <Info className="mt-0.5 h-4 w-4 shrink-0" />
-            <div className="space-y-2">
-              <p className="font-medium text-foreground">Datos de estados contables auditados</p>
-              <div>
-                <p className="font-medium">Gastos Financieros y Otros, incluido RECPAM (Anexo III):</p>
-                <p>
-                  2021: $ 56.777.162 (neto favorable) &nbsp;|&nbsp; 2022: $ 38.857.176 (neto favorable)
-                  &nbsp;|&nbsp; 2023: -$ 540.757.210 (neto desfavorable) &nbsp;|&nbsp; 2024: -$ 401.210.536 (neto desfavorable)
-                </p>
-                <p className="mt-1 text-xs">
-                  Estos valores incluyen tanto gastos financieros como RECPAM y no están reflejados en el Estado de Resultados operativo mensual.
-                </p>
-              </div>
-              <div>
-                <p className="font-medium">Amortizaciones incluidas en Costos Operativos:</p>
-                <p>
-                  2021: $ 18.171.378 &nbsp;|&nbsp; 2022: $ 23.218.786 &nbsp;|&nbsp; 2023: $ 30.166.319 &nbsp;|&nbsp; 2024: $ 32.205.313
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Ingresos vs Egresos & Resultado Neto — 2 column */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {/* Ingresos vs Egresos */}
@@ -481,7 +481,7 @@ export default function EstadoResultadosPage() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: shortLabel(r.periodo),
+                  label: granularityLabel(r.periodo, granularity),
                   ingresos: r.ingresos,
                   egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + r.ganancias,
                 }))}
@@ -497,16 +497,18 @@ export default function EstadoResultadosPage() {
           </CardContent>
         </Card>
 
-        {/* Resultado Neto Mensual */}
+        {/* Resultado Neto */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-base">Resultado Neto Mensual</CardTitle>
+            <CardTitle className="text-base">
+              {granularity === "mensual" ? "Resultado Neto Mensual" : granularity === "trimestral" ? "Resultado Neto Trimestral" : "Resultado Neto Anual"}
+            </CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: shortLabel(r.periodo),
+                  label: granularityLabel(r.periodo, granularity),
                   resultado: r.resultadoNeto,
                 }))}
               >
