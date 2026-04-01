@@ -36,16 +36,11 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-// Dynamic palette for expense categories
-const CATEGORY_COLORS = [
-  "#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#8b5cf6",
-  "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1",
-  "#14b8a6", "#e11d48", "#a855f7", "#0ea5e9",
-];
-// Fixed colors for non-category items
-const SUELDOS_COLOR = "#64748b";
-const IMPUESTOS_COLOR = "#78716c";
-const FINANCIEROS_COLOR = "#94a3b8";
+// Fixed colors for the 4 KPI categories
+const OPERATIVOS_COLOR = "#f59e0b";
+const SUELDOS_COLOR = "#6366f1";
+const IMPUESTOS_COLOR = "#ef4444";
+const FINANCIEROS_COLOR = "#8b5cf6";
 
 // ---------------------------------------------------------------------------
 // KPI Card
@@ -113,15 +108,6 @@ export default function EgresosPage() {
       .map(([name]) => name);
   }, [raw]);
 
-  // Color assignment for categories
-  const catColorMap = useMemo(() => {
-    const map = new Map<string, string>();
-    allCategories.forEach((cat, i) => {
-      map.set(cat, CATEGORY_COLORS[i % CATEGORY_COLORS.length]);
-    });
-    return map;
-  }, [allCategories]);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -178,20 +164,20 @@ export default function EgresosPage() {
   const last = data[data.length - 1];
   const prev = data.length >= 2 ? data[data.length - 2] : null;
 
-  // Chart data — flatten categorias into top-level keys for Recharts
-  const chartData = data.slice(-12).map((r) => {
-    const flat: Record<string, string | number> = { label: shortLabel(r.periodo) };
-    for (const cat of allCategories) {
-      flat[cat] = r.categorias[cat] ?? 0;
-    }
-    flat["Sueldos"] = r.sueldos;
-    flat["Impuestos"] = r.impuestos;
-    flat["Financieros"] = r.financieros;
-    return flat;
-  });
+  // Costos Operativos = sum of all categorias (factura_recibida by provider)
+  const costosOp = (r: EgresoRow) =>
+    Object.values(r.categorias).reduce((a, b) => a + b, 0);
+  const lastCostosOp = costosOp(last);
+  const prevCostosOp = prev ? costosOp(prev) : null;
 
-  // Top KPI categories (top 3 by monto in last month)
-  const topCats = allCategories.slice(0, 3);
+  // Chart data — 4 fixed stacked categories
+  const chartData = data.slice(-12).map((r) => ({
+    label: shortLabel(r.periodo),
+    "Costos Operativos": costosOp(r),
+    "Sueldos": r.sueldos,
+    "Impuestos": r.impuestos,
+    "Financieros": r.financieros,
+  }));
 
   return (
     <div className="space-y-6">
@@ -205,27 +191,36 @@ export default function EgresosPage() {
         <InflationToggle />
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI Cards — 5 fixed categories */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <KpiCard
           title="Total Egresos"
           value={last.total}
           delta={prev ? pctDelta(last.total, prev.total) : null}
         />
-        {topCats.map((cat) => (
-          <KpiCard
-            key={cat}
-            title={cat}
-            value={last.categorias[cat] ?? 0}
-            delta={prev ? pctDelta(last.categorias[cat] ?? 0, prev.categorias[cat] ?? 0) : null}
-            color={catColorMap.get(cat)}
-          />
-        ))}
+        <KpiCard
+          title="Costos Operativos"
+          value={lastCostosOp}
+          delta={prevCostosOp !== null ? pctDelta(lastCostosOp, prevCostosOp) : null}
+          color={OPERATIVOS_COLOR}
+        />
         <KpiCard
           title="Sueldos"
           value={last.sueldos}
           delta={prev ? pctDelta(last.sueldos, prev.sueldos) : null}
           color={SUELDOS_COLOR}
+        />
+        <KpiCard
+          title="Impuestos"
+          value={last.impuestos}
+          delta={prev ? pctDelta(last.impuestos, prev.impuestos) : null}
+          color={IMPUESTOS_COLOR}
+        />
+        <KpiCard
+          title="Financieros"
+          value={last.financieros}
+          delta={prev ? pctDelta(last.financieros, prev.financieros) : null}
+          color={FINANCIEROS_COLOR}
         />
       </div>
 
@@ -242,15 +237,7 @@ export default function EgresosPage() {
               <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
               <Tooltip formatter={arsTooltip} />
               <Legend />
-              {allCategories.map((cat, i) => (
-                <Bar
-                  key={cat}
-                  dataKey={cat}
-                  name={cat}
-                  stackId="a"
-                  fill={catColorMap.get(cat) ?? CATEGORY_COLORS[i % CATEGORY_COLORS.length]}
-                />
-              ))}
+              <Bar dataKey="Costos Operativos" name="Costos Operativos" stackId="a" fill={OPERATIVOS_COLOR} />
               <Bar dataKey="Sueldos" name="Sueldos" stackId="a" fill={SUELDOS_COLOR} />
               <Bar dataKey="Impuestos" name="Impuestos" stackId="a" fill={IMPUESTOS_COLOR} />
               <Bar dataKey="Financieros" name="Financieros" stackId="a" fill={FINANCIEROS_COLOR} radius={[4, 4, 0, 0]} />
