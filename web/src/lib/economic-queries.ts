@@ -187,7 +187,7 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     const raw = Number(f.imp_neto_gravado_total) || 0;
     const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
     const cuit = f.nro_doc_emisor;
-    const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Sin clasificar";
+    const cat = (cuit ? cuitToCategoria.get(cuit) : null) ?? "Costos Operativos";
 
     if (!catMap.has(periodo)) catMap.set(periodo, new Map());
     const pm = catMap.get(periodo)!;
