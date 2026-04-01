@@ -37,6 +37,11 @@ export function formatARS(n: number): string {
   });
 }
 
+export function formatARSAccounting(n: number): string {
+  if (n < 0) return `(${formatARS(Math.abs(n))})`;
+  return formatARS(n);
+}
+
 export function formatPct(n: number | null): string {
   if (n === null) return "—";
   return `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`;
@@ -199,4 +204,72 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
         margenPct,
       };
     });
+}
+
+// ---------------------------------------------------------------------------
+// Balance — Estados contables (balance_rubro + estado_resultados_contable)
+// ---------------------------------------------------------------------------
+
+export interface BalanceRubroRow {
+  ejercicio: string;
+  fecha_cierre: string;
+  seccion: string;
+  rubro: string;
+  monto: number;
+  monto_ejercicio_anterior: number;
+  orden: number;
+}
+
+export interface EstadoResultadosContableRow {
+  ejercicio: string;
+  fecha_cierre: string;
+  seccion: string;
+  linea: string;
+  monto: number;
+  monto_ejercicio_anterior: number;
+  orden: number;
+}
+
+export async function fetchBalanceRubros(): Promise<BalanceRubroRow[]> {
+  return fetchWithRetry(async () => {
+    const { data, error } = await supabase
+      .from("balance_rubro")
+      .select("ejercicio, fecha_cierre, seccion, rubro, monto, monto_ejercicio_anterior, orden")
+      .order("ejercicio")
+      .order("orden");
+    if (error) throw error;
+    return ((data ?? []) as Record<string, unknown>[])
+      .filter((r) => r.rubro !== "nan" && !Number.isNaN(Number(r.monto)))
+      .map((r) => ({
+        ejercicio: String(r.ejercicio),
+        fecha_cierre: String(r.fecha_cierre),
+        seccion: String(r.seccion),
+        rubro: String(r.rubro),
+        monto: Number(r.monto) || 0,
+        monto_ejercicio_anterior: Number(r.monto_ejercicio_anterior) || 0,
+        orden: Number(r.orden) || 0,
+      }));
+  });
+}
+
+export async function fetchEstadoResultadosContable(): Promise<EstadoResultadosContableRow[]> {
+  return fetchWithRetry(async () => {
+    const { data, error } = await supabase
+      .from("estado_resultados_contable")
+      .select("ejercicio, fecha_cierre, seccion, linea, monto, monto_ejercicio_anterior, orden")
+      .order("ejercicio")
+      .order("orden");
+    if (error) throw error;
+    return ((data ?? []) as Record<string, unknown>[])
+      .filter((r) => r.linea !== "nan" && !Number.isNaN(Number(r.monto)))
+      .map((r) => ({
+        ejercicio: String(r.ejercicio),
+        fecha_cierre: String(r.fecha_cierre),
+        seccion: String(r.seccion),
+        linea: String(r.linea),
+        monto: Number(r.monto) || 0,
+        monto_ejercicio_anterior: Number(r.monto_ejercicio_anterior) || 0,
+        orden: Number(r.orden) || 0,
+      }));
+  });
 }
