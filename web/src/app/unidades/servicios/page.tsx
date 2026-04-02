@@ -1,34 +1,152 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
-  BarChart, Bar, PieChart, Pie, Cell,
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { Loader2, AlertCircle, Briefcase, Users, Receipt, AlertTriangle } from "lucide-react";
+import { Loader2, AlertCircle, Briefcase, ShoppingBag, Hash, Search, ChevronsUpDown } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { Button } from "@/components/ui/button";
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList,
+} from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
-  type ServiciosData, fetchServicios,
-  formatARS, shortLabel,
+  type ServiciosData, type ServiciosClientRow, fetchServicios,
+  formatARS, periodoLabel,
 } from "@/lib/units-queries";
+import { pctDelta, formatPct } from "@/lib/economic-queries";
+import { cn } from "@/lib/utils";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-const COLORS = { publico: "#3b82f6", privado: "#22c55e" };
+const SHORT_MONTHS = [
+  "Ene","Feb","Mar","Abr","May","Jun",
+  "Jul","Ago","Sep","Oct","Nov","Dic",
+];
 
+const YEAR_COLORS = ["#94a3b8", "#22c55e", "#3b82f6", "#f59e0b", "#ef4444"];
+const PIE_COLORS = ["#3b82f6", "#22c55e"];
+
+// ---------------------------------------------------------------------------
+// Period aggregation
+// ---------------------------------------------------------------------------
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const QUARTER_MAP: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggRow {
+  periodo: string;
+  total: number;
+  txCount: number;
+}
+
+function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
+  if (g === "mensual") return data;
+  const buckets = new Map<string, AggRow>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const key = g === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
+    const cur = buckets.get(key);
+    if (!cur) {
+      buckets.set(key, { ...r, periodo: key });
+    } else {
+      cur.total += r.total;
+      cur.txCount += r.txCount;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
+}
+
+function granularityLabel(p: string, g: Granularity): string {
+  if (g === "anual") return p;
+  if (g === "trimestral") {
+    const [y, q] = p.split("-");
+    return `${q} ${y}`;
+  }
+  return periodoLabel(p);
+}
+
+// ---------------------------------------------------------------------------
+// Client Combobox
+// ---------------------------------------------------------------------------
+function ClientCombobox({
+  clients,
+  value,
+  onChange,
+}: {
+  clients: ServiciosClientRow[];
+  value: string;
+  onChange: (cuit: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = clients.find((c) => c.cuit === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
+        className={cn(
+          "inline-flex w-full max-w-md items-center justify-between rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background",
+          "hover:bg-accent hover:text-accent-foreground",
+          !value && "text-muted-foreground",
+        )}
+      >
+        <span className="truncate">{selected?.nombre || "Buscar cliente..."}</span>
+        <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+      </PopoverTrigger>
+      <PopoverContent className="w-[450px] p-0">
+        <Command>
+          <CommandInput placeholder="Buscar por nombre o CUIT..." />
+          <CommandList>
+            <CommandEmpty>No se encontró el cliente.</CommandEmpty>
+            <CommandGroup className="max-h-64 overflow-auto">
+              {clients.map((c) => (
+                <CommandItem
+                  key={c.cuit}
+                  value={`${c.nombre} ${c.cuit}`}
+                  data-checked={value === c.cuit || undefined}
+                  onSelect={() => {
+                    onChange(value === c.cuit ? "" : c.cuit);
+                    setOpen(false);
+                  }}
+                >
+                  <span className="truncate">{c.nombre}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">{c.cuit}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 export default function ServiciosPage() {
   const [data, setData] = useState<ServiciosData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { adjust } = useInflation();
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [selectedClient, setSelectedClient] = useState("");
+  const [showAllClients, setShowAllClients] = useState(false);
 
   useEffect(() => {
     fetchServicios()
@@ -36,6 +154,71 @@ export default function ServiciosPage() {
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Inflation-adjusted monthly data
+  const adjMonthly = useMemo(
+    () => (data?.monthly ?? []).map((r) => ({
+      ...r,
+      total: adjust(r.total, r.periodo),
+      publico: adjust(r.publico, r.periodo),
+      privado: adjust(r.privado, r.periodo),
+    })),
+    [data, adjust],
+  );
+
+  // Aggregated for table (Section 2)
+  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity), [adjMonthly, granularity]);
+  const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
+
+  // KPI data (Section 1)
+  const last = adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null;
+  const prev = adjMonthly.length > 1 ? adjMonthly[adjMonthly.length - 2] : null;
+  const lastTicket = last && last.txCount > 0 ? last.total / last.txCount : 0;
+  const prevTicket = prev && prev.txCount > 0 ? prev.total / prev.txCount : 0;
+
+  // Year-over-year data (Section 3)
+  const yoyData = useMemo(() => {
+    const years = Array.from(new Set(adjMonthly.map((m) => m.periodo.slice(0, 4)))).sort();
+    const byMonth = Array.from({ length: 12 }, (_, i) => {
+      const row: Record<string, number | string> = { month: SHORT_MONTHS[i] };
+      for (const y of years) {
+        const match = adjMonthly.find((m) => m.periodo === `${y}-${String(i + 1).padStart(2, "0")}`);
+        if (match) row[y] = match.total;
+      }
+      return row;
+    });
+    return { data: byMonth, years };
+  }, [adjMonthly]);
+
+  // Client evolution data (Section 4)
+  const clientEvolution = useMemo(() => {
+    if (!selectedClient || !data) return [];
+    const rows = data.clientMonthly.get(selectedClient) ?? [];
+    return rows.map((r) => ({
+      ...r,
+      monto: adjust(r.monto, r.periodo),
+      label: periodoLabel(r.periodo),
+    }));
+  }, [selectedClient, data, adjust]);
+
+  const selectedClientData = useMemo(
+    () => data?.clients.find((c) => c.cuit === selectedClient),
+    [data, selectedClient],
+  );
+
+  // Total for last 12 months (for top 10 % calculation)
+  const last12Total = useMemo(() => {
+    const periods = adjMonthly.slice(-12);
+    return periods.reduce((s, r) => s + r.total, 0);
+  }, [adjMonthly]);
+
+  // Section 5: Check if tipo_entidad is actually populated
+  const hasClassification = useMemo(() => {
+    if (!data) return false;
+    return data.clients.some(
+      (c) => c.tipoEntidad !== "Sin clasificar" && c.tipoEntidad !== "",
+    );
+  }, [data]);
 
   if (loading) {
     return (
@@ -52,256 +235,333 @@ export default function ServiciosPage() {
       </CardContent></Card>
     );
   }
-
-  const monthRows = data.monthly.map((r) => ({
-    ...r,
-    publicoAdj: adjust(r.publico, r.periodo),
-    privadoAdj: adjust(r.privado, r.periodo),
-    totalAdj: adjust(r.total, r.periodo),
-    label: shortLabel(r.periodo),
-  }));
-
-  const last = monthRows[monthRows.length - 1];
-  const prev = monthRows.length > 1 ? monthRows[monthRows.length - 2] : null;
-  const lastDelta = last && prev ? ((last.totalAdj - prev.totalAdj) / Math.abs(prev.totalAdj || 1)) * 100 : null;
-
-  // Tipo entidad donut
-  const totalPub = data.monthly.reduce((s, r) => s + r.publico, 0);
-  const totalPriv = data.monthly.reduce((s, r) => s + r.privado, 0);
-  const donutData = [
-    { name: "Público", value: totalPub },
-    { name: "Privado", value: totalPriv },
-  ];
-
-  // Classification donut from clients
-  const clasifMap = new Map<string, number>();
-  for (const c of data.clients) {
-    const key = c.clasificacion;
-    clasifMap.set(key, (clasifMap.get(key) ?? 0) + c.monto);
+  if (adjMonthly.length === 0) {
+    return (
+      <Card><CardContent className="py-8 text-center">
+        <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+        <p className="mt-3 font-medium">Sin datos de servicios</p>
+        <p className="text-sm text-muted-foreground">Ejecutá el ETL para importar facturas emitidas (PV 6).</p>
+      </CardContent></Card>
+    );
   }
-  const clasifData = Array.from(clasifMap.entries())
-    .map(([name, value]) => ({ name, value }))
-    .sort((a, b) => b.value - a.value);
-
-  const CLASIF_COLORS = [
-    "#8b5cf6", "#06b6d4", "#22c55e", "#f59e0b", "#ef4444",
-    "#ec4899", "#3b82f6", "#84cc16",
-  ];
-
-  const highPublic = data.kpis.pctPublico > 80;
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Servicios (Catering)</h1>
-          <p className="text-muted-foreground">Facturación, clientes y estacionalidad</p>
+          <p className="text-muted-foreground">Facturación, clientes y evolución</p>
         </div>
         <InflationToggle />
       </div>
 
-      {/* Alert */}
-      {highPublic && (
-        <Card className="border-amber-300 bg-amber-50">
-          <CardContent className="flex items-center gap-3 py-4">
-            <AlertTriangle className="h-5 w-5 text-amber-600" />
-            <p className="text-sm text-amber-800">
-              Concentración alta en sector público ({data.kpis.pctPublico.toFixed(0)}%). Considerar diversificar cartera hacia privados.
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* KPIs */}
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* ====== SECTION 1: KPI Cards ====== */}
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Facturación Último Mes</CardTitle>
             <Briefcase className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatARS(last?.totalAdj ?? 0)}</div>
-            {lastDelta !== null && (
-              <p className={`text-xs ${lastDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {lastDelta >= 0 ? "+" : ""}{lastDelta.toFixed(1)}% vs mes anterior
+            <div className="text-2xl font-bold">{formatARS(last?.total ?? 0)}</div>
+            {last && prev && (
+              <p className={`text-xs ${(pctDelta(last.total, prev.total) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.total, prev.total))} vs mes anterior
               </p>
             )}
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Clientes Activos</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Servicios Último Mes</CardTitle>
+            <Hash className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{data.kpis.cantClientes}</div>
+            <div className="text-2xl font-bold">{(last?.txCount ?? 0).toLocaleString("es-AR")}</div>
+            {last && prev && (
+              <p className={`text-xs ${(pctDelta(last.txCount, prev.txCount) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.txCount, prev.txCount))} vs mes anterior
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Ticket Promedio</CardTitle>
-            <Receipt className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-sm font-medium">Ticket Medio</CardTitle>
+            <ShoppingBag className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatARS(data.kpis.ticketPromedio)}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">% Sector Público</CardTitle>
-            <Briefcase className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${highPublic ? "text-amber-600" : ""}`}>
-              {data.kpis.pctPublico.toFixed(1)}%
-            </div>
+            <div className="text-2xl font-bold">{formatARS(lastTicket)}</div>
+            {prevTicket > 0 && (
+              <p className={`text-xs ${(pctDelta(lastTicket, prevTicket) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(lastTicket, prevTicket))} vs mes anterior
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Monthly stacked bar (público vs privado) */}
+      {/* ====== SECTION 2: Detail Table ====== */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Facturación Mensual — Público vs Privado</CardTitle></CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={monthRows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-              <YAxis tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar dataKey="publicoAdj" name="Público" stackId="a" fill={COLORS.publico} />
-              <Bar dataKey="privadoAdj" name="Privado" stackId="a" fill={COLORS.privado} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
-
-      {/* Donuts: Tipo Entidad + Clasificación */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle className="text-base">Por Tipo de Entidad</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie data={donutData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                  innerRadius={60} outerRadius={100}
-                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
-                  <Cell fill={COLORS.publico} />
-                  <Cell fill={COLORS.privado} />
-                </Pie>
-                <Tooltip formatter={arsTooltip} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">Por Clasificación</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie data={clasifData} dataKey="value" nameKey="name" cx="50%" cy="50%"
-                  innerRadius={60} outerRadius={100}
-                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}>
-                  {clasifData.map((_, i) => (
-                    <Cell key={i} fill={CLASIF_COLORS[i % CLASIF_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={arsTooltip} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Seasonal analysis: total by month-of-year */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Estacionalidad (Promedio por Mes del Año)</CardTitle></CardHeader>
-        <CardContent>
-          {(() => {
-            const byMonth = new Map<number, { sum: number; count: number }>();
-            for (const r of data.monthly) {
-              const m = parseInt(r.periodo.split("-")[1], 10);
-              const existing = byMonth.get(m) ?? { sum: 0, count: 0 };
-              existing.sum += r.total;
-              existing.count += 1;
-              byMonth.set(m, existing);
-            }
-            const MONTH_NAMES_SHORT = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
-            const seasonData = Array.from({ length: 12 }, (_, i) => {
-              const entry = byMonth.get(i + 1);
-              return {
-                mes: MONTH_NAMES_SHORT[i],
-                promedio: entry ? entry.sum / entry.count : 0,
-              };
-            });
-            return (
-              <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={seasonData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="mes" tick={{ fontSize: 12 }} />
-                  <YAxis tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                  <Tooltip formatter={arsTooltip} />
-                  <Bar dataKey="promedio" name="Promedio" fill="#22c55e" />
-                </BarChart>
-              </ResponsiveContainer>
-            );
-          })()}
-        </CardContent>
-      </Card>
-
-      {/* Client ranking table */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Ranking de Clientes ({data.clients.length})</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle por Período</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>#</TableHead>
-                  <TableHead>Cliente</TableHead>
-                  <TableHead>CUIT</TableHead>
-                  <TableHead>Tipo</TableHead>
-                  <TableHead>Clasificación</TableHead>
-                  <TableHead className="text-right">Facturación</TableHead>
-                  <TableHead className="text-right">Facturas</TableHead>
-                  <TableHead className="text-right">% Total</TableHead>
+                  <TableHead className="w-[160px]">Período</TableHead>
+                  <TableHead className="text-right">Facturación ($)</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
+                  <TableHead className="text-right">Cant. Servicios</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
+                  <TableHead className="text-right">Ticket Medio</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.clients.slice(0, 30).map((c, i) => (
-                  <TableRow key={c.cuit}>
-                    <TableCell>{i + 1}</TableCell>
-                    <TableCell className="font-medium max-w-[200px] truncate">{c.nombre}</TableCell>
-                    <TableCell>{c.cuit}</TableCell>
-                    <TableCell>
-                      <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                        c.tipoEntidad.toLowerCase().includes("público") || c.tipoEntidad.toLowerCase().includes("publico")
-                          ? "bg-blue-50 text-blue-700"
-                          : "bg-green-50 text-green-700"
-                      }`}>
-                        {c.tipoEntidad}
-                      </span>
-                    </TableCell>
-                    <TableCell>{c.clasificacion}</TableCell>
-                    <TableCell className="text-right">{formatARS(c.monto)}</TableCell>
-                    <TableCell className="text-right">{c.cantFacturas}</TableCell>
-                    <TableCell className="text-right">{c.pct.toFixed(1)}%</TableCell>
-                  </TableRow>
-                ))}
-                {data.clients.length > 30 && (
-                  <TableRow>
-                    <TableCell colSpan={8} className="text-center text-xs text-muted-foreground">
-                      +{data.clients.length - 30} clientes más
-                    </TableCell>
-                  </TableRow>
-                )}
+                {tableRows.map((row, idx) => {
+                  const prevRow = idx < tableRows.length - 1 ? tableRows[idx + 1] : null;
+                  const ticket = row.txCount > 0 ? row.total / row.txCount : 0;
+                  const prevTicketVal = prevRow && prevRow.txCount > 0 ? prevRow.total / prevRow.txCount : 0;
+                  const dFact = prevRow ? pctDelta(row.total, prevRow.total) : null;
+                  const dTx = prevRow ? pctDelta(row.txCount, prevRow.txCount) : null;
+                  const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
+                  return (
+                    <TableRow key={row.periodo}>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity)}</TableCell>
+                      <TableCell className="text-right">{formatARS(row.total)}</TableCell>
+                      <TableCell className={`text-right text-xs ${dFact !== null ? (dFact >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dFact)}
+                      </TableCell>
+                      <TableCell className="text-right">{row.txCount.toLocaleString("es-AR")}</TableCell>
+                      <TableCell className={`text-right text-xs ${dTx !== null ? (dTx >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dTx)}
+                      </TableCell>
+                      <TableCell className="text-right">{formatARS(ticket)}</TableCell>
+                      <TableCell className={`text-right text-xs ${dTicket !== null ? (dTicket >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dTicket)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>
         </CardContent>
       </Card>
+
+      {/* ====== SECTION 3: Year-over-Year Chart ====== */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Comparación Interanual de Facturación — Servicios</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={350}>
+            <LineChart data={yoyData.data}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="month" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              {yoyData.years.map((year, i) => (
+                <Line
+                  key={year}
+                  type="monotone"
+                  dataKey={year}
+                  name={year}
+                  stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* ====== SECTION 4: Client Search + Evolution ====== */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-2">
+            <Search className="h-4 w-4" /> Facturación por Cliente
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          <ClientCombobox
+            clients={data.clients}
+            value={selectedClient}
+            onChange={setSelectedClient}
+          />
+
+          {selectedClient && selectedClientData && clientEvolution.length > 0 && (
+            <>
+              <ResponsiveContainer width="100%" height={300}>
+                <BarChart data={clientEvolution}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="label" fontSize={11} angle={-30} textAnchor="end" height={60} />
+                  <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                  <Tooltip formatter={arsTooltip} />
+                  <Bar dataKey="monto" name="Facturación" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Período</TableHead>
+                      <TableHead className="text-right">Facturación</TableHead>
+                      <TableHead className="text-right">Cant. Facturas</TableHead>
+                      <TableHead className="text-right">% del Total Servicios</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {[...clientEvolution].reverse().map((r) => {
+                      const monthTotal = adjMonthly.find((m) => m.periodo === r.periodo)?.total ?? 0;
+                      const pct = monthTotal > 0 ? (r.monto / monthTotal) * 100 : 0;
+                      return (
+                        <TableRow key={r.periodo}>
+                          <TableCell className="font-medium">{r.label}</TableCell>
+                          <TableCell className="text-right">{formatARS(r.monto)}</TableCell>
+                          <TableCell className="text-right">{r.txCount}</TableCell>
+                          <TableCell className="text-right">{pct.toFixed(1)}%</TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
+          )}
+
+          {selectedClient && clientEvolution.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              Sin datos de facturación para este cliente
+            </p>
+          )}
+
+          {/* Top 10 clients (always visible) */}
+          <div>
+            <h3 className="text-sm font-medium mb-3">Top 10 Clientes (últimos 12 meses)</h3>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[40px]">#</TableHead>
+                    <TableHead>Cliente</TableHead>
+                    <TableHead className="text-right">Facturación</TableHead>
+                    <TableHead className="text-right">% del Total</TableHead>
+                    <TableHead className="text-right">Cant. Facturas</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {(showAllClients ? data.clients : data.clients.slice(0, 10)).map((c, i) => (
+                    <TableRow
+                      key={c.cuit}
+                      className={cn("cursor-pointer hover:bg-muted/50", selectedClient === c.cuit && "bg-muted")}
+                      onClick={() => setSelectedClient(selectedClient === c.cuit ? "" : c.cuit)}
+                    >
+                      <TableCell className="text-muted-foreground">{i + 1}</TableCell>
+                      <TableCell className="font-medium max-w-[250px] truncate">{c.nombre}</TableCell>
+                      <TableCell className="text-right">{formatARS(c.monto)}</TableCell>
+                      <TableCell className="text-right">
+                        {last12Total > 0 ? ((c.monto / last12Total) * 100).toFixed(1) : "0.0"}%
+                      </TableCell>
+                      <TableCell className="text-right">{c.cantFacturas}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            {data.clients.length > 10 && !showAllClients && (
+              <div className="text-center mt-3">
+                <Button variant="ghost" size="sm" onClick={() => setShowAllClients(true)}>
+                  Ver todos ({data.clients.length} clientes)
+                </Button>
+              </div>
+            )}
+            {showAllClients && data.clients.length > 10 && (
+              <div className="text-center mt-3">
+                <Button variant="ghost" size="sm" onClick={() => setShowAllClients(false)}>
+                  Mostrar solo 10
+                </Button>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* ====== SECTION 5: % Sector Público (conditional) ====== */}
+      {hasClassification ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Distribución Público vs Privado</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-6 lg:grid-cols-2 items-center">
+              <ResponsiveContainer width="100%" height={280}>
+                <PieChart>
+                  <Pie
+                    data={[
+                      { name: "Público", value: adjMonthly.reduce((s, r) => s + r.publico, 0) },
+                      { name: "Privado", value: adjMonthly.reduce((s, r) => s + r.privado, 0) },
+                    ]}
+                    dataKey="value"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={60}
+                    outerRadius={100}
+                    label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                  >
+                    {PIE_COLORS.map((color, i) => (
+                      <Cell key={i} fill={color} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={arsTooltip} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div className="space-y-3">
+                <div>
+                  <span className="text-sm text-muted-foreground">Sector Público</span>
+                  <p className="text-xl font-bold">{data.kpis.pctPublico.toFixed(1)}%</p>
+                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.publico, 0))}</p>
+                </div>
+                <div>
+                  <span className="text-sm text-muted-foreground">Sector Privado</span>
+                  <p className="text-xl font-bold">{(100 - data.kpis.pctPublico).toFixed(1)}%</p>
+                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.privado, 0))}</p>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card>
+          <CardContent className="py-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              Clasificación de clientes pendiente de configurar.
+              Agregá el campo <code>tipo_entidad</code> a los clientes para ver la distribución público/privado.
+            </p>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
