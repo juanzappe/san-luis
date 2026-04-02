@@ -95,6 +95,7 @@ function aggregateResultado(
       cur.ingresos += r.ingresos;
       cur.costosOperativos += r.costosOperativos;
       cur.sueldos += r.sueldos;
+      cur.cargasSociales += r.cargasSociales;
       cur.costosComercialesAdmin += r.costosComercialesAdmin;
       cur.costosFinancieros += r.costosFinancieros;
       cur.recpam += r.recpam;
@@ -199,14 +200,15 @@ function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
   });
   running -= row.costosOperativos;
 
-  // Sueldos (subtract)
+  // Sueldos + Cargas Sociales (subtract)
+  const sueldosCS = row.sueldos + row.cargasSociales;
   bars.push({
-    name: "Sueldos",
-    base: running - row.sueldos,
-    value: row.sueldos,
+    name: "Sueldos + CS",
+    base: running - sueldosCS,
+    value: sueldosCS,
     color: "#6366f1",
   });
-  running -= row.sueldos;
+  running -= sueldosCS;
 
   // Margen bruto (subtotal)
   bars.push({ name: "Margen Bruto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
@@ -293,9 +295,10 @@ export default function EstadoResultadosPage() {
         const ing = adjust(r.ingresos, r.periodo);
         const costOp = adjust(r.costosOperativos, r.periodo);
         const sueldos = adjust(r.sueldos, r.periodo);
+        const cargasSoc = adjust(r.cargasSociales, r.periodo);
         const costCom = adjust(r.costosComercialesAdmin, r.periodo);
         const costFin = adjust(r.costosFinancieros, r.periodo);
-        const margenBruto = ing - costOp - sueldos;
+        const margenBruto = ing - costOp - sueldos - cargasSoc;
 
         // RECPAM: historical (distributed monthly) or estimated via ratio
         let recpamNominal: number;
@@ -326,6 +329,7 @@ export default function EstadoResultadosPage() {
           ingresos: ing,
           costosOperativos: costOp,
           sueldos,
+          cargasSociales: cargasSoc,
           margenBruto,
           costosComercialesAdmin: costCom,
           costosFinancieros: costFin,
@@ -446,11 +450,23 @@ export default function EstadoResultadosPage() {
                 negative
               />
               <PnlLine
-                label="Sueldos"
-                values={tablePeriods.map((r) => r.sueldos)}
+                label="Sueldos y Cargas Sociales"
+                values={tablePeriods.map((r) => r.sueldos + r.cargasSociales)}
                 indent
                 negative
               />
+              <TableRow className="text-xs text-muted-foreground">
+                <TableCell className="pl-12">Sueldos</TableCell>
+                {tablePeriods.map((r) => (
+                  <TableCell key={r.periodo} className="text-right">{formatARS(r.sueldos)}</TableCell>
+                ))}
+              </TableRow>
+              <TableRow className="text-xs text-muted-foreground">
+                <TableCell className="pl-12">Cargas Sociales (F.931)</TableCell>
+                {tablePeriods.map((r) => (
+                  <TableCell key={r.periodo} className="text-right">{formatARS(r.cargasSociales)}</TableCell>
+                ))}
+              </TableRow>
               <PnlLine
                 label="Margen Bruto"
                 values={tablePeriods.map((r) => r.margenBruto)}

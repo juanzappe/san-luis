@@ -98,6 +98,7 @@ export interface EgresoRow {
   sueldos: number;
   impuestos: number;
   sueldosNeto: number; // sueldo_neto with devengamiento (for P&L)
+  cargasSociales: number; // F.931 payments (cargas sociales patronales)
 }
 
 // RPC row type for get_egresos_mensual
@@ -109,6 +110,7 @@ type RpcEgresoRow = {
   impuestos_comerciales: number;
   ganancias: number;
   financieros: number;
+  cargas_sociales: number;
 };
 
 export async function fetchEgresos(): Promise<EgresoRow[]> {
@@ -124,6 +126,7 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     const comerciales = Number(r.impuestos_comerciales) || 0;
     const gan = Number(r.ganancias) || 0;
     const financieros = Number(r.financieros) || 0;
+    const cargasSoc = Number(r.cargas_sociales) || 0;
     const impuestosMes = comerciales + gan;
     // Proveedores total goes under "Costos Operativos" category
     const categorias: Record<string, number> = {};
@@ -134,11 +137,12 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       comerciales,
       financieros,
       ganancias: gan,
-      total: sueldosMes + proveedoresMes + comerciales + financieros + gan,
+      total: sueldosMes + proveedoresMes + comerciales + financieros + gan + cargasSoc,
       categorias,
       sueldos: sueldosMes,
       impuestos: impuestosMes,
       sueldosNeto: Number(r.sueldos_neto) || 0,
+      cargasSociales: cargasSoc,
     };
   });
 }
@@ -161,6 +165,7 @@ export interface ResultadoRow {
   ingresos: number;
   costosOperativos: number; // proveedores only
   sueldos: number; // sueldo_neto with devengamiento
+  cargasSociales: number; // F.931 cargas sociales patronales
   margenBruto: number;
   costosComercialesAdmin: number;
   costosFinancieros: number;
@@ -190,10 +195,11 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       // proveedores only (operativos minus sueldos)
       const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
       const sueldos = egr?.sueldosNeto ?? 0;
+      const cargasSociales = egr?.cargasSociales ?? 0;
       const costosCom = egr?.comerciales ?? 0;
       const costosFin = egr?.financieros ?? 0;
 
-      const margenBruto = ing - costosOp - sueldos;
+      const margenBruto = ing - costosOp - sueldos - cargasSociales;
       const resultadoAntesGanancias = margenBruto - costosCom - costosFin;
       // Ganancias estimated at effective tax rate (36.7%)
       const gan = resultadoAntesGanancias > 0 ? resultadoAntesGanancias * TASA_GANANCIAS : 0;
@@ -205,6 +211,7 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
         ingresos: ing,
         costosOperativos: costosOp,
         sueldos,
+        cargasSociales,
         margenBruto,
         costosComercialesAdmin: costosCom,
         costosFinancieros: costosFin,
