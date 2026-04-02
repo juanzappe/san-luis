@@ -152,6 +152,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const jurisdiccionTotal = new Map<string, number>();
 
   const addTipo = (tipo: string, month: string, monto: number, jurisdiccion: string) => {
+    if (month === "2026-02") console.log("[fiscal] addTipo", tipo, month, monto, jurisdiccion);
     if (!tipoMonthMap.has(tipo)) tipoMonthMap.set(tipo, new Map());
     addToMap(tipoMonthMap.get(tipo)!, month, monto);
     addToMap(jurisdiccionTotal, jurisdiccion, monto);
@@ -312,7 +313,11 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const total = ivaNeto + gananciasEst + sicore + cheque + iibb + segHigiene + publicidad + espacioPublico;
     const ingresos = ingresosMap.get(p) ?? 0;
     const presionFiscal = ingresos > 0 ? (total / ingresos) * 100 : null;
-    return { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
+    const row = { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
+    if (p === "2026-02" || p === "2026-03") {
+      console.log("[fiscal] ROW", p, row);
+    }
+    return row;
   });
 
   // ---------------------------------------------------------------------------
