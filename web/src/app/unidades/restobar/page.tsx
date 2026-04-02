@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  BarChart, Bar, LineChart, Line,
+  LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { Loader2, AlertCircle, Coffee, Receipt, Calendar, Hash } from "lucide-react";
+import { Loader2, AlertCircle, Coffee, ShoppingBag, Hash } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -14,13 +14,67 @@ import {
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import {
   type RestobarData, type HeatmapCell, fetchRestobar,
-  formatARS, periodoLabel, shortLabel, dayName, hourLabel,
+  formatARS, periodoLabel, dayName, hourLabel,
 } from "@/lib/units-queries";
+import { pctDelta, formatPct } from "@/lib/economic-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
+
+const SHORT_MONTHS = [
+  "Ene","Feb","Mar","Abr","May","Jun",
+  "Jul","Ago","Sep","Oct","Nov","Dic",
+];
+
+const YEAR_COLORS = ["#94a3b8", "#06b6d4", "#22c55e", "#f59e0b", "#ef4444"];
+
+// ---------------------------------------------------------------------------
+// Period aggregation
+// ---------------------------------------------------------------------------
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const QUARTER_MAP: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggRow {
+  periodo: string;
+  monto: number;
+  cantidad: number;
+  txCount: number;
+}
+
+function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
+  if (g === "mensual") return data;
+  const buckets = new Map<string, AggRow>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const key = g === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
+    const cur = buckets.get(key);
+    if (!cur) {
+      buckets.set(key, { ...r, periodo: key });
+    } else {
+      cur.monto += r.monto;
+      cur.cantidad += r.cantidad;
+      cur.txCount += r.txCount;
+    }
+  }
+  return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
+}
+
+function granularityLabel(p: string, g: Granularity): string {
+  if (g === "anual") return p;
+  if (g === "trimestral") {
+    const [y, q] = p.split("-");
+    return `${q} ${y}`;
+  }
+  return periodoLabel(p);
+}
 
 // ---------------------------------------------------------------------------
 // Heatmap component
@@ -79,11 +133,15 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 export default function RestobarPage() {
   const [data, setData] = useState<RestobarData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { adjust } = useInflation();
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
 
   useEffect(() => {
     fetchRestobar()
@@ -91,6 +149,39 @@ export default function RestobarPage() {
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Inflation-adjusted monthly data
+  const adjMonthly = useMemo(
+    () => (data?.monthly ?? []).map((r) => ({
+      ...r,
+      monto: adjust(r.monto, r.periodo),
+    })),
+    [data, adjust],
+  );
+
+  // Aggregated for table (Section 2)
+  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity), [adjMonthly, granularity]);
+  const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
+
+  // KPI data (Section 1)
+  const last = adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null;
+  const prev = adjMonthly.length > 1 ? adjMonthly[adjMonthly.length - 2] : null;
+  const lastTicket = last && last.txCount > 0 ? last.monto / last.txCount : 0;
+  const prevTicket = prev && prev.txCount > 0 ? prev.monto / prev.txCount : 0;
+
+  // Year-over-year data (Section 3)
+  const yoyData = useMemo(() => {
+    const years = Array.from(new Set(adjMonthly.map((m) => m.periodo.slice(0, 4)))).sort();
+    const byMonth = Array.from({ length: 12 }, (_, i) => {
+      const row: Record<string, number | string> = { month: SHORT_MONTHS[i] };
+      for (const y of years) {
+        const match = adjMonthly.find((m) => m.periodo === `${y}-${String(i + 1).padStart(2, "0")}`);
+        if (match) row[y] = match.monto;
+      }
+      return row;
+    });
+    return { data: byMonth, years };
+  }, [adjMonthly]);
 
   if (loading) {
     return (
@@ -107,17 +198,15 @@ export default function RestobarPage() {
       </CardContent></Card>
     );
   }
-
-  const monthRows = data.monthly.map((r) => ({
-    ...r,
-    montoAdj: adjust(r.monto, r.periodo),
-    ticket: r.txCount > 0 ? adjust(r.monto, r.periodo) / r.txCount : 0,
-    label: shortLabel(r.periodo),
-  }));
-
-  const last = monthRows[monthRows.length - 1];
-  const prev = monthRows.length > 1 ? monthRows[monthRows.length - 2] : null;
-  const lastDelta = last && prev ? ((last.montoAdj - prev.montoAdj) / Math.abs(prev.montoAdj || 1)) * 100 : null;
+  if (adjMonthly.length === 0) {
+    return (
+      <Card><CardContent className="py-8 text-center">
+        <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+        <p className="mt-3 font-medium">Sin datos de restobar</p>
+        <p className="text-sm text-muted-foreground">Ejecutá el ETL para importar ventas POS.</p>
+      </CardContent></Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -129,18 +218,32 @@ export default function RestobarPage() {
         <InflationToggle />
       </div>
 
-      {/* KPIs */}
-      <div className="grid gap-4 md:grid-cols-4">
+      {/* ====== SECTION 1: KPI Cards ====== */}
+      <div className="grid gap-4 md:grid-cols-3">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ventas Último Mes</CardTitle>
             <Coffee className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatARS(last?.montoAdj ?? 0)}</div>
-            {lastDelta !== null && (
-              <p className={`text-xs ${lastDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                {lastDelta >= 0 ? "+" : ""}{lastDelta.toFixed(1)}% vs mes anterior
+            <div className="text-2xl font-bold">{formatARS(last?.monto ?? 0)}</div>
+            {last && prev && (
+              <p className={`text-xs ${(pctDelta(last.monto, prev.monto) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.monto, prev.monto))} vs mes anterior
+              </p>
+            )}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">Transacciones Último Mes</CardTitle>
+            <Hash className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">{(last?.txCount ?? 0).toLocaleString("es-AR")}</div>
+            {last && prev && (
+              <p className={`text-xs ${(pctDelta(last.txCount, prev.txCount) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.txCount, prev.txCount))} vs mes anterior
               </p>
             )}
           </CardContent>
@@ -148,68 +251,114 @@ export default function RestobarPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Ticket Promedio</CardTitle>
-            <Receipt className="h-4 w-4 text-muted-foreground" />
+            <ShoppingBag className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{formatARS(data.kpis.ticketPromedio)}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Mejor Mes</CardTitle>
-            <Calendar className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-lg font-bold">{data.kpis.mesTop}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Total Transacciones</CardTitle>
-            <Hash className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{data.kpis.txTotal.toLocaleString("es-AR")}</div>
+            <div className="text-2xl font-bold">{formatARS(lastTicket)}</div>
+            {prevTicket > 0 && (
+              <p className={`text-xs ${(pctDelta(lastTicket, prevTicket) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(lastTicket, prevTicket))} vs mes anterior
+              </p>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Monthly bar + ticket line */}
+      {/* ====== SECTION 2: Detail Table ====== */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Evolución Mensual</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle por Período</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={monthRows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-              <YAxis yAxisId="left" tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <YAxis yAxisId="right" orientation="right" tickFormatter={(v) => `${(v / 1e3).toFixed(0)}K`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar yAxisId="left" dataKey="montoAdj" name="Ventas" fill="#06b6d4" />
-              <Line yAxisId="right" type="monotone" dataKey="ticket" name="Ticket Prom." stroke="#f59e0b" strokeWidth={2} dot={false} />
-            </BarChart>
-          </ResponsiveContainer>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[160px]">Período</TableHead>
+                  <TableHead className="text-right">Ventas ($)</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
+                  <TableHead className="text-right">Transacciones</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
+                  <TableHead className="text-right">Ticket Promedio</TableHead>
+                  <TableHead className="text-right w-[80px]">Δ%</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tableRows.map((row, idx) => {
+                  const prevRow = idx < tableRows.length - 1 ? tableRows[idx + 1] : null;
+                  const ticket = row.txCount > 0 ? row.monto / row.txCount : 0;
+                  const prevTicketVal = prevRow && prevRow.txCount > 0 ? prevRow.monto / prevRow.txCount : 0;
+                  const dVentas = prevRow ? pctDelta(row.monto, prevRow.monto) : null;
+                  const dTx = prevRow ? pctDelta(row.txCount, prevRow.txCount) : null;
+                  const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
+                  return (
+                    <TableRow key={row.periodo}>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity)}</TableCell>
+                      <TableCell className="text-right">{formatARS(row.monto)}</TableCell>
+                      <TableCell className={`text-right text-xs ${dVentas !== null ? (dVentas >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dVentas)}
+                      </TableCell>
+                      <TableCell className="text-right">{row.txCount.toLocaleString("es-AR")}</TableCell>
+                      <TableCell className={`text-right text-xs ${dTx !== null ? (dTx >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dTx)}
+                      </TableCell>
+                      <TableCell className="text-right">{formatARS(ticket)}</TableCell>
+                      <TableCell className={`text-right text-xs ${dTicket !== null ? (dTicket >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
+                        {formatPct(dTicket)}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 
-      {/* Transactions line */}
+      {/* ====== SECTION 3: Year-over-Year Chart ====== */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Transacciones Mensuales</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">Comparación Interanual de Ventas — Restobar</CardTitle>
+        </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={250}>
-            <LineChart data={monthRows}>
-              <CartesianGrid strokeDasharray="3 3" />
-              <XAxis dataKey="label" tick={{ fontSize: 12 }} />
-              <YAxis />
-              <Tooltip />
-              <Line type="monotone" dataKey="txCount" name="Transacciones" stroke="#06b6d4" strokeWidth={2} />
+          <ResponsiveContainer width="100%" height={350}>
+            <LineChart data={yoyData.data}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="month" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              {yoyData.years.map((year, i) => (
+                <Line
+                  key={year}
+                  type="monotone"
+                  dataKey={year}
+                  name={year}
+                  stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              ))}
             </LineChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
 
-      {/* Heatmap */}
+      {/* ====== SECTION 4: Heatmap ====== */}
       <Card>
         <CardHeader><CardTitle className="text-base">Mapa de Calor — Día × Hora</CardTitle></CardHeader>
         <CardContent>
@@ -218,35 +367,6 @@ export default function RestobarPage() {
           ) : (
             <p className="text-sm text-muted-foreground text-center py-4">Sin datos horarios disponibles</p>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Monthly detail table */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Detalle Mensual</CardTitle></CardHeader>
-        <CardContent>
-          <div className="overflow-x-auto">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Período</TableHead>
-                  <TableHead className="text-right">Ventas</TableHead>
-                  <TableHead className="text-right">Transacciones</TableHead>
-                  <TableHead className="text-right">Ticket Prom.</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {monthRows.map((r) => (
-                  <TableRow key={r.periodo}>
-                    <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.montoAdj)}</TableCell>
-                    <TableCell className="text-right">{r.txCount.toLocaleString("es-AR")}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.ticket)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
         </CardContent>
       </Card>
     </div>

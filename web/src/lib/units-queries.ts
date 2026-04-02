@@ -275,9 +275,24 @@ export interface ServiciosClientRow {
   pct: number;
 }
 
+export interface ServiciosMonthly {
+  periodo: string;
+  publico: number;
+  privado: number;
+  total: number;
+  txCount: number;
+}
+
+export interface ClientMonthlyRow {
+  periodo: string;
+  monto: number;
+  txCount: number;
+}
+
 export interface ServiciosData {
-  monthly: { periodo: string; publico: number; privado: number; total: number }[];
+  monthly: ServiciosMonthly[];
   clients: ServiciosClientRow[];
+  clientMonthly: Map<string, ClientMonthlyRow[]>;
   kpis: {
     totalVentas: number;
     cantClientes: number;
@@ -313,7 +328,9 @@ export async function fetchServicios(): Promise<ServiciosData> {
 
   const monthlyPub = new Map<string, number>();
   const monthlyPriv = new Map<string, number>();
+  const monthlyTx = new Map<string, number>();
   const clientAgg = new Map<string, { monto: number; count: number }>();
+  const clientMonthlyAgg = new Map<string, Map<string, { monto: number; count: number }>>();
   let totalMonto = 0;
 
   if (facturas) {
@@ -331,10 +348,20 @@ export async function fetchServicios(): Promise<ServiciosData> {
         monthlyPriv.set(periodo, (monthlyPriv.get(periodo) ?? 0) + monto);
       }
 
+      monthlyTx.set(periodo, (monthlyTx.get(periodo) ?? 0) + 1);
+
       if (!clientAgg.has(cuit)) clientAgg.set(cuit, { monto: 0, count: 0 });
       const ca = clientAgg.get(cuit)!;
       ca.monto += monto;
       ca.count += 1;
+
+      // Per-client monthly
+      if (!clientMonthlyAgg.has(cuit)) clientMonthlyAgg.set(cuit, new Map());
+      const cm = clientMonthlyAgg.get(cuit)!;
+      if (!cm.has(periodo)) cm.set(periodo, { monto: 0, count: 0 });
+      const cmp = cm.get(periodo)!;
+      cmp.monto += monto;
+      cmp.count += 1;
 
       totalMonto += monto;
     }
@@ -344,10 +371,21 @@ export async function fetchServicios(): Promise<ServiciosData> {
   monthlyPub.forEach((_, k) => allP.add(k));
   monthlyPriv.forEach((_, k) => allP.add(k));
 
-  const monthly = Array.from(allP).sort().map((p) => {
+  const monthly: ServiciosMonthly[] = Array.from(allP).sort().map((p) => {
     const publico = monthlyPub.get(p) ?? 0;
     const privado = monthlyPriv.get(p) ?? 0;
-    return { periodo: p, publico, privado, total: publico + privado };
+    return { periodo: p, publico, privado, total: publico + privado, txCount: monthlyTx.get(p) ?? 0 };
+  });
+
+  // Build client monthly map
+  const clientMonthly = new Map<string, ClientMonthlyRow[]>();
+  clientMonthlyAgg.forEach((months, cuit) => {
+    const rows: ClientMonthlyRow[] = [];
+    months.forEach((v, periodo) => {
+      rows.push({ periodo, monto: v.monto, txCount: v.count });
+    });
+    rows.sort((a, b) => a.periodo.localeCompare(b.periodo));
+    clientMonthly.set(cuit, rows);
   });
 
   // Client ranking
@@ -371,6 +409,7 @@ export async function fetchServicios(): Promise<ServiciosData> {
   return {
     monthly,
     clients,
+    clientMonthly,
     kpis: {
       totalVentas: totalMonto,
       cantClientes: clientAgg.size,
