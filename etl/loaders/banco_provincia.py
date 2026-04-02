@@ -13,9 +13,22 @@ from pathlib import Path
 import pandas as pd
 
 from utils import (
-    get_data_raw_path, parse_monto_argentino, parse_fecha_argentina,
+    get_data_raw_path, parse_fecha_argentina,
     safe_str, safe_float, delete_where, batch_insert,
 )
+
+
+def _parse_monto_txt(text: str | None) -> float | None:
+    """Parse TXT amounts that use dot as decimal (e.g. 34859.26). No thousands sep."""
+    if text is None:
+        return None
+    t = str(text).strip().replace("$", "").strip()
+    if not t:
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return None
 
 
 def _parse_banco_txt(path: Path) -> tuple[list[dict], int]:
@@ -48,8 +61,10 @@ def _parse_banco_txt(path: Path) -> tuple[list[dict], int]:
         if not fecha:
             continue
 
-        importe = parse_monto_argentino(importe_str)
-        saldo = parse_monto_argentino(saldo_str)
+        # TXT de Provincia usa punto decimal (ej: 34859.26), NO formato argentino.
+        # parse_monto_argentino quitaría el punto pensando que es separador de miles → 100x.
+        importe = _parse_monto_txt(importe_str)
+        saldo = _parse_monto_txt(saldo_str)
 
         if importe is None:
             skipped += 1
