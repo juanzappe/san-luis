@@ -20,13 +20,13 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import {
   type IngresoRow,
   fetchIngresos,
   formatARS,
   formatPct,
   pctDelta,
-  periodoLabel,
   shortLabel,
 } from "@/lib/economic-queries";
 import type {
@@ -196,6 +196,7 @@ export default function IngresosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
   useEffect(() => {
     fetchIngresos()
       .then(setRaw)
@@ -248,8 +249,11 @@ export default function IngresosPage() {
     );
   }
 
-  const last = allData[allData.length - 1];
-  const prev = allData.length >= 2 ? allData[allData.length - 2] : null;
+  const periodos = allData.map((r) => r.periodo);
+  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
+  const selectedIdx = allData.findIndex((r) => r.periodo === activePeriodo);
+  const last = selectedIdx >= 0 ? allData[selectedIdx] : allData[allData.length - 1];
+  const prev = selectedIdx >= 1 ? allData[selectedIdx - 1] : null;
 
   // Last 12 months for stacked bar chart
   const chartData = allData.slice(-12).map((r) => ({
@@ -262,11 +266,12 @@ export default function IngresosPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Ingresos</h1>
-          <p className="text-muted-foreground">
-            Ingresos por unidad de negocio — {periodoLabel(last.periodo)}
-          </p>
+          <p className="text-muted-foreground">Ingresos por unidad de negocio</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
       {/* KPI Cards */}

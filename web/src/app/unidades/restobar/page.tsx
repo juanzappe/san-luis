@@ -12,6 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import {
   type RestobarData, type HeatmapCell, fetchRestobar,
   formatARS, periodoLabel, dayName, hourLabel,
@@ -164,8 +165,12 @@ export default function RestobarPage() {
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
-  const last = adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null;
-  const prev = adjMonthly.length > 1 ? adjMonthly[adjMonthly.length - 2] : null;
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const periodos = adjMonthly.map((r) => r.periodo);
+  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
+  const selectedIdx = adjMonthly.findIndex((r) => r.periodo === activePeriodo);
+  const last = selectedIdx >= 0 ? adjMonthly[selectedIdx] : (adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null);
+  const prev = selectedIdx >= 1 ? adjMonthly[selectedIdx - 1] : null;
   const lastTicket = last && last.txCount > 0 ? last.monto / last.txCount : 0;
   const prevTicket = prev && prev.txCount > 0 ? prev.monto / prev.txCount : 0;
 
@@ -215,7 +220,10 @@ export default function RestobarPage() {
           <h1 className="text-3xl font-bold tracking-tight">Restobar</h1>
           <p className="text-muted-foreground">Ventas, ticket promedio y horarios pico</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
       {/* ====== SECTION 1: KPI Cards ====== */}

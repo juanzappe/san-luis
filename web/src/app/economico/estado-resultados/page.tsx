@@ -347,6 +347,34 @@ export default function EstadoResultadosPage() {
     [raw, adjust],
   );
 
+  // Available years from data
+  const availableYears = useMemo(() => {
+    const years = Array.from(new Set(data.map((r) => r.periodo.split("-")[0]))).sort();
+    return years;
+  }, [data]);
+
+  // Default to current year (or last available)
+  const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
+
+  // Aggregate by selected granularity, then filter by year
+  const tablePeriods = useMemo(() => {
+    const aggregated = aggregateResultado(data, granularity);
+    if (granularity === "anual") return aggregated;
+    return aggregated.filter((r) => r.periodo.startsWith(activeYear));
+  }, [data, granularity, activeYear]);
+
+  const lastRow = data.length > 0 ? data[data.length - 1] : null;
+  const waterfall = lastRow ? buildWaterfall(lastRow) : [];
+
+  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual
+  const marginData = useMemo(() => {
+    const source = granularity === "anual" ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
+    return source.map((r) => ({
+      label: shortLabel(r.periodo),
+      margen: r.margenPct,
+    }));
+  }, [data, granularity, activeYear]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -380,34 +408,6 @@ export default function EstadoResultadosPage() {
       </Card>
     );
   }
-
-  // Available years from data
-  const availableYears = useMemo(() => {
-    const years = Array.from(new Set(data.map((r) => r.periodo.split("-")[0]))).sort();
-    return years;
-  }, [data]);
-
-  // Default to current year (or last available)
-  const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
-
-  // Aggregate by selected granularity, then filter by year
-  const aggregated = aggregateResultado(data, granularity);
-  const tablePeriods = useMemo(() => {
-    if (granularity === "anual") return aggregated;
-    return aggregated.filter((r) => r.periodo.startsWith(activeYear));
-  }, [aggregated, granularity, activeYear]);
-
-  const lastRow = data[data.length - 1];
-  const waterfall = buildWaterfall(lastRow);
-
-  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual
-  const marginData = useMemo(() => {
-    const source = granularity === "anual" ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
-    return source.map((r) => ({
-      label: shortLabel(r.periodo),
-      margen: r.margenPct,
-    }));
-  }, [data, granularity, activeYear]);
 
   return (
     <div className="space-y-6">
@@ -638,7 +638,7 @@ export default function EstadoResultadosPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              Cascada — {periodoLabel(lastRow.periodo)}
+              Cascada — {lastRow ? periodoLabel(lastRow.periodo) : ""}
             </CardTitle>
           </CardHeader>
           <CardContent>

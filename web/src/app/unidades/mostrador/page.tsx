@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import {
   type MostradorMonthly, type MostradorRankingRow, type ProductoSemanalRow,
   type HeatmapCell,
@@ -282,8 +283,12 @@ export default function MostradorPage() {
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
-  const last = adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null;
-  const prev = adjMonthly.length > 1 ? adjMonthly[adjMonthly.length - 2] : null;
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const periodos = adjMonthly.map((r) => r.periodo);
+  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
+  const selectedIdx = adjMonthly.findIndex((r) => r.periodo === activePeriodo);
+  const last = selectedIdx >= 0 ? adjMonthly[selectedIdx] : (adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null);
+  const prev = selectedIdx >= 1 ? adjMonthly[selectedIdx - 1] : null;
   const lastTicket = last && last.txCount > 0 ? last.monto / last.txCount : 0;
   const prevTicket = prev && prev.txCount > 0 ? prev.monto / prev.txCount : 0;
 
@@ -342,7 +347,10 @@ export default function MostradorPage() {
           <h1 className="text-3xl font-bold tracking-tight">Mostrador</h1>
           <p className="text-muted-foreground">Ventas POS — productos, tendencias y horarios</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
       {/* ====== SECTION 1: KPI Cards ====== */}

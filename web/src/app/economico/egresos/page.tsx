@@ -21,6 +21,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
   fetchEgresos,
@@ -154,6 +155,7 @@ export default function EgresosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
     fetchEgresos()
@@ -228,8 +230,11 @@ export default function EgresosPage() {
     };
   });
 
-  const last = data[data.length - 1];
-  const prev = data.length >= 2 ? data[data.length - 2] : null;
+  const periodos = data.map((r) => r.periodo);
+  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
+  const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
+  const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
+  const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
 
   // Costos Operativos = sum of all categorias (factura_recibida by provider)
   const costosOp = (r: EgresoRow) =>
@@ -251,11 +256,12 @@ export default function EgresosPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Egresos</h1>
-          <p className="text-muted-foreground">
-            Estructura de costos por categoría — {periodoLabel(last.periodo)}
-          </p>
+          <p className="text-muted-foreground">Estructura de costos por categoría</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
       {/* KPI Cards — 5 fixed categories */}
