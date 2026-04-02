@@ -18,6 +18,7 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 
 // ---------------------------------------------------------------------------
 // Impuesto al Cheque — actual LEY 25413 debits from bank + MP
+// Fetches all rows and filters client-side for maximum compatibility.
 // ---------------------------------------------------------------------------
 
 async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
@@ -25,18 +26,14 @@ async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_ch
     fetchWithRetry(async () => {
       const { data, error } = await supabase
         .from("movimiento_bancario")
-        .select("fecha, importe")
-        .ilike("concepto", "%LEY 25413%")
-        .not("concepto", "ilike", "%COMPENSACION%");
+        .select("fecha, importe, concepto");
       if (error) throw error;
       return data ?? [];
     }),
     fetchWithRetry(async () => {
       const { data, error } = await supabase
         .from("movimiento_mp")
-        .select("fecha, importe")
-        .ilike("tipo_operacion", "%Créditos y Débitos%")
-        .not("tipo_operacion", "ilike", "%Anulación%");
+        .select("fecha, importe, tipo_operacion");
       if (error) throw error;
       return data ?? [];
     }),
@@ -44,12 +41,19 @@ async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_ch
 
   const map = new Map<string, number>();
 
-  for (const row of bancoRows as Array<{ fecha: string; importe: number }>) {
+  // Banco: rows whose concepto contains "LEY 25413" (the actual tax debit lines)
+  for (const row of bancoRows as Array<{ fecha: string; importe: number; concepto: string | null }>) {
+    const c = (row.concepto ?? "").toUpperCase();
+    if (!c.includes("LEY 25413")) continue;
     const periodo = (row.fecha as string).slice(0, 7);
     addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
   }
 
-  for (const row of mpRows as Array<{ fecha: string; importe: number }>) {
+  // MP: rows whose tipo_operacion contains "Créditos y Débitos" (tax charge lines)
+  for (const row of mpRows as Array<{ fecha: string; importe: number; tipo_operacion: string | null }>) {
+    const t = (row.tipo_operacion ?? "");
+    if (!t.includes("Créditos y Débitos") && !t.includes("Creditos y Debitos")) continue;
+    if (t.includes("Anulación") || t.includes("Anulacion")) continue;
     const periodo = (row.fecha as string).slice(0, 10).slice(0, 7);
     addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
   }
