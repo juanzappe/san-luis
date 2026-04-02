@@ -186,60 +186,37 @@ export interface RestobarData {
 }
 
 export async function fetchRestobar(): Promise<RestobarData> {
-  const { data: detalle, error: e1 } = await supabase
-    .from("venta_detalle")
-    .select("producto, neto, cantidad, venta:venta_id(fecha, monto_total)");
-  if (e1) throw e1;
+  const [mensualRes, heatmapRes] = await Promise.all([
+    supabase.rpc("get_restobar_mensual"),
+    supabase.rpc("get_restobar_heatmap"),
+  ]);
+  if (mensualRes.error) throw mensualRes.error;
+  if (heatmapRes.error) throw heatmapRes.error;
 
-  const monthlyMap = new Map<string, { monto: number; cantidad: number; ventas: Set<string> }>();
-  const heatmapMap = new Map<string, { monto: number; count: number }>();
+  const monthly = ((mensualRes.data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number }[])
+    .map((r) => ({
+      periodo: r.periodo,
+      monto: Number(r.monto) || 0,
+      cantidad: Number(r.cantidad) || 0,
+      txCount: Number(r.tx_count) || 0,
+    }))
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+
+  const heatmap = ((heatmapRes.data ?? []) as { day: number; hour: number; monto: number; count: number }[])
+    .map((r) => ({
+      day: Number(r.day),
+      hour: Number(r.hour),
+      monto: Number(r.monto) || 0,
+      count: Number(r.count) || 0,
+    }));
+
   let totalMonto = 0;
-  const allVentas = new Set<string>();
-
-  if (detalle) {
-    for (const d of detalle) {
-      const prod = (d.producto ?? "").toLowerCase();
-      if (prod !== "restobar") continue; // only restobar
-
-      const ventaRaw = d.venta as unknown;
-      const venta = Array.isArray(ventaRaw) ? ventaRaw[0] as { fecha: string; monto_total: number } | undefined : ventaRaw as { fecha: string; monto_total: number } | null;
-      if (!venta) continue;
-
-      const monto = Number(d.neto) || 0;
-      const cantidad = Number(d.cantidad) || 0;
-      const periodo = venta.fecha.slice(0, 7);
-      const ventaKey = venta.fecha;
-
-      // Monthly
-      if (!monthlyMap.has(periodo)) monthlyMap.set(periodo, { monto: 0, cantidad: 0, ventas: new Set() });
-      const mm = monthlyMap.get(periodo)!;
-      mm.monto += monto;
-      mm.cantidad += cantidad;
-      mm.ventas.add(ventaKey);
-
-      // Heatmap
-      const dt = new Date(venta.fecha);
-      const day = dt.getUTCDay();
-      const hour = dt.getUTCHours();
-      const hKey = `${day}|${hour}`;
-      if (!heatmapMap.has(hKey)) heatmapMap.set(hKey, { monto: 0, count: 0 });
-      const hc = heatmapMap.get(hKey)!;
-      hc.monto += monto;
-      hc.count += 1;
-
-      totalMonto += monto;
-      allVentas.add(ventaKey);
-    }
-  }
-
-  const monthly = Array.from(monthlyMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([periodo, v]) => ({ periodo, monto: v.monto, cantidad: v.cantidad, txCount: v.ventas.size }));
-
-  // Find best month
+  let txTotal = 0;
   let mesTop = "—";
   let mesTopMonto = 0;
   for (const m of monthly) {
+    totalMonto += m.monto;
+    txTotal += m.txCount;
     if (m.monto > mesTopMonto) {
       mesTopMonto = m.monto;
       mesTop = periodoLabel(m.periodo);
@@ -248,15 +225,12 @@ export async function fetchRestobar(): Promise<RestobarData> {
 
   return {
     monthly,
-    heatmap: Array.from(heatmapMap.entries()).map(([key, v]) => {
-      const [day, hour] = key.split("|").map(Number);
-      return { day, hour, monto: v.monto, count: v.count };
-    }),
+    heatmap,
     kpis: {
       totalVentas: totalMonto,
-      ticketPromedio: allVentas.size > 0 ? totalMonto / allVentas.size : 0,
+      ticketPromedio: txTotal > 0 ? totalMonto / txTotal : 0,
       mesTop,
-      txTotal: allVentas.size,
+      txTotal,
     },
   };
 }
