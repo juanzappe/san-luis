@@ -36,21 +36,35 @@ import type {
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
 // Datos de estados contables auditados (hardcoded)
-const AMORTIZACIONES: Record<string, number> = {
+// RECPAM puro — positive = pérdida por inflación (se resta), negative = ganancia (se suma)
+const RECPAM_HISTORICO: Record<string, number> = {
+  "2024": 364599000,
+  "2023": 496052700,
+  "2022": -61205150,
+  "2021": -69080530,
+};
+// Ratio RECPAM/Ingresos 2024 para estimar meses sin auditoría
+const RATIO_RECPAM = 0.218;
+
+// Amortizaciones anuales de estados contables auditados
+const AMORTIZACIONES_ANUAL: Record<string, number> = {
   "2024": 32205313,
   "2023": 30166319,
   "2022": 23218786,
   "2021": 18171378,
 };
+// Base mensual para 2025+ (2024 / 12)
+const AMORT_MENSUAL_BASE = 32205313 / 12;
 
-// Positivo = neto favorable (ganancia), Negativo = neto desfavorable (pérdida)
-// NOTA: estos valores incluyen RECPAM + gastos financieros del Anexo III
-const RECPAM: Record<string, number> = {
-  "2024": -401210536,
-  "2023": -540757210,
-  "2022": 38857176,
-  "2021": 56777162,
-};
+// ---------------------------------------------------------------------------
+// Extended row type with RECPAM and Amortizaciones
+// ---------------------------------------------------------------------------
+interface ExtendedResultadoRow extends ResultadoRow {
+  recpam: number;
+  recpamEstimado: boolean;
+  amortizaciones: number;
+  ebitda: number;
+}
 
 // ---------------------------------------------------------------------------
 // Period aggregation
@@ -65,12 +79,12 @@ const QUARTER_MAP: Record<string, string> = {
 };
 
 function aggregateResultado(
-  data: ResultadoRow[],
+  data: ExtendedResultadoRow[],
   granularity: Granularity,
-): ResultadoRow[] {
+): ExtendedResultadoRow[] {
   if (granularity === "mensual") return data;
 
-  const buckets = new Map<string, ResultadoRow>();
+  const buckets = new Map<string, ExtendedResultadoRow>();
   for (const r of data) {
     const [y, m] = r.periodo.split("-");
     const key = granularity === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
@@ -83,8 +97,12 @@ function aggregateResultado(
       cur.sueldos += r.sueldos;
       cur.costosComercialesAdmin += r.costosComercialesAdmin;
       cur.costosFinancieros += r.costosFinancieros;
+      cur.recpam += r.recpam;
+      cur.recpamEstimado = cur.recpamEstimado || r.recpamEstimado;
+      cur.amortizaciones += r.amortizaciones;
       cur.ganancias += r.ganancias;
       cur.margenBruto += r.margenBruto;
+      cur.ebitda = cur.margenBruto + cur.amortizaciones;
       cur.resultadoAntesGanancias += r.resultadoAntesGanancias;
       cur.resultadoNeto += r.resultadoNeto;
       cur.margenPct = cur.ingresos > 0 ? (cur.resultadoNeto / cur.ingresos) * 100 : 0;
@@ -113,8 +131,7 @@ function PnlLine({
   indent,
   negative,
   infoTip,
-  subtle,
-  colorBySign,
+  annotations,
 }: {
   label: string;
   values: number[];
@@ -123,11 +140,10 @@ function PnlLine({
   indent?: boolean;
   negative?: boolean;
   infoTip?: string;
-  subtle?: boolean;
-  colorBySign?: boolean;
+  annotations?: (string | null)[];
 }) {
   return (
-    <TableRow className={`${border ? "border-t-2 border-foreground/20" : ""} ${subtle ? "text-muted-foreground italic" : ""}`}>
+    <TableRow className={border ? "border-t-2 border-foreground/20" : ""}>
       <TableCell className={`${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
         <span className="inline-flex items-center gap-1">
           {negative && !bold ? `(−) ${label}` : label}
@@ -142,12 +158,13 @@ function PnlLine({
         <TableCell
           key={i}
           className={`text-right ${bold ? "font-bold" : ""} ${
-            colorBySign
-              ? v > 0 ? "text-green-600" : v < 0 ? "text-red-600" : ""
-              : v < 0 ? "text-red-600" : ""
-          }`}
+            v < 0 ? "text-red-600" : ""
+          } ${annotations?.[i] ? "italic" : ""}`}
         >
-          {formatARS(colorBySign ? v : Math.abs(v))}
+          {formatARS(Math.abs(v))}
+          {annotations?.[i] && (
+            <span className="text-muted-foreground ml-0.5" title={annotations[i]!}>*</span>
+          )}
         </TableCell>
       ))}
     </TableRow>
@@ -165,7 +182,7 @@ interface WaterfallBar {
   color: string;
 }
 
-function buildWaterfall(row: ResultadoRow): WaterfallBar[] {
+function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
   const bars: WaterfallBar[] = [];
   let running = 0;
 
@@ -212,6 +229,24 @@ function buildWaterfall(row: ResultadoRow): WaterfallBar[] {
   });
   running -= row.costosFinancieros;
 
+  // RECPAM — positive subtracts (desfavorable), negative adds (favorable)
+  if (row.recpam > 0) {
+    bars.push({
+      name: "RECPAM",
+      base: running - row.recpam,
+      value: row.recpam,
+      color: "#f97316",
+    });
+  } else if (row.recpam < 0) {
+    bars.push({
+      name: "RECPAM",
+      base: running,
+      value: Math.abs(row.recpam),
+      color: "#22c55e",
+    });
+  }
+  running -= row.recpam;
+
   // Ganancias
   bars.push({
     name: "Ganancias",
@@ -250,20 +285,42 @@ export default function EstadoResultadosPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Adjust for inflation
-  const data: ResultadoRow[] = useMemo(
+  // Adjust for inflation + compute RECPAM, Amortizaciones, EBITDA
+  const data: ExtendedResultadoRow[] = useMemo(
     () =>
       raw.map((r) => {
+        const year = r.periodo.split("-")[0];
         const ing = adjust(r.ingresos, r.periodo);
         const costOp = adjust(r.costosOperativos, r.periodo);
         const sueldos = adjust(r.sueldos, r.periodo);
         const costCom = adjust(r.costosComercialesAdmin, r.periodo);
         const costFin = adjust(r.costosFinancieros, r.periodo);
-        const gan = adjust(r.ganancias, r.periodo);
         const margenBruto = ing - costOp - sueldos;
-        const resAntesGan = margenBruto - costCom - costFin;
+
+        // RECPAM: historical (distributed monthly) or estimated via ratio
+        let recpamNominal: number;
+        let recpamEstimado: boolean;
+        if (year in RECPAM_HISTORICO) {
+          recpamNominal = RECPAM_HISTORICO[year] / 12;
+          recpamEstimado = false;
+        } else {
+          recpamNominal = r.ingresos * RATIO_RECPAM;
+          recpamEstimado = true;
+        }
+        const recpam = adjust(recpamNominal, r.periodo);
+
+        // Amortizaciones: historical (distributed monthly) or base 2024
+        const amortNominal = year in AMORTIZACIONES_ANUAL
+          ? AMORTIZACIONES_ANUAL[year] / 12
+          : AMORT_MENSUAL_BASE;
+        const amortizaciones = adjust(amortNominal, r.periodo);
+
+        const ebitda = margenBruto + amortizaciones;
+        const resAntesGan = margenBruto - costCom - costFin - recpam;
+        const gan = resAntesGan > 0 ? resAntesGan * TASA_GANANCIAS : 0;
         const resNeto = resAntesGan - gan;
         const margenPct = ing > 0 ? (resNeto / ing) * 100 : 0;
+
         return {
           periodo: r.periodo,
           ingresos: ing,
@@ -272,6 +329,10 @@ export default function EstadoResultadosPage() {
           margenBruto,
           costosComercialesAdmin: costCom,
           costosFinancieros: costFin,
+          recpam,
+          recpamEstimado,
+          amortizaciones,
+          ebitda,
           resultadoAntesGanancias: resAntesGan,
           ganancias: gan,
           resultadoNeto: resNeto,
@@ -396,20 +457,12 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
-              {granularity === "anual" && tablePeriods.some((r) => AMORTIZACIONES[r.periodo]) && (
-                <PnlLine
-                  label="EBITDA"
-                  values={tablePeriods.map((r) => {
-                    const amort = AMORTIZACIONES[r.periodo] ?? 0;
-                    return r.margenBruto + amort;
-                  })}
-                  bold
-                  infoTip={`EBITDA = Margen Bruto + Amortizaciones (${tablePeriods
-                    .filter((r) => AMORTIZACIONES[r.periodo])
-                    .map((r) => `$${(AMORTIZACIONES[r.periodo] / 1e6).toFixed(1)}M en ${r.periodo}`)
-                    .join(", ")}). Datos de estados contables auditados.`}
-                />
-              )}
+              <PnlLine
+                label="EBITDA"
+                values={tablePeriods.map((r) => r.ebitda)}
+                bold
+                infoTip={`EBITDA = Margen Bruto + Amortizaciones (~${formatARS(AMORT_MENSUAL_BASE)}/mes base 2024). Datos de estados contables auditados para 2021-2024.`}
+              />
               <PnlLine
                 label="Costos Comerciales"
                 values={tablePeriods.map((r) => r.costosComercialesAdmin)}
@@ -422,16 +475,16 @@ export default function EstadoResultadosPage() {
                 indent
                 negative
               />
-              {granularity === "anual" && tablePeriods.some((r) => RECPAM[r.periodo] !== undefined) && (
-                <PnlLine
-                  label="(+/−) RECPAM y Gastos Financ. (Anexo III)"
-                  values={tablePeriods.map((r) => RECPAM[r.periodo] ?? 0)}
-                  indent
-                  subtle
-                  colorBySign
-                  infoTip="Incluye RECPAM y gastos financieros según estados contables auditados. No se refleja en vista mensual/trimestral. No altera el Resultado Neto operativo."
-                />
-              )}
+              <PnlLine
+                label="RECPAM"
+                values={tablePeriods.map((r) => r.recpam)}
+                indent
+                negative
+                infoTip="Resultado por exposición al cambio en el poder adquisitivo de la moneda. Datos auditados 2021-2024, estimado al 21.8% de ingresos para períodos posteriores."
+                annotations={tablePeriods.map((r) =>
+                  r.recpamEstimado ? `Estimado al ${(RATIO_RECPAM * 100).toFixed(1)}% de ingresos (ratio 2024)` : null
+                )}
+              />
               <PnlLine
                 label="Resultado antes de Ganancias"
                 values={tablePeriods.map((r) => r.resultadoAntesGanancias)}
@@ -483,7 +536,7 @@ export default function EstadoResultadosPage() {
                 data={tablePeriods.map((r) => ({
                   label: granularityLabel(r.periodo, granularity),
                   ingresos: r.ingresos,
-                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + r.ganancias,
+                  egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + Math.max(0, r.recpam) + r.ganancias,
                 }))}
               >
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />

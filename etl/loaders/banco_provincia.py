@@ -1,7 +1,8 @@
 """Loader: BANCO PROVINCIA → movimiento_bancario.
 
-Fuente: data_raw/MOVIMIENTOS BANCARIOS/BANCO PROVINCIA/{year}/*.txt
-Parse: Buscar línea "FECHA,CONCEPTO,IMPORTE,Fecha Valor,Saldo", leer CSV desde ahí.
+Fuente: data_raw/MOVIMIENTOS BANCARIOS/BANCO PROVINCIA/{year}/*.txt | *.xlsx
+TXT:  Buscar línea "FECHA,CONCEPTO,IMPORTE,Fecha Valor,Saldo", leer CSV desde ahí.
+XLSX: Fila 0 = título, fila 1 = headers reales (Número Secuencia, Fecha, Importe, Saldo, Descripción, …)
 Fijos: banco='provincia', cuenta='50080/7', cbu='0140191801520805008070', moneda='ARS'
 """
 
@@ -9,9 +10,11 @@ import csv
 import io
 from pathlib import Path
 
+import pandas as pd
+
 from utils import (
     get_data_raw_path, parse_monto_argentino, parse_fecha_argentina,
-    safe_str, delete_where, batch_insert,
+    safe_str, safe_float, delete_where, batch_insert,
 )
 
 
@@ -90,16 +93,61 @@ def _parse_banco_txt(path: Path) -> tuple[list[dict], int]:
     return records, skipped
 
 
+def _parse_banco_xlsx(path: Path) -> tuple[list[dict], int]:
+    """Parsea un XLSX de extracto bancario Provincia. Returns (records, skipped_count)."""
+    df = pd.read_excel(path, header=1)  # row 0 = título, row 1 = headers reales
+    records = []
+    skipped = 0
+
+    for _, row in df.iterrows():
+        fecha = parse_fecha_argentina(str(row.get("Fecha", "")))
+        if not fecha:
+            continue
+
+        importe = safe_float(row.get("Importe"))
+        if importe is None:
+            skipped += 1
+            continue
+
+        saldo = safe_float(row.get("Saldo"))
+        concepto = safe_str(row.get("Descripción"))
+
+        credito = importe if importe >= 0 else None
+        debito = abs(importe) if importe < 0 else None
+
+        records.append({
+            "fecha": fecha,
+            "banco": "provincia",
+            "cuenta": "50080/7",
+            "cbu": "0140191801520805008070",
+            "moneda": "ARS",
+            "concepto": concepto,
+            "importe": importe,
+            "fecha_valor": None,
+            "saldo": saldo,
+            "credito": credito,
+            "debito": debito,
+        })
+
+    return records, skipped
+
+
 def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS BANCARIOS" / "BANCO PROVINCIA"
     txt_files = sorted(data_dir.rglob("*.txt"))
-    logger.info(f"  {len(txt_files)} archivos TXT encontrados")
+    xlsx_files = sorted(data_dir.rglob("*.xlsx"))
+    logger.info(f"  {len(txt_files)} TXT + {len(xlsx_files)} XLSX encontrados")
 
     all_records = []
     total_skipped = 0
     for txt_path in txt_files:
         logger.info(f"  Procesando {txt_path.name}")
         records, skipped = _parse_banco_txt(txt_path)
+        all_records.extend(records)
+        total_skipped += skipped
+    for xlsx_path in xlsx_files:
+        logger.info(f"  Procesando {xlsx_path.name}")
+        records, skipped = _parse_banco_xlsx(xlsx_path)
         all_records.extend(records)
         total_skipped += skipped
 
