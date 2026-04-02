@@ -17,47 +17,17 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Impuesto al Cheque — actual LEY 25413 debits from bank + MP
-// Fetches all rows and filters client-side for maximum compatibility.
+// Impuesto al Cheque — RPC get_cheque_mensual (LEY 25413 debits, server-side)
 // ---------------------------------------------------------------------------
 
 async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
-  const [bancoRows, mpRows] = await Promise.all([
-    fetchWithRetry(async () => {
-      const { data, error } = await supabase
-        .from("movimiento_bancario")
-        .select("fecha, importe, concepto");
-      if (error) throw error;
-      return data ?? [];
-    }),
-    fetchWithRetry(async () => {
-      const { data, error } = await supabase
-        .from("movimiento_mp")
-        .select("fecha, importe, tipo_operacion");
-      if (error) throw error;
-      return data ?? [];
-    }),
-  ]);
-
+  const { data, error } = await supabase.rpc("get_cheque_mensual");
+  if (error) throw error;
+  // RPC returns up to 2 rows per month (banco + MP via UNION ALL) — aggregate here
   const map = new Map<string, number>();
-
-  // Banco: rows whose concepto contains "LEY 25413" (the actual tax debit lines)
-  for (const row of bancoRows as Array<{ fecha: string; importe: number; concepto: string | null }>) {
-    const c = (row.concepto ?? "").toUpperCase();
-    if (!c.includes("LEY 25413")) continue;
-    const periodo = (row.fecha as string).slice(0, 7);
-    addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
+  for (const row of (data ?? []) as Array<{ periodo: string; importe_cheque: number }>) {
+    addToMap(map, row.periodo, Number(row.importe_cheque) || 0);
   }
-
-  // MP: rows whose tipo_operacion contains "Créditos y Débitos" (tax charge lines)
-  for (const row of mpRows as Array<{ fecha: string; importe: number; tipo_operacion: string | null }>) {
-    const t = (row.tipo_operacion ?? "");
-    if (!t.includes("Créditos y Débitos") && !t.includes("Creditos y Debitos")) continue;
-    if (t.includes("Anulación") || t.includes("Anulacion")) continue;
-    const periodo = (row.fecha as string).slice(0, 10).slice(0, 7);
-    addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
-  }
-
   return Array.from(map.entries()).map(([periodo, importe_cheque]) => ({ periodo, importe_cheque }));
 }
 
