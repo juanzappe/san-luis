@@ -276,107 +276,66 @@ export interface ServiciosData {
 }
 
 export async function fetchServicios(): Promise<ServiciosData> {
-  // factura_emitida PV 6 = Servicios/Catering only
-  const { data: facturas, error: e1 } = await supabase
-    .from("factura_emitida")
-    .select("fecha_emision, imp_neto_gravado_total, nro_doc_receptor, tipo_comprobante")
-    .eq("punto_venta", 6);
+  // Use server-side RPCs to avoid Supabase 1000-row limit
+  const [{ data: monthlyRaw, error: e1 }, { data: clientesRaw, error: e2 }] = await Promise.all([
+    supabase.rpc("get_servicios_mensual"),
+    supabase.rpc("get_servicios_clientes"),
+  ]);
   if (e1) throw e1;
-
-  // clients with segmentation
-  const { data: clientes, error: e2 } = await supabase
-    .from("cliente")
-    .select("cuit, razon_social, tipo_entidad, clasificacion");
   if (e2) throw e2;
 
-  const clienteMap = new Map<string, { nombre: string; tipoEntidad: string; clasificacion: string }>();
-  if (clientes) {
-    for (const c of clientes) {
-      clienteMap.set(c.cuit as string, {
-        nombre: (c.razon_social ?? "Sin nombre") as string,
-        tipoEntidad: (c.tipo_entidad ?? "Sin clasificar") as string,
-        clasificacion: (c.clasificacion ?? "Sin clasificar") as string,
-      });
-    }
-  }
+  type MonthlyRow = { periodo: string; publico: number; privado: number; total: number; tx_count: number };
+  type ClienteRow = {
+    cuit: string; nombre: string; tipo_entidad: string; clasificacion: string;
+    monto: number; cant_facturas: number;
+    detalle_mensual: { periodo: string; monto: number; txCount: number }[];
+  };
 
-  const monthlyPub = new Map<string, number>();
-  const monthlyPriv = new Map<string, number>();
-  const monthlyTx = new Map<string, number>();
-  const clientAgg = new Map<string, { monto: number; count: number }>();
-  const clientMonthlyAgg = new Map<string, Map<string, { monto: number; count: number }>>();
+  const monthlyRows = (monthlyRaw ?? []) as MonthlyRow[];
+  const clienteRows = (clientesRaw ?? []) as ClienteRow[];
+
+  const monthly: ServiciosMonthly[] = monthlyRows.map((r) => ({
+    periodo: String(r.periodo),
+    publico: Number(r.publico) || 0,
+    privado: Number(r.privado) || 0,
+    total: Number(r.total) || 0,
+    txCount: Number(r.tx_count) || 0,
+  }));
+
   let totalMonto = 0;
-
-  if (facturas) {
-    for (const f of facturas) {
-      const raw = Number(f.imp_neto_gravado_total) || 0;
-      const monto = [3, 8, 203].includes(Number(f.tipo_comprobante)) ? -raw : raw;
-      const periodo = (f.fecha_emision as string).slice(0, 7);
-      const cuit = (f.nro_doc_receptor ?? "") as string;
-      const cli = clienteMap.get(cuit);
-      const tipo = cli?.tipoEntidad ?? "Sin clasificar";
-
-      if (tipo.toLowerCase().includes("público") || tipo.toLowerCase().includes("publico")) {
-        monthlyPub.set(periodo, (monthlyPub.get(periodo) ?? 0) + monto);
-      } else {
-        monthlyPriv.set(periodo, (monthlyPriv.get(periodo) ?? 0) + monto);
-      }
-
-      monthlyTx.set(periodo, (monthlyTx.get(periodo) ?? 0) + 1);
-
-      if (!clientAgg.has(cuit)) clientAgg.set(cuit, { monto: 0, count: 0 });
-      const ca = clientAgg.get(cuit)!;
-      ca.monto += monto;
-      ca.count += 1;
-
-      // Per-client monthly
-      if (!clientMonthlyAgg.has(cuit)) clientMonthlyAgg.set(cuit, new Map());
-      const cm = clientMonthlyAgg.get(cuit)!;
-      if (!cm.has(periodo)) cm.set(periodo, { monto: 0, count: 0 });
-      const cmp = cm.get(periodo)!;
-      cmp.monto += monto;
-      cmp.count += 1;
-
-      totalMonto += monto;
-    }
-  }
-
-  const allP = new Set<string>();
-  monthlyPub.forEach((_, k) => allP.add(k));
-  monthlyPriv.forEach((_, k) => allP.add(k));
-
-  const monthly: ServiciosMonthly[] = Array.from(allP).sort().map((p) => {
-    const publico = monthlyPub.get(p) ?? 0;
-    const privado = monthlyPriv.get(p) ?? 0;
-    return { periodo: p, publico, privado, total: publico + privado, txCount: monthlyTx.get(p) ?? 0 };
-  });
-
-  // Build client monthly map
+  let totalFacturas = 0;
   const clientMonthly = new Map<string, ClientMonthlyRow[]>();
-  clientMonthlyAgg.forEach((months, cuit) => {
-    const rows: ClientMonthlyRow[] = [];
-    months.forEach((v, periodo) => {
-      rows.push({ periodo, monto: v.monto, txCount: v.count });
-    });
-    rows.sort((a, b) => a.periodo.localeCompare(b.periodo));
-    clientMonthly.set(cuit, rows);
+
+  const clients: ServiciosClientRow[] = clienteRows.map((r) => {
+    const monto = Number(r.monto) || 0;
+    const cantFacturas = Number(r.cant_facturas) || 0;
+    totalMonto += monto;
+    totalFacturas += cantFacturas;
+
+    // Parse monthly detail from JSONB
+    const detalle = Array.isArray(r.detalle_mensual) ? r.detalle_mensual : [];
+    const monthlyRows: ClientMonthlyRow[] = detalle.map((d) => ({
+      periodo: String(d.periodo),
+      monto: Number(d.monto) || 0,
+      txCount: Number(d.txCount) || 0,
+    }));
+    clientMonthly.set(String(r.cuit), monthlyRows);
+
+    return {
+      cuit: String(r.cuit),
+      nombre: String(r.nombre),
+      tipoEntidad: String(r.tipo_entidad),
+      clasificacion: String(r.clasificacion),
+      monto,
+      cantFacturas,
+      pct: 0, // calculated below
+    };
   });
 
-  // Client ranking
-  const clients: ServiciosClientRow[] = Array.from(clientAgg.entries())
-    .map(([cuit, v]) => {
-      const cli = clienteMap.get(cuit);
-      return {
-        cuit,
-        nombre: cli?.nombre ?? cuit,
-        tipoEntidad: cli?.tipoEntidad ?? "Sin clasificar",
-        clasificacion: cli?.clasificacion ?? "Sin clasificar",
-        monto: v.monto,
-        cantFacturas: v.count,
-        pct: totalMonto > 0 ? (v.monto / totalMonto) * 100 : 0,
-      };
-    })
-    .sort((a, b) => b.monto - a.monto);
+  // Calculate percentages after totals are known
+  for (const c of clients) {
+    c.pct = totalMonto > 0 ? (c.monto / totalMonto) * 100 : 0;
+  }
 
   const totalPublico = monthly.reduce((s, r) => s + r.publico, 0);
 
@@ -386,8 +345,8 @@ export async function fetchServicios(): Promise<ServiciosData> {
     clientMonthly,
     kpis: {
       totalVentas: totalMonto,
-      cantClientes: clientAgg.size,
-      ticketPromedio: facturas ? (facturas.length > 0 ? totalMonto / facturas.length : 0) : 0,
+      cantClientes: clients.length,
+      ticketPromedio: totalFacturas > 0 ? totalMonto / totalFacturas : 0,
       pctPublico: totalMonto > 0 ? (totalPublico / totalMonto) * 100 : 0,
     },
   };
