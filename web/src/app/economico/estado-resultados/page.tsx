@@ -279,6 +279,7 @@ export default function EstadoResultadosPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [selectedYear, setSelectedYear] = useState<string | null>(null);
 
   useEffect(() => {
     fetchResultado()
@@ -380,18 +381,33 @@ export default function EstadoResultadosPage() {
     );
   }
 
-  // Aggregate by selected granularity and take last N periods for table
+  // Available years from data
+  const availableYears = useMemo(() => {
+    const years = Array.from(new Set(data.map((r) => r.periodo.split("-")[0]))).sort();
+    return years;
+  }, [data]);
+
+  // Default to current year (or last available)
+  const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
+
+  // Aggregate by selected granularity, then filter by year
   const aggregated = aggregateResultado(data, granularity);
-  const tableCount = granularity === "mensual" ? 6 : granularity === "trimestral" ? 8 : 4;
-  const tablePeriods = aggregated.slice(-tableCount);
+  const tablePeriods = useMemo(() => {
+    if (granularity === "anual") return aggregated;
+    return aggregated.filter((r) => r.periodo.startsWith(activeYear));
+  }, [aggregated, granularity, activeYear]);
+
   const lastRow = data[data.length - 1];
   const waterfall = buildWaterfall(lastRow);
 
-  // Margin evolution (last 12 months)
-  const marginData = data.slice(-12).map((r) => ({
-    label: shortLabel(r.periodo),
-    margen: r.margenPct,
-  }));
+  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual
+  const marginData = useMemo(() => {
+    const source = granularity === "anual" ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
+    return source.map((r) => ({
+      label: shortLabel(r.periodo),
+      margen: r.margenPct,
+    }));
+  }, [data, granularity, activeYear]);
 
   return (
     <div className="space-y-6">
@@ -409,20 +425,39 @@ export default function EstadoResultadosPage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Estado de Resultados</CardTitle>
-          <div className="flex items-center rounded-lg border text-xs font-medium">
-            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
-              <button
-                key={g}
-                onClick={() => setGranularity(g)}
-                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
-                  granularity === g
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-accent"
-                }`}
-              >
-                {g}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            {granularity !== "anual" && (
+              <div className="flex items-center rounded-lg border text-xs font-medium">
+                {availableYears.map((y) => (
+                  <button
+                    key={y}
+                    onClick={() => setSelectedYear(y)}
+                    className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                      activeYear === y
+                        ? "bg-primary text-primary-foreground"
+                        : "hover:bg-accent"
+                    }`}
+                  >
+                    {y}
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+                <button
+                  key={g}
+                  onClick={() => setGranularity(g)}
+                  className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    granularity === g
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {g}
+                </button>
+              ))}
+            </div>
           </div>
         </CardHeader>
         <CardContent>
