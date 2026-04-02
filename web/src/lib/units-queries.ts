@@ -26,20 +26,6 @@ export interface HeatmapCell {
   count: number;
 }
 
-export interface ProductRow {
-  producto: string;
-  familia: string;
-  monto: number;
-  cantidad: number;
-  pct: number;
-}
-
-export interface FamilyRow {
-  familia: string;
-  monto: number;
-  pct: number;
-}
-
 // ---------------------------------------------------------------------------
 // 1. Resumen — Cross-unit monthly comparison
 // ---------------------------------------------------------------------------
@@ -103,121 +89,85 @@ export async function fetchResumen(): Promise<ResumenData> {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Mostrador — Product mix, families, heatmap
+// 2. Mostrador — RPC-based queries (replaces client-side 170k row fetch)
 // ---------------------------------------------------------------------------
 
-export interface MostradorData {
-  monthly: { periodo: string; monto: number; cantidad: number; txCount: number }[];
-  products: ProductRow[];
-  families: FamilyRow[];
-  heatmap: HeatmapCell[];
-  kpis: {
-    totalVentas: number;
-    ticketPromedio: number;
-    topProducto: string;
-    topFamilia: string;
-  };
+export interface MostradorMonthly {
+  periodo: string;
+  monto: number;
+  cantidad: number;
+  txCount: number;
 }
 
-export async function fetchMostrador(): Promise<MostradorData> {
-  const { data: detalle, error: e1 } = await supabase
-    .from("venta_detalle")
-    .select("producto, familia, neto, cantidad, venta:venta_id(fecha, monto_total)");
-  if (e1) throw e1;
+export interface ProductoSemanalRow {
+  semana: string;
+  semanaInicio: string;
+  cantidad: number;
+  monto: number;
+}
 
-  const monthlyMap = new Map<string, { monto: number; cantidad: number; ventas: Set<string> }>();
-  const productMap = new Map<string, { familia: string; monto: number; cantidad: number }>();
-  const heatmapMap = new Map<string, { monto: number; count: number }>();
-  let totalMonto = 0;
-  const allVentas = new Set<string>();
+export interface MostradorRankingRow {
+  producto: string;
+  totalCantidad: number;
+  totalMonto: number;
+  diasConVenta: number;
+  promedioDiario: number;
+}
 
-  if (detalle) {
-    for (const d of detalle) {
-      const prod = (d.producto ?? "").toLowerCase();
-      if (prod === "restobar") continue; // exclude restobar
-
-      const ventaRaw = d.venta as unknown;
-      const venta = Array.isArray(ventaRaw) ? ventaRaw[0] as { fecha: string; monto_total: number } | undefined : ventaRaw as { fecha: string; monto_total: number } | null;
-      if (!venta) continue;
-
-      const monto = Number(d.neto) || 0;
-      const cantidad = Number(d.cantidad) || 0;
-      const periodo = venta.fecha.slice(0, 7);
-      const ventaKey = venta.fecha;
-
-      // Monthly
-      if (!monthlyMap.has(periodo)) monthlyMap.set(periodo, { monto: 0, cantidad: 0, ventas: new Set() });
-      const mm = monthlyMap.get(periodo)!;
-      mm.monto += monto;
-      mm.cantidad += cantidad;
-      mm.ventas.add(ventaKey);
-
-      // Products
-      const prodName = d.producto ?? "Sin nombre";
-      const familia = d.familia ?? "Sin familia";
-      if (!productMap.has(prodName)) productMap.set(prodName, { familia, monto: 0, cantidad: 0 });
-      const pm = productMap.get(prodName)!;
-      pm.monto += monto;
-      pm.cantidad += cantidad;
-
-      // Heatmap (day × hour)
-      const dt = new Date(venta.fecha);
-      const day = dt.getUTCDay();
-      const hour = dt.getUTCHours();
-      const hKey = `${day}|${hour}`;
-      if (!heatmapMap.has(hKey)) heatmapMap.set(hKey, { monto: 0, count: 0 });
-      const hc = heatmapMap.get(hKey)!;
-      hc.monto += monto;
-      hc.count += 1;
-
-      totalMonto += monto;
-      allVentas.add(ventaKey);
-    }
-  }
-
-  // Monthly array
-  const monthly = Array.from(monthlyMap.entries())
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([periodo, v]) => ({ periodo, monto: v.monto, cantidad: v.cantidad, txCount: v.ventas.size }));
-
-  // Products sorted by monto
-  const products: ProductRow[] = Array.from(productMap.entries())
-    .map(([producto, v]) => ({
-      producto,
-      familia: v.familia,
-      monto: v.monto,
-      cantidad: v.cantidad,
-      pct: totalMonto > 0 ? (v.monto / totalMonto) * 100 : 0,
+export async function fetchMostradorMensual(): Promise<MostradorMonthly[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_mensual");
+  if (error) throw error;
+  return ((data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number }[])
+    .map((r) => ({
+      periodo: r.periodo,
+      monto: Number(r.monto) || 0,
+      cantidad: Number(r.cantidad) || 0,
+      txCount: Number(r.tx_count) || 0,
     }))
-    .sort((a, b) => b.monto - a.monto);
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+}
 
-  // Families
-  const familyAgg = new Map<string, number>();
-  for (const p of products) {
-    familyAgg.set(p.familia, (familyAgg.get(p.familia) ?? 0) + p.monto);
-  }
-  const families: FamilyRow[] = Array.from(familyAgg.entries())
-    .map(([familia, monto]) => ({ familia, monto, pct: totalMonto > 0 ? (monto / totalMonto) * 100 : 0 }))
-    .sort((a, b) => b.monto - a.monto);
+export async function fetchMostradorHeatmap(): Promise<HeatmapCell[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_heatmap");
+  if (error) throw error;
+  return ((data ?? []) as { day: number; hour: number; monto: number; count: number }[])
+    .map((r) => ({
+      day: Number(r.day),
+      hour: Number(r.hour),
+      monto: Number(r.monto) || 0,
+      count: Number(r.count) || 0,
+    }));
+}
 
-  // Heatmap
-  const heatmap: HeatmapCell[] = Array.from(heatmapMap.entries()).map(([key, v]) => {
-    const [day, hour] = key.split("|").map(Number);
-    return { day, hour, monto: v.monto, count: v.count };
-  });
+export async function fetchProductosLista(): Promise<string[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_productos_lista");
+  if (error) throw error;
+  return ((data ?? []) as { producto: string }[]).map((r) => r.producto);
+}
 
-  return {
-    monthly,
-    products,
-    families,
-    heatmap,
-    kpis: {
-      totalVentas: totalMonto,
-      ticketPromedio: allVentas.size > 0 ? totalMonto / allVentas.size : 0,
-      topProducto: products.length > 0 ? products[0].producto : "—",
-      topFamilia: families.length > 0 ? families[0].familia : "—",
-    },
-  };
+export async function fetchProductoSemanal(producto: string): Promise<ProductoSemanalRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_producto_semanal", { p_producto: producto });
+  if (error) throw error;
+  return ((data ?? []) as { semana: string; semana_inicio: string; cantidad: number; monto: number }[])
+    .map((r) => ({
+      semana: r.semana,
+      semanaInicio: r.semana_inicio,
+      cantidad: Number(r.cantidad) || 0,
+      monto: Number(r.monto) || 0,
+    }));
+}
+
+export async function fetchRankingMensual(periodo: string): Promise<MostradorRankingRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_ranking_mensual", { p_periodo: periodo });
+  if (error) throw error;
+  return ((data ?? []) as { producto: string; total_cantidad: number; total_monto: number; dias_con_venta: number; promedio_diario: number }[])
+    .map((r) => ({
+      producto: r.producto,
+      totalCantidad: Number(r.total_cantidad) || 0,
+      totalMonto: Number(r.total_monto) || 0,
+      diasConVenta: Number(r.dias_con_venta) || 0,
+      promedioDiario: Number(r.promedio_diario) || 0,
+    }));
 }
 
 // ---------------------------------------------------------------------------
