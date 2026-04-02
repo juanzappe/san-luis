@@ -40,6 +40,7 @@ import {
   shortLabel,
 } from "@/lib/tax-queries";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -195,13 +196,22 @@ export default function ResumenFiscalPage() {
     };
   }, [raw, adjust]);
 
+  // Month selector for KPIs
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const fiscalPeriodos = useMemo(() => (data?.mensual ?? []).map((r) => r.periodo), [data]);
+  const defaultPeriodo = useMemo(() => {
+    if (!data) return "";
+    for (let i = data.mensual.length - 1; i >= 0; i--) {
+      if (data.mensual[i].total > 0) return data.mensual[i].periodo;
+    }
+    return data.mensual[data.mensual.length - 1]?.periodo ?? "";
+  }, [data]);
+  const activePeriodo = selectedPeriodo || defaultPeriodo;
+
   const kpis = useMemo(() => {
     if (!data || data.mensual.length < 1) return null;
-    // Find last month with tax data
-    let lastIdx = data.mensual.length - 1;
-    for (let i = data.mensual.length - 1; i >= 0; i--) {
-      if (data.mensual[i].total > 0) { lastIdx = i; break; }
-    }
+    const lastIdx = data.mensual.findIndex((r) => r.periodo === activePeriodo);
+    if (lastIdx < 0) return null;
     const last = data.mensual[lastIdx];
     const prev = lastIdx >= 1 ? data.mensual[lastIdx - 1] : null;
     return {
@@ -213,7 +223,7 @@ export default function ResumenFiscalPage() {
       posIva: last.ivaNeto,
       deltaIva: prev ? pctDelta(last.ivaNeto, prev.ivaNeto) : null,
     };
-  }, [data]);
+  }, [data, activePeriodo]);
 
   const chartData = useMemo(() => {
     if (!data) return [];
@@ -261,11 +271,12 @@ export default function ResumenFiscalPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Resumen Fiscal</h1>
-          <p className="text-muted-foreground">
-            {data.periodoActual ? `Datos de ${data.periodoActual}` : "Panorama de carga impositiva y presión fiscal"}
-          </p>
+          <p className="text-muted-foreground">Panorama de carga impositiva y presión fiscal</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={fiscalPeriodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
       {/* KPIs */}

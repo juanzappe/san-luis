@@ -48,6 +48,7 @@ import {
   pctDelta,
 } from "@/lib/queries";
 import { useInflation, InflationToggle } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 
 // ---------------------------------------------------------------------------
 // Color palette
@@ -224,11 +225,10 @@ export default function Dashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Apply inflation adjustment to all monetary values
-  const adjustedData = useMemo(() => {
-    if (!data || !data.hasData || !data.kpis) return data;
-
-    const monthly: MonthRow[] = data.monthly.map((r) => {
+  // Apply inflation adjustment to monthly data
+  const adjustedMonthly = useMemo(() => {
+    if (!data || !data.hasData || !data.kpis) return [] as MonthRow[];
+    return data.monthly.map((r) => {
       const ing = adjust(r.ingresos, r.periodo);
       const eOp = adjust(r.egresosOp, r.periodo);
       const sue = adjust(r.sueldos, r.periodo);
@@ -248,22 +248,33 @@ export default function Dashboard() {
         margen: ing > 0 ? (res / ing) * 100 : 0,
       };
     });
+  }, [data, adjust]);
 
-    // Find last complete month in adjusted data
-    let lastCompleteIdx = monthly.length - 1;
-    for (let i = monthly.length - 1; i >= 0; i--) {
-      if (monthly[i].ingresos > 0 && (monthly[i].egresosOp > 0 || monthly[i].sueldos > 0)) {
-        lastCompleteIdx = i;
-        break;
+  // Month selector
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const dashPeriodos = adjustedMonthly.map((r) => r.periodo);
+  const defaultDashPeriodo = useMemo(() => {
+    for (let i = adjustedMonthly.length - 1; i >= 0; i--) {
+      if (adjustedMonthly[i].ingresos > 0 && (adjustedMonthly[i].egresosOp > 0 || adjustedMonthly[i].sueldos > 0)) {
+        return adjustedMonthly[i].periodo;
       }
     }
+    return adjustedMonthly[adjustedMonthly.length - 1]?.periodo ?? "";
+  }, [adjustedMonthly]);
+  const activePeriodo = selectedPeriodo || defaultDashPeriodo;
 
-    const last = monthly[lastCompleteIdx];
-    const prev = lastCompleteIdx >= 1 ? monthly[lastCompleteIdx - 1] : null;
+  // Build adjustedData with KPIs based on selected month
+  const adjustedData = useMemo(() => {
+    if (!data || !data.hasData || !data.kpis || adjustedMonthly.length === 0) return data;
+
+    const selIdx = adjustedMonthly.findIndex((r) => r.periodo === activePeriodo);
+    const lastIdx = selIdx >= 0 ? selIdx : adjustedMonthly.length - 1;
+    const last = adjustedMonthly[lastIdx];
+    const prev = lastIdx >= 1 ? adjustedMonthly[lastIdx - 1] : null;
 
     return {
       ...data,
-      monthly,
+      monthly: adjustedMonthly,
       kpis: {
         ingresos: last.ingresos,
         egresosOp: last.egresosOp,
@@ -281,7 +292,7 @@ export default function Dashboard() {
         periodoKey: data.kpis.periodoKey,
       },
     };
-  }, [data, adjust]);
+  }, [data, adjustedMonthly, activePeriodo]);
 
   // --- Loading / retrying state ---
   if (loading) {
@@ -343,11 +354,9 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      {/* Month indicator + Inflation toggle */}
+      {/* Month selector + Inflation toggle */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-muted-foreground">
-          Datos de {kpis.periodo}
-        </h2>
+        <MonthSelector periodos={dashPeriodos} value={activePeriodo} onChange={setSelectedPeriodo} />
         <InflationToggle />
       </div>
 
