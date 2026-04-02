@@ -17,7 +17,7 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 }
 
 // ---------------------------------------------------------------------------
-// Impuesto al Cheque — direct query (bypasses broken RPC)
+// Impuesto al Cheque — actual LEY 25413 debits from bank + MP
 // ---------------------------------------------------------------------------
 
 async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
@@ -25,14 +25,18 @@ async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_ch
     fetchWithRetry(async () => {
       const { data, error } = await supabase
         .from("movimiento_bancario")
-        .select("fecha, importe, concepto");
+        .select("fecha, importe")
+        .ilike("concepto", "%LEY 25413%")
+        .not("concepto", "ilike", "%COMPENSACION%");
       if (error) throw error;
       return data ?? [];
     }),
     fetchWithRetry(async () => {
       const { data, error } = await supabase
         .from("movimiento_mp")
-        .select("fecha, importe");
+        .select("fecha, importe")
+        .ilike("tipo_operacion", "%Créditos y Débitos%")
+        .not("tipo_operacion", "ilike", "%Anulación%");
       if (error) throw error;
       return data ?? [];
     }),
@@ -40,16 +44,14 @@ async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_ch
 
   const map = new Map<string, number>();
 
-  for (const row of bancoRows as Array<{ fecha: string; importe: number; concepto: string | null }>) {
-    const c = (row.concepto ?? "").toUpperCase();
-    if (c.includes("IMPUESTO LEY 25413") || c.includes("COMPENSACION DE VALORES")) continue;
+  for (const row of bancoRows as Array<{ fecha: string; importe: number }>) {
     const periodo = (row.fecha as string).slice(0, 7);
-    addToMap(map, periodo, Math.abs(Number(row.importe) || 0) * 0.012);
+    addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
   }
 
   for (const row of mpRows as Array<{ fecha: string; importe: number }>) {
     const periodo = (row.fecha as string).slice(0, 10).slice(0, 7);
-    addToMap(map, periodo, Math.abs(Number(row.importe) || 0) * 0.012);
+    addToMap(map, periodo, Math.abs(Number(row.importe) || 0));
   }
 
   return Array.from(map.entries()).map(([periodo, importe_cheque]) => ({ periodo, importe_cheque }));
@@ -197,7 +199,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     }
   }
 
-  // --- C) Impuesto al Cheque — 1.2% of total bank movements (RPC) ---
+  // --- C) Impuesto al Cheque — actual LEY 25413 debits from bank + MP ---
   const chequeMap = new Map<string, number>();
   for (const row of chequeRows) {
     addToMap(chequeMap, row.periodo, Number(row.importe_cheque) || 0);
