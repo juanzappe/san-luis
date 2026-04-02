@@ -23,23 +23,15 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
   const { data, error } = await supabase.rpc("get_cheque_mensual");
   if (error) throw error;
-  const rows = (data ?? []) as Array<Record<string, unknown>>;
-  // Debug: log raw RPC response to identify column names
-  if (rows.length > 0) {
-    console.log("[cheque] RPC columns:", Object.keys(rows[0]));
-    console.log("[cheque] first row:", rows[0]);
-  } else {
-    console.log("[cheque] RPC returned 0 rows");
-  }
   // RPC returns up to 2 rows per month (banco + MP via UNION ALL) — aggregate here
   // Handle both possible column names: importe_cheque (migration 017) or cheque
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
   const map = new Map<string, number>();
   for (const row of rows) {
     const periodo = String(row.periodo ?? "");
     const amount = Number(row.importe_cheque ?? row.cheque ?? 0) || 0;
     if (periodo) addToMap(map, periodo, amount);
   }
-  console.log("[cheque] aggregated:", Object.fromEntries(map));
   return Array.from(map.entries()).map(([periodo, importe_cheque]) => ({ periodo, importe_cheque }));
 }
 
@@ -152,7 +144,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const jurisdiccionTotal = new Map<string, number>();
 
   const addTipo = (tipo: string, month: string, monto: number, jurisdiccion: string) => {
-    if (month === "2026-02") console.log("[fiscal] addTipo", tipo, month, monto, jurisdiccion);
     if (!tipoMonthMap.has(tipo)) tipoMonthMap.set(tipo, new Map());
     addToMap(tipoMonthMap.get(tipo)!, month, monto);
     addToMap(jurisdiccionTotal, jurisdiccion, monto);
@@ -313,11 +304,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const total = ivaNeto + gananciasEst + sicore + cheque + iibb + segHigiene + publicidad + espacioPublico;
     const ingresos = ingresosMap.get(p) ?? 0;
     const presionFiscal = ingresos > 0 ? (total / ingresos) * 100 : null;
-    const row = { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
-    if (p === "2026-02" || p === "2026-03") {
-      console.log("[fiscal] ROW", p, row);
-    }
-    return row;
+    return { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
   });
 
   // ---------------------------------------------------------------------------
