@@ -120,6 +120,14 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     return res.data;
   });
 
+  // Check if migration 016 (cargas_sociales column) has been applied
+  if (data && data.length > 0 && !("cargas_sociales" in data[0])) {
+    console.warn(
+      "[fetchEgresos] ⚠ La columna cargas_sociales no existe en get_egresos_mensual. " +
+      "Ejecutá la migración 016_cargas_sociales_resultado.sql en Supabase."
+    );
+  }
+
   return ((data ?? []) as RpcEgresoRow[]).map((r) => {
     const sueldosMes = Number(r.sueldos_costo) || 0;
     const proveedoresMes = Number(r.proveedores) || 0;
