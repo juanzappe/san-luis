@@ -357,11 +357,11 @@ export default function EstadoResultadosPage() {
   const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
 
   // Aggregate by selected granularity, then filter by year
-  const aggregated = aggregateResultado(data, granularity);
   const tablePeriods = useMemo(() => {
+    const aggregated = aggregateResultado(data, granularity);
     if (granularity === "anual") return aggregated;
     return aggregated.filter((r) => r.periodo.startsWith(activeYear));
-  }, [aggregated, granularity, activeYear]);
+  }, [data, granularity, activeYear]);
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
   const waterfall = lastRow ? buildWaterfall(lastRow) : [];
