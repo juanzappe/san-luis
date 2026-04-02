@@ -4,7 +4,7 @@ Fuente: data_raw/SEGMENTACION/*.csv (4 archivos)
   - segmentacion_costos_categorias.csv → upsert categoria_egreso
   - segmentacion_sectores.csv → insert sector_cliente
   - segmentacion_clientes.csv → UPDATE cliente (tipo_entidad, clasificacion) por CUIT
-  - segmentacion_proveedores.csv → UPDATE proveedor (tipo_costo, categoria_egreso) por CUIT
+  - segmentacion_proveedores.csv → UPDATE proveedor (tipo_costo, categoria_egreso) por Denominacion
 """
 
 import pandas as pd
@@ -57,7 +57,7 @@ def run(conn, logger, full: bool = False) -> int:
         logger.info(f"  {len(df)} sectores de clientes a cargar")
         sectores = []
         for _, row in df.iterrows():
-            nombre = safe_str(row.get("Sector") or row.get("nombre") or row.get("Clasificacion"))
+            nombre = safe_str(row.get("Sector") or row.get("Categoria") or row.get("nombre") or row.get("Clasificacion"))
             if not nombre:
                 continue
             sectores.append({"nombre": nombre})
@@ -92,25 +92,32 @@ def run(conn, logger, full: bool = False) -> int:
     else:
         logger.warning(f"  {cli_path.name} no encontrado")
 
-    # 4. Segmentación de proveedores → UPDATE proveedor
+    # 4. Segmentación de proveedores → UPDATE proveedor (match por Denominacion, no CUIT)
     prov_path = data_dir / "segmentacion_proveedores.csv"
     if prov_path.exists():
         df = _read_csv(prov_path)
         logger.info(f"  {len(df)} proveedores a segmentar")
         updated = 0
+        unmatched = []
         with conn.cursor() as cur:
             for _, row in df.iterrows():
-                cuit = safe_str(row.get("CUIT"))
-                if not cuit:
+                denominacion = safe_str(row.get("Denominacion"))
+                if not denominacion:
                     continue
                 tipo_costo = safe_str(row.get("TipoCosto"))
                 cat_egreso = safe_str(row.get("CategoriaEgreso"))
                 cur.execute(
-                    "UPDATE proveedor SET tipo_costo = %s, categoria_egreso = %s WHERE cuit = %s",
-                    (tipo_costo, cat_egreso, cuit),
+                    "UPDATE proveedor SET tipo_costo = %s, categoria_egreso = %s "
+                    "WHERE UPPER(TRIM(razon_social)) = UPPER(TRIM(%s))",
+                    (tipo_costo, cat_egreso, denominacion),
                 )
-                updated += cur.rowcount
+                if cur.rowcount > 0:
+                    updated += cur.rowcount
+                else:
+                    unmatched.append(denominacion)
         logger.info(f"  ✓ {updated} proveedores actualizados")
+        if unmatched:
+            logger.warning(f"  ⚠ {len(unmatched)} proveedores sin match: {unmatched[:10]}")
         total += updated
     else:
         logger.warning(f"  {prov_path.name} no encontrado")
