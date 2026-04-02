@@ -23,11 +23,23 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 async function fetchChequeMensual(): Promise<Array<{ periodo: string; importe_cheque: number }>> {
   const { data, error } = await supabase.rpc("get_cheque_mensual");
   if (error) throw error;
-  // RPC returns up to 2 rows per month (banco + MP via UNION ALL) — aggregate here
-  const map = new Map<string, number>();
-  for (const row of (data ?? []) as Array<{ periodo: string; importe_cheque: number }>) {
-    addToMap(map, row.periodo, Number(row.importe_cheque) || 0);
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  // Debug: log raw RPC response to identify column names
+  if (rows.length > 0) {
+    console.log("[cheque] RPC columns:", Object.keys(rows[0]));
+    console.log("[cheque] first row:", rows[0]);
+  } else {
+    console.log("[cheque] RPC returned 0 rows");
   }
+  // RPC returns up to 2 rows per month (banco + MP via UNION ALL) — aggregate here
+  // Handle both possible column names: importe_cheque (migration 017) or cheque
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    const periodo = String(row.periodo ?? "");
+    const amount = Number(row.importe_cheque ?? row.cheque ?? 0) || 0;
+    if (periodo) addToMap(map, periodo, amount);
+  }
+  console.log("[cheque] aggregated:", Object.fromEntries(map));
   return Array.from(map.entries()).map(([periodo, importe_cheque]) => ({ periodo, importe_cheque }));
 }
 
