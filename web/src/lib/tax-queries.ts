@@ -98,7 +98,8 @@ export interface ResumenFiscalData {
 }
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
-  const [obligaciones, pagos, ivaMensualRows, chequeRows, resultadoData] = await Promise.all([
+  // Batch 1: light queries (free up connections before heavy ones)
+  const [obligaciones, pagos, chequeRows] = await Promise.all([
     fetchWithRetry(async () => {
       const res = await supabase.rpc("get_obligaciones_resumen");
       if (res.error) throw res.error;
@@ -117,6 +118,11 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
         obligacion_tipo: string; obligacion_periodo: string; obligacion_fuente: string;
       }>;
     }),
+    fetchChequeMensual(),
+  ]);
+
+  // Batch 2: heavy queries (max 3 concurrent: iva + ingresos + egresos via fetchResultado)
+  const [ivaMensualRows, resultadoData] = await Promise.all([
     fetchWithRetry(async () => {
       const res = await supabase.rpc("get_iva_ingresos_mensual");
       if (res.error) throw res.error;
@@ -124,7 +130,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
         periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
       }>;
     }),
-    fetchChequeMensual(),
     fetchResultado() as Promise<ResultadoRow[]>,
   ]);
 
