@@ -32,7 +32,10 @@ import {
   pctDelta,
   periodoLabel,
   shortLabel,
+  computeIpcFallback,
+  computeGananciasNominal,
 } from "@/lib/economic-queries";
+import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -160,28 +163,32 @@ export default function EgresosPage() {
   const { adjust } = useInflation();
   const [raw, setRaw] = useState<EgresoRow[]>([]);
   const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
+  const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
-    Promise.all([fetchEgresos(), fetchResultado()])
-      .then(([egresos, resultado]) => {
+    Promise.all([fetchEgresos(), fetchResultado(), fetchIpcMensualMap()])
+      .then(([egresos, resultado, ipc]) => {
         setRaw(egresos);
         setRawResultado(resultado);
+        setIpcMap(ipc);
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
 
-  // Map ResultadoRow by periodo — provides ganancias calculated with the same
-  // formula as estado-resultados (TASA_GANANCIAS × resultadoAntesGanancias),
-  // replacing the RPC field which only reflects actual AFIP payments (often zero).
+  // Map ResultadoRow by periodo — needed to supply ingresos + resultadoAntesGanancias
+  // to computeGananciasNominal, which applies the same RECPAM-adjusted formula as ER.
   const resultadoMap = useMemo(
     () => new Map(rawResultado.map((r) => [r.periodo, r])),
     [rawResultado],
   );
+
+  // Same fallback logic as estado-resultados/page.tsx
+  const ipcFallback = useMemo(() => computeIpcFallback(ipcMap), [ipcMap]);
 
   // Discover all category names sorted by total descending
   const allCategories = useMemo(() => {
@@ -231,22 +238,26 @@ export default function EgresosPage() {
   }
 
   // Apply inflation adjustment.
-  // ganancias: use ResultadoRow.ganancias (= resultadoAntesGanancias × TASA_GANANCIAS),
-  //   same calculation as estado-resultados — the RPC field reflects actual AFIP payments
-  //   which are often zero for recent months.
+  // ganancias: computed with computeGananciasNominal — identical formula to estado-resultados:
+  //   TASA_GANANCIAS × (resultadoAntesGanancias − RECPAM), then adjust().
+  //   The RPC field was actual AFIP payments (cash basis, often zero for recent months);
+  //   ResultadoRow.ganancias was TASA_GANANCIAS × resultadoAntesGanancias (no RECPAM, overstated).
   // sueldosNeto + cargasSociales: adjusted separately so aggregateEgresos can use them.
   const data: EgresoRow[] = raw.map((r) => {
     const adjCats: Record<string, number> = {};
     for (const [cat, monto] of Object.entries(r.categorias)) {
       adjCats[cat] = adjust(monto, r.periodo);
     }
-    const resultadoGanancias = resultadoMap.get(r.periodo)?.ganancias ?? 0;
+    const resultadoRow = resultadoMap.get(r.periodo);
+    const gananciasNom = resultadoRow
+      ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
+      : 0;
     return {
       ...r,
       operativos: adjust(r.operativos, r.periodo),
       comerciales: adjust(r.comerciales, r.periodo),
       financieros: adjust(r.financieros, r.periodo),
-      ganancias: adjust(resultadoGanancias, r.periodo),
+      ganancias: adjust(gananciasNom, r.periodo),
       total: adjust(r.total, r.periodo),
       categorias: adjCats,
       sueldos: adjust(r.sueldos, r.periodo),
