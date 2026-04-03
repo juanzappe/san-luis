@@ -397,7 +397,6 @@ export default function CuentasCobrarPage() {
               </TableBody>
             </Table>
           </div>
-          </div>
           <p className="text-xs text-muted-foreground">
             Facturas marcadas como cobradas se muestran con opacidad reducida y no se contabilizan en los KPIs.
             Las mayores de 30 días sin registro manual se consideran cobradas automáticamente.
