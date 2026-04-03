@@ -37,11 +37,12 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-// Fixed colors for the 4 KPI categories
+// Fixed colors for the KPI categories
 const OPERATIVOS_COLOR = "#f59e0b";
 const SUELDOS_COLOR = "#6366f1";
 const IMPUESTOS_COLOR = "#ef4444";
 const FINANCIEROS_COLOR = "#8b5cf6";
+const GANANCIAS_COLOR = "#ec4899";
 
 type Granularity = "mensual" | "trimestral" | "anual";
 
@@ -63,7 +64,8 @@ interface AggregatedEgreso {
   label: string;
   categorias: Record<string, number>;
   sueldos: number;
-  impuestos: number;
+  comerciales: number; // impuestos operativos (IVA, IIBB, etc.) — sin ganancias
+  ganancias: number;   // imp. a las ganancias
   financieros: number;
   total: number;
 }
@@ -76,7 +78,8 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
         label: periodoLabel(r.periodo),
         categorias: r.categorias,
         sueldos: r.sueldos,
-        impuestos: r.impuestos,
+        comerciales: r.comerciales,
+        ganancias: r.ganancias,
         financieros: r.financieros,
         total: r.total,
       }))
@@ -92,7 +95,8 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
       label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
       categorias: {},
       sueldos: 0,
-      impuestos: 0,
+      comerciales: 0,
+      ganancias: 0,
       financieros: 0,
       total: 0,
     };
@@ -100,7 +104,8 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
       cur.categorias[cat] = (cur.categorias[cat] ?? 0) + monto;
     }
     cur.sueldos += r.sueldos;
-    cur.impuestos += r.impuestos;
+    cur.comerciales += r.comerciales;
+    cur.ganancias += r.ganancias;
     cur.financieros += r.financieros;
     cur.total += r.total;
     buckets.set(bucketKey, cur);
@@ -242,12 +247,13 @@ export default function EgresosPage() {
   const lastCostosOp = costosOp(last);
   const prevCostosOp = prev ? costosOp(prev) : null;
 
-  // Chart data — 4 fixed stacked categories
+  // Chart data — 5 stacked categories (Impuestos = comerciales only, Ganancias separate)
   const chartData = data.slice(-12).map((r) => ({
     label: shortLabel(r.periodo),
     "Costos Operativos": costosOp(r),
     "Sueldos": r.sueldos,
-    "Impuestos": r.impuestos,
+    "Impuestos": r.comerciales,
+    "Imp. Ganancias": r.ganancias,
     "Financieros": r.financieros,
   }));
 
@@ -264,8 +270,8 @@ export default function EgresosPage() {
         </div>
       </div>
 
-      {/* KPI Cards — 5 fixed categories */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+      {/* KPI Cards — 6 categories */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
         <KpiCard
           title="Total Egresos"
           value={last.total}
@@ -285,9 +291,15 @@ export default function EgresosPage() {
         />
         <KpiCard
           title="Impuestos"
-          value={last.impuestos}
-          delta={prev ? pctDelta(last.impuestos, prev.impuestos) : null}
+          value={last.comerciales}
+          delta={prev ? pctDelta(last.comerciales, prev.comerciales) : null}
           color={IMPUESTOS_COLOR}
+        />
+        <KpiCard
+          title="Imp. Ganancias"
+          value={last.ganancias}
+          delta={prev && prev.ganancias > 0 ? pctDelta(last.ganancias, prev.ganancias) : null}
+          color={GANANCIAS_COLOR}
         />
         <KpiCard
           title="Financieros"
@@ -313,6 +325,7 @@ export default function EgresosPage() {
               <Bar dataKey="Costos Operativos" name="Costos Operativos" stackId="a" fill={OPERATIVOS_COLOR} />
               <Bar dataKey="Sueldos" name="Sueldos" stackId="a" fill={SUELDOS_COLOR} />
               <Bar dataKey="Impuestos" name="Impuestos" stackId="a" fill={IMPUESTOS_COLOR} />
+              <Bar dataKey="Imp. Ganancias" name="Imp. Ganancias" stackId="a" fill={GANANCIAS_COLOR} />
               <Bar dataKey="Financieros" name="Financieros" stackId="a" fill={FINANCIEROS_COLOR} radius={[4, 4, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
@@ -350,6 +363,7 @@ export default function EgresosPage() {
                   ))}
                   <TableHead className="text-right">Sueldos</TableHead>
                   <TableHead className="text-right">Impuestos</TableHead>
+                  <TableHead className="text-right">Imp. Ganancias</TableHead>
                   <TableHead className="text-right">Financieros</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                 </TableRow>
@@ -364,7 +378,10 @@ export default function EgresosPage() {
                       </TableCell>
                     ))}
                     <TableCell className="text-right">{formatARS(row.sueldos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(row.impuestos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(row.comerciales)}</TableCell>
+                    <TableCell className={`text-right ${row.ganancias === 0 ? "text-muted-foreground" : ""}`}>
+                      {row.ganancias > 0 ? formatARS(row.ganancias) : "—"}
+                    </TableCell>
                     <TableCell className="text-right">{formatARS(row.financieros)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(row.total)}</TableCell>
                   </TableRow>
