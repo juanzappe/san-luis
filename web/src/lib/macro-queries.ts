@@ -269,6 +269,25 @@ export async function fetchInflacionAnual(): Promise<InflacionAnual[]> {
 }
 
 // ---------------------------------------------------------------------------
+// RECPAM: inflación mensual real por período
+// ---------------------------------------------------------------------------
+
+/**
+ * Retorna un mapa de YYYY-MM → variacion_mensual como decimal (ej: 0.03 para 3%).
+ * Se usa para calcular el RECPAM estimado con inflación real en lugar del ratio fijo.
+ */
+export async function fetchIpcMensualMap(): Promise<Map<string, number>> {
+  const rows = await fetchAllMacro("ipc");
+  const map = new Map<string, number>();
+  for (const r of rows) {
+    if (r.variacion_mensual != null) {
+      map.set(r.fecha.slice(0, 7), r.variacion_mensual / 100);
+    }
+  }
+  return map;
+}
+
+// ---------------------------------------------------------------------------
 // Table: últimos 24 meses
 // ---------------------------------------------------------------------------
 

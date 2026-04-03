@@ -29,6 +29,7 @@ import {
   shortLabel,
   TASA_GANANCIAS,
 } from "@/lib/economic-queries";
+import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -43,8 +44,10 @@ const RECPAM_HISTORICO: Record<string, number> = {
   "2022": -61205150,
   "2021": -69080530,
 };
-// Ratio RECPAM/Ingresos 2024 para estimar meses sin auditoría
-const RATIO_RECPAM = 0.218;
+// Ratio Posición Monetaria Neta vs Ingresos (derivado: 0.218 / 0.10, donde 0.10 = inflación mensual promedio 2024)
+const RATIO_PMN = 2.18;
+// Fallback cuando no hay datos IPC en tabla para el período (mantiene comportamiento previo)
+const RATIO_RECPAM_FALLBACK = 0.218;
 
 // Amortizaciones anuales de estados contables auditados
 const AMORTIZACIONES_ANUAL: Record<string, number> = {
@@ -62,6 +65,7 @@ const AMORT_MENSUAL_BASE = 32205313 / 12;
 interface ExtendedResultadoRow extends ResultadoRow {
   recpam: number;
   recpamEstimado: boolean;
+  recpamConIpcReal: boolean; // true = usó inflación mensual real de la tabla
   amortizaciones: number;
   ebitda: number;
 }
@@ -100,6 +104,7 @@ function aggregateResultado(
       cur.costosFinancieros += r.costosFinancieros;
       cur.recpam += r.recpam;
       cur.recpamEstimado = cur.recpamEstimado || r.recpamEstimado;
+      cur.recpamConIpcReal = cur.recpamConIpcReal || r.recpamConIpcReal;
       cur.amortizaciones += r.amortizaciones;
       cur.ganancias += r.ganancias;
       cur.margenBruto += r.margenBruto;
@@ -276,14 +281,18 @@ function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
 export default function EstadoResultadosPage() {
   const { adjust } = useInflation();
   const [raw, setRaw] = useState<ResultadoRow[]>([]);
+  const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchResultado()
-      .then(setRaw)
+    Promise.all([fetchResultado(), fetchIpcMensualMap()])
+      .then(([rows, ipc]) => {
+        setRaw(rows);
+        setIpcMap(ipc);
+      })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
@@ -301,14 +310,26 @@ export default function EstadoResultadosPage() {
         const costFin = adjust(r.costosFinancieros, r.periodo);
         const margenBruto = ing - costOp - sueldos - cargasSoc;
 
-        // RECPAM: historical (distributed monthly) or estimated via ratio
+        // RECPAM: datos auditados para años históricos; estimado para el resto.
+        // Estimación: RECPAM = ingresos × RATIO_PMN × inflación_mensual_real
+        // donde RATIO_PMN ≈ 2.18 (posición monetaria neta / ingresos, derivado de 0.218 / 0.10)
+        // Si no hay dato IPC en tabla, fallback al ratio fijo 0.218 (comportamiento previo).
         let recpamNominal: number;
         let recpamEstimado: boolean;
+        let recpamConIpcReal: boolean;
         if (year in RECPAM_HISTORICO) {
           recpamNominal = RECPAM_HISTORICO[year] / 12;
           recpamEstimado = false;
+          recpamConIpcReal = false;
         } else {
-          recpamNominal = r.ingresos * RATIO_RECPAM;
+          const inflacionDecimal = ipcMap.get(r.periodo) ?? null;
+          if (inflacionDecimal !== null) {
+            recpamNominal = r.ingresos * RATIO_PMN * inflacionDecimal;
+            recpamConIpcReal = true;
+          } else {
+            recpamNominal = r.ingresos * RATIO_RECPAM_FALLBACK;
+            recpamConIpcReal = false;
+          }
           recpamEstimado = true;
         }
         const recpam = adjust(recpamNominal, r.periodo);
@@ -336,6 +357,7 @@ export default function EstadoResultadosPage() {
           costosFinancieros: costFin,
           recpam,
           recpamEstimado,
+          recpamConIpcReal,
           amortizaciones,
           ebitda,
           resultadoAntesGanancias: resAntesGan,
@@ -344,7 +366,7 @@ export default function EstadoResultadosPage() {
           margenPct,
         };
       }),
-    [raw, adjust],
+    [raw, adjust, ipcMap],
   );
 
   // Available years from data
@@ -531,10 +553,13 @@ export default function EstadoResultadosPage() {
                 values={tablePeriods.map((r) => r.recpam)}
                 indent
                 negative
-                infoTip="Resultado por exposición al cambio en el poder adquisitivo de la moneda. Datos auditados 2021-2024, estimado al 21.8% de ingresos para períodos posteriores."
-                annotations={tablePeriods.map((r) =>
-                  r.recpamEstimado ? `Estimado al ${(RATIO_RECPAM * 100).toFixed(1)}% de ingresos (ratio 2024)` : null
-                )}
+                infoTip="Resultado por exposición al cambio en el poder adquisitivo de la moneda. Datos auditados 2021-2024. Para períodos posteriores: ingresos × PMN (2.18) × inflación mensual IPC real; fallback al ratio fijo 21.8% si no hay dato IPC cargado."
+                annotations={tablePeriods.map((r) => {
+                  if (!r.recpamEstimado) return null;
+                  return r.recpamConIpcReal
+                    ? "Estimado con inflación IPC real (ingresos × 2.18 × IPC mensual)"
+                    : `Estimado con ratio fijo ${(RATIO_RECPAM_FALLBACK * 100).toFixed(1)}% de ingresos (sin dato IPC)`;
+                })}
               />
               <PnlLine
                 label="Resultado antes de Ganancias"

@@ -218,11 +218,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     if (o.tipo !== "iibb") continue;
     const month = (o.periodo ?? "") as string;
     if (!month) continue;
-    const amount = Math.max(
-      Number(o.monto_determinado) || 0,
-      Number(o.compensaciones_recibidas) || 0,
-      Number(o.compensaciones_enviadas) || 0,
-    );
+    const amount = Number(o.monto_determinado) || 0;
     if (amount > 0) addTipo("iibb", month, amount, "arba");
   }
 
