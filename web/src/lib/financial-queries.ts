@@ -470,3 +470,46 @@ export async function fetchSaldosCuentas(): Promise<SaldoCuenta[]> {
     hasData:   r.fecha_dato != null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// 8. Saldo manual (caja y otras cuentas sin fuente automática)
+// ---------------------------------------------------------------------------
+
+export interface SaldoManual {
+  id: number;
+  cuenta: string;
+  saldo: number;
+  fecha: string;
+  nota: string | null;
+}
+
+export async function fetchSaldoManual(cuenta: string): Promise<SaldoManual | null> {
+  const res = await supabase
+    .from("saldo_manual")
+    .select("id, cuenta, saldo, fecha, nota")
+    .eq("cuenta", cuenta)
+    .order("fecha", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (res.error) throw res.error;
+  if (!res.data) return null;
+  return {
+    id:     res.data.id as number,
+    cuenta: res.data.cuenta as string,
+    saldo:  Number(res.data.saldo),
+    fecha:  res.data.fecha as string,
+    nota:   (res.data.nota as string | null) ?? null,
+  };
+}
+
+export async function insertSaldoManual(
+  cuenta: string,
+  saldo: number,
+  fecha: string,
+  nota: string,
+): Promise<void> {
+  const res = await supabase
+    .from("saldo_manual")
+    .insert({ cuenta, saldo, fecha, nota: nota.trim() || null });
+  if (res.error) throw res.error;
+}
