@@ -73,37 +73,41 @@ export default function InversionesPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Filter to the latest fecha_valuacion only (KPIs, charts, table)
+  const latestHoldings = useMemo(() => {
+    if (!data) return [];
+    const fecha = data.latestFechaValuacion;
+    if (!fecha) return data.holdings;
+    return data.holdings.filter((h) => h.fechaValuacion === fecha);
+  }, [data]);
+
   const totals = useMemo(() => {
-    if (!data) return { ars: 0, usd: 0, resultado: 0, rendPct: 0 };
-    const ars = data.holdings.reduce((s, h) => s + h.valuacionMonto, 0);
-    const usd = data.holdings.reduce((s, h) => s + h.valuacionUsd, 0);
-    const resultado = data.holdings.reduce((s, h) => s + h.resultado, 0);
-    const costo = data.holdings.reduce((s, h) => s + h.costoTotal, 0);
+    const ars = latestHoldings.reduce((s, h) => s + h.valuacionMonto, 0);
+    const usd = latestHoldings.reduce((s, h) => s + h.valuacionUsd, 0);
+    const resultado = latestHoldings.reduce((s, h) => s + h.resultado, 0);
+    const costo = latestHoldings.reduce((s, h) => s + h.costoTotal, 0);
     const rendPct = costo > 0 ? (resultado / costo) * 100 : 0;
     return { ars, usd, resultado, rendPct };
-  }, [data]);
+  }, [latestHoldings]);
 
   // Donut by tipo
   const donutData = useMemo(() => {
-    if (!data) return [];
     const map = new Map<string, number>();
-    for (const h of data.holdings) {
-      const key = h.tipo;
-      map.set(key, (map.get(key) ?? 0) + h.valuacionMonto);
+    for (const h of latestHoldings) {
+      map.set(h.tipo, (map.get(h.tipo) ?? 0) + h.valuacionMonto);
     }
     return Array.from(map.entries())
       .map(([tipo, value]) => ({ name: TIPO_LABELS[tipo] ?? tipo, value }))
       .sort((a, b) => b.value - a.value);
-  }, [data]);
+  }, [latestHoldings]);
 
   // Top 10 holdings by valuation
   const topHoldings = useMemo(() => {
-    if (!data) return [];
-    return [...data.holdings]
+    return [...latestHoldings]
       .sort((a, b) => b.valuacionMonto - a.valuacionMonto)
       .slice(0, 10)
       .map((h) => ({ name: h.ticker || h.nombre, value: h.valuacionMonto }));
-  }, [data]);
+  }, [latestHoldings]);
 
   // Filtered movimientos
   const filteredMov = useMemo(() => {
@@ -141,7 +145,12 @@ export default function InversionesPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Inversiones</h1>
-        <p className="text-muted-foreground">Portfolio de inversiones financieras</p>
+        <p className="text-muted-foreground">
+          Portfolio de inversiones financieras
+          {data?.latestFechaValuacion && (
+            <> — valuación al {data.latestFechaValuacion.slice(8, 10)}/{data.latestFechaValuacion.slice(5, 7)}/{data.latestFechaValuacion.slice(0, 4)}</>
+          )}
+        </p>
       </div>
 
       {/* KPIs */}
@@ -218,7 +227,7 @@ export default function InversionesPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {data.holdings.sort((a, b) => b.valuacionMonto - a.valuacionMonto).map((h) => (
+                {[...latestHoldings].sort((a, b) => b.valuacionMonto - a.valuacionMonto).map((h) => (
                   <TableRow key={h.id}>
                     <TableCell className="font-medium">{h.ticker || "—"}</TableCell>
                     <TableCell>{h.nombre}</TableCell>

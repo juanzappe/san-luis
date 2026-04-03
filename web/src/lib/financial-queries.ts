@@ -173,6 +173,7 @@ export interface InversionRow {
   costoTotal: number;
   resultado: number;
   variacionPct: number;
+  fechaValuacion: string | null;
 }
 
 export interface InversionMovRow {
@@ -191,6 +192,7 @@ export interface InversionesData {
   holdings: InversionRow[];
   movimientos: InversionMovRow[];
   hasData: boolean;
+  latestFechaValuacion: string | null;
 }
 
 export async function fetchInversiones(): Promise<InversionesData> {
@@ -198,8 +200,9 @@ export async function fetchInversiones(): Promise<InversionesData> {
     fetchWithRetry(async () => {
       const res = await supabase
         .from("inversion")
-        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct")
-        .eq("estado", "vigente");
+        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct, fecha_valuacion")
+        .eq("estado", "vigente")
+        .order("fecha_valuacion", { ascending: false });
       if (res.error) throw res.error;
       return res.data;
     }),
@@ -219,6 +222,9 @@ export async function fetchInversiones(): Promise<InversionesData> {
     return s === "nan" || s === "null" ? "" : s;
   };
 
+  // Derive the latest fecha_valuacion from the ordered results
+  const latestFechaValuacion = (holdData?.[0]?.fecha_valuacion as string) ?? null;
+
   const holdings: InversionRow[] = (holdData ?? []).map((r) => ({
     id: r.id as number,
     ticker: dbStr(r.ticker),
@@ -232,6 +238,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     costoTotal: Number(r.costo_total) || 0,
     resultado: Number(r.resultado) || 0,
     variacionPct: Number(r.variacion_pct) || 0,
+    fechaValuacion: (r.fecha_valuacion as string) ?? null,
   }));
 
   const movimientos: InversionMovRow[] = (movData ?? []).map((r) => ({
@@ -246,7 +253,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     moneda: (r.moneda ?? "ARS") as string,
   }));
 
-  return { holdings, movimientos, hasData: holdings.length > 0 || movimientos.length > 0 };
+  return { holdings, movimientos, hasData: holdings.length > 0 || movimientos.length > 0, latestFechaValuacion };
 }
 
 // ---------------------------------------------------------------------------
