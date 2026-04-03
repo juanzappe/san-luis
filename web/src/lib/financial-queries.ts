@@ -376,3 +376,46 @@ export async function fetchCuentasPagar(): Promise<CuentaPagarRow[]> {
     estado: r.estado as string,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// 6. Saldos de cuentas financieras (RPC get_saldos_cuentas)
+// ---------------------------------------------------------------------------
+
+export interface SaldoCuenta {
+  cuenta: string;    // 'inviu' | 'santander' | 'provincia' | 'mercado_pago' | 'caja'
+  nombre: string;
+  saldoArs: number;
+  saldoUsd: number | null;
+  fechaDato: string | null;
+  hasData: boolean;
+}
+
+const CUENTA_NOMBRES: Record<string, string> = {
+  inviu:        "Inviu (Broker)",
+  santander:    "Banco Santander",
+  provincia:    "Banco Provincia",
+  mercado_pago: "Mercado Pago",
+  caja:         "Caja (Efectivo)",
+};
+
+export async function fetchSaldosCuentas(): Promise<SaldoCuenta[]> {
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_saldos_cuentas");
+    if (res.error) throw res.error;
+    return (res.data ?? []) as {
+      cuenta: string;
+      saldo_ars: number | null;
+      saldo_usd: number | null;
+      fecha_dato: string | null;
+    }[];
+  });
+
+  return rows.map((r) => ({
+    cuenta:    r.cuenta,
+    nombre:    CUENTA_NOMBRES[r.cuenta] ?? r.cuenta,
+    saldoArs:  Number(r.saldo_ars) || 0,
+    saldoUsd:  r.saldo_usd != null ? Number(r.saldo_usd) : null,
+    fechaDato: r.fecha_dato ?? null,
+    hasData:   r.fecha_dato != null,
+  }));
+}
