@@ -29,6 +29,7 @@ import {
 import {
   type CuentaCobrarRow,
   fetchCuentasCobrar,
+  toggleFacturaPagada,
   buildAgingBuckets,
   formatARS,
 } from "@/lib/financial-queries";
@@ -65,6 +66,8 @@ export default function CuentasCobrarPage() {
   const [data, setData] = useState<CuentaCobrarRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Track in-flight checkbox saves to show a spinner per row
+  const [saving, setSaving] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     fetchCuentasCobrar()
@@ -73,32 +76,63 @@ export default function CuentasCobrarPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // KPI calculations
+  async function handleToggle(id: number, newPagada: boolean) {
+    // Optimistic update
+    setData((prev) =>
+      prev.map((r) =>
+        r.id === id ? { ...r, pagada: newPagada, pagadaManual: newPagada } : r,
+      ),
+    );
+    setSaving((s) => new Set(s).add(id));
+    try {
+      await toggleFacturaPagada(id, newPagada);
+    } catch {
+      // Revert on failure
+      setData((prev) =>
+        prev.map((r) =>
+          r.id === id ? { ...r, pagada: !newPagada, pagadaManual: null } : r,
+        ),
+      );
+    } finally {
+      setSaving((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
+  }
+
+  // Only pending (not paid) rows drive KPIs and charts
+  const pendientes = useMemo(() => data.filter((r) => !r.pagada), [data]);
+
   const kpis = useMemo(() => {
-    const total = data.reduce((s, r) => s + r.monto, 0);
-    const qty = data.length;
-    const avgDias = qty > 0 ? data.reduce((s, r) => s + r.diasPendientes, 0) / qty : 0;
-    const vencido = data.filter((r) => r.diasPendientes > 30).reduce((s, r) => s + r.monto, 0);
+    const total = pendientes.reduce((s, r) => s + r.monto, 0);
+    const qty = pendientes.length;
+    const avgDias = qty > 0 ? pendientes.reduce((s, r) => s + r.diasPendientes, 0) / qty : 0;
+    const vencido = pendientes.filter((r) => r.diasPendientes > 30).reduce((s, r) => s + r.monto, 0);
     return { total, qty, avgDias, vencido };
-  }, [data]);
+  }, [pendientes]);
 
-  // Aging buckets
-  const aging = useMemo(() => buildAgingBuckets(data), [data]);
+  const aging = useMemo(() => buildAgingBuckets(pendientes), [pendientes]);
 
-  // Top 10 clients donut
   const topClientes = useMemo(() => {
     const map = new Map<string, number>();
-    for (const r of data) {
+    for (const r of pendientes) {
       map.set(r.cliente, (map.get(r.cliente) ?? 0) + r.monto);
     }
     return Array.from(map.entries())
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([name, value]) => ({ name, value }));
-  }, [data]);
+  }, [pendientes]);
 
-  // Sorted data (default: most overdue first)
-  const sorted = useMemo(() => [...data].sort((a, b) => b.diasPendientes - a.diasPendientes), [data]);
+  // Table: all rows sorted by dias desc; pagadas shown dimmed at the bottom
+  const sorted = useMemo(() => {
+    return [...data].sort((a, b) => {
+      if (a.pagada !== b.pagada) return a.pagada ? 1 : -1; // pagadas sink to bottom
+      return b.diasPendientes - a.diasPendientes;
+    });
+  }, [data]);
 
   if (loading) {
     return (
@@ -120,7 +154,7 @@ export default function CuentasCobrarPage() {
       <Card><CardContent className="py-8 text-center">
         <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
         <p className="mt-3 font-medium">Sin cuentas por cobrar pendientes</p>
-        <p className="text-sm text-muted-foreground">No hay facturas emitidas con estado pendiente o parcial.</p>
+        <p className="text-sm text-muted-foreground">No hay facturas de Servicios (PV 0006) con estado pendiente o parcial.</p>
       </CardContent></Card>
     );
   }
@@ -129,20 +163,21 @@ export default function CuentasCobrarPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Cuentas por Cobrar</h1>
-        <p className="text-muted-foreground">Aging de facturas emitidas pendientes de cobro</p>
+        <p className="text-muted-foreground">
+          Facturas de Servicios (PV 0006) — aging y estado de cobro
+        </p>
       </div>
 
-      {/* KPIs */}
+      {/* KPIs — only pending (not paid) */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <KpiCard title="Total Pendiente" value={formatARS(kpis.total)} icon={DollarSign} />
-        <KpiCard title="Facturas Pendientes" value={String(kpis.qty)} icon={FileText} />
-        <KpiCard title="Antigüedad Promedio" value={`${Math.round(kpis.avgDias)} días`} icon={Clock} />
-        <KpiCard title="Monto Vencido (>30d)" value={formatARS(kpis.vencido)} icon={AlertTriangle} />
+        <KpiCard title="Total Pendiente"      value={formatARS(kpis.total)}              icon={DollarSign} />
+        <KpiCard title="Facturas Pendientes"  value={String(kpis.qty)}                   icon={FileText} />
+        <KpiCard title="Antigüedad Promedio"  value={`${Math.round(kpis.avgDias)} días`} icon={Clock} />
+        <KpiCard title="Monto Vencido (>30d)" value={formatARS(kpis.vencido)}            icon={AlertTriangle} />
       </div>
 
-      {/* Charts */}
+      {/* Charts — only pending */}
       <div className="grid gap-4 lg:grid-cols-2">
-        {/* Aging bars */}
         <Card>
           <CardHeader><CardTitle className="text-base">Aging de Cartera</CardTitle></CardHeader>
           <CardContent>
@@ -162,7 +197,6 @@ export default function CuentasCobrarPage() {
           </CardContent>
         </Card>
 
-        {/* Top clients donut */}
         <Card>
           <CardHeader><CardTitle className="text-base">Top 10 Deudores</CardTitle></CardHeader>
           <CardContent>
@@ -189,20 +223,28 @@ export default function CuentasCobrarPage() {
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <p className="py-12 text-center text-sm text-muted-foreground">Sin datos</p>
+              <p className="py-12 text-center text-sm text-muted-foreground">Sin pendientes</p>
             )}
           </CardContent>
         </Card>
       </div>
 
-      {/* Invoice table */}
+      {/* Invoice table — all rows */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Detalle de Facturas Pendientes</CardTitle></CardHeader>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base">Detalle de Facturas</CardTitle>
+            <span className="text-xs text-muted-foreground">
+              {kpis.qty} pendientes · {data.length - kpis.qty} cobradas
+            </span>
+          </div>
+        </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10 text-center">Pagado</TableHead>
                   <TableHead>Cliente</TableHead>
                   <TableHead>CUIT</TableHead>
                   <TableHead>Factura</TableHead>
@@ -215,8 +257,24 @@ export default function CuentasCobrarPage() {
               </TableHeader>
               <TableBody>
                 {sorted.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell className="font-medium max-w-[200px] truncate">{r.cliente}</TableCell>
+                  <TableRow
+                    key={r.id}
+                    className={r.pagada ? "opacity-40" : ""}
+                  >
+                    <TableCell className="text-center">
+                      {saving.has(r.id) ? (
+                        <Loader2 className="mx-auto h-4 w-4 animate-spin text-muted-foreground" />
+                      ) : (
+                        <input
+                          type="checkbox"
+                          checked={r.pagada}
+                          onChange={(e) => handleToggle(r.id, e.target.checked)}
+                          className="h-4 w-4 cursor-pointer accent-primary"
+                          aria-label={`Marcar factura ${r.factura} como ${r.pagada ? "pendiente" : "pagada"}`}
+                        />
+                      )}
+                    </TableCell>
+                    <TableCell className="max-w-[200px] truncate font-medium">{r.cliente}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.cuit || "—"}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.factura}</TableCell>
                     <TableCell className="whitespace-nowrap">{r.fechaEmision}</TableCell>
@@ -233,6 +291,10 @@ export default function CuentasCobrarPage() {
               </TableBody>
             </Table>
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Facturas marcadas como cobradas se muestran con opacidad reducida y no se contabilizan en los KPIs.
+            Las mayores de 30 días sin registro manual se consideran cobradas automáticamente.
+          </p>
         </CardContent>
       </Card>
     </div>

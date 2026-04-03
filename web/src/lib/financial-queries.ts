@@ -173,6 +173,7 @@ export interface InversionRow {
   costoTotal: number;
   resultado: number;
   variacionPct: number;
+  fechaValuacion: string | null;
 }
 
 export interface InversionMovRow {
@@ -191,6 +192,7 @@ export interface InversionesData {
   holdings: InversionRow[];
   movimientos: InversionMovRow[];
   hasData: boolean;
+  latestFechaValuacion: string | null;
 }
 
 export async function fetchInversiones(): Promise<InversionesData> {
@@ -198,8 +200,9 @@ export async function fetchInversiones(): Promise<InversionesData> {
     fetchWithRetry(async () => {
       const res = await supabase
         .from("inversion")
-        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct")
-        .eq("estado", "vigente");
+        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct, fecha_valuacion")
+        .eq("estado", "vigente")
+        .order("fecha_valuacion", { ascending: false });
       if (res.error) throw res.error;
       return res.data;
     }),
@@ -219,6 +222,9 @@ export async function fetchInversiones(): Promise<InversionesData> {
     return s === "nan" || s === "null" ? "" : s;
   };
 
+  // Derive the latest fecha_valuacion from the ordered results
+  const latestFechaValuacion = (holdData?.[0]?.fecha_valuacion as string) ?? null;
+
   const holdings: InversionRow[] = (holdData ?? []).map((r) => ({
     id: r.id as number,
     ticker: dbStr(r.ticker),
@@ -232,6 +238,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     costoTotal: Number(r.costo_total) || 0,
     resultado: Number(r.resultado) || 0,
     variacionPct: Number(r.variacion_pct) || 0,
+    fechaValuacion: (r.fecha_valuacion as string) ?? null,
   }));
 
   const movimientos: InversionMovRow[] = (movData ?? []).map((r) => ({
@@ -246,7 +253,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     moneda: (r.moneda ?? "ARS") as string,
   }));
 
-  return { holdings, movimientos, hasData: holdings.length > 0 || movimientos.length > 0 };
+  return { holdings, movimientos, hasData: holdings.length > 0 || movimientos.length > 0, latestFechaValuacion };
 }
 
 // ---------------------------------------------------------------------------
@@ -263,6 +270,10 @@ export interface CuentaCobrarRow {
   monto: number;
   diasPendientes: number;
   estado: string;
+  /** Effective paid status: manual override if set, else auto-rule (> 30 days → paid) */
+  pagada: boolean;
+  /** null = no manual record; boolean = explicit user override */
+  pagadaManual: boolean | null;
 }
 
 export interface AgingBucket {
@@ -300,34 +311,74 @@ function buildAgingBuckets(rows: { monto: number; diasPendientes: number }[]): A
 export { buildAgingBuckets };
 
 export async function fetchCuentasCobrar(): Promise<CuentaCobrarRow[]> {
-  const data = await fetchWithRetry(async () => {
-    const res = await supabase
-      .from("factura_emitida")
-      .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_receptor, nro_doc_receptor, tipo_comprobante, punto_venta, numero_desde, estado")
-      .in("estado", ["pendiente", "parcial"]);
-    if (res.error) throw res.error;
-    return res.data;
-  });
+  const [invoiceData, estadoData] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("factura_emitida")
+        .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_receptor, nro_doc_receptor, tipo_comprobante, punto_venta, numero_desde, estado")
+        .in("estado", ["pendiente", "parcial"])
+        .eq("punto_venta", 6);
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("factura_cobro_estado")
+        .select("factura_id, pagada");
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+  ]);
 
-  if (!data) return [];
+  if (!invoiceData) return [];
+
+  // Build override map: factura_id → pagada
+  const estadoMap = new Map<number, boolean>();
+  for (const e of estadoData ?? []) {
+    estadoMap.set(e.factura_id as number, e.pagada as boolean);
+  }
 
   const today = new Date();
 
-  return data.map((r) => ({
-    id: r.id as number,
-    cliente: (r.denominacion_receptor ?? "—") as string,
-    cuit: (r.nro_doc_receptor ?? "") as string,
-    factura: formatFactura(
-      Number(r.tipo_comprobante) || 0,
-      Number(r.punto_venta) || 0,
-      Number(r.numero_desde) || 0,
-    ),
-    fechaEmision: r.fecha_emision as string,
-    vencimiento: (r.fecha_vencimiento_pago as string) ?? null,
-    monto: Number(r.imp_total) || 0,
-    diasPendientes: daysDiff(r.fecha_emision as string, today),
-    estado: r.estado as string,
-  }));
+  return invoiceData.map((r) => {
+    const dias = daysDiff(r.fecha_emision as string, today);
+    const pagadaManual = estadoMap.has(r.id as number) ? estadoMap.get(r.id as number)! : null;
+    // Auto-rule: no manual override + older than 30 days → consider collected
+    const pagada = pagadaManual !== null ? pagadaManual : dias > 30;
+
+    return {
+      id: r.id as number,
+      cliente: (r.denominacion_receptor ?? "—") as string,
+      cuit: (r.nro_doc_receptor ?? "") as string,
+      factura: formatFactura(
+        Number(r.tipo_comprobante) || 0,
+        Number(r.punto_venta) || 0,
+        Number(r.numero_desde) || 0,
+      ),
+      fechaEmision: r.fecha_emision as string,
+      vencimiento: (r.fecha_vencimiento_pago as string) ?? null,
+      monto: Number(r.imp_total) || 0,
+      diasPendientes: dias,
+      estado: r.estado as string,
+      pagada,
+      pagadaManual,
+    };
+  });
+}
+
+export async function toggleFacturaPagada(facturaId: number, pagada: boolean): Promise<void> {
+  const res = await supabase
+    .from("factura_cobro_estado")
+    .upsert(
+      {
+        factura_id:    facturaId,
+        pagada,
+        fecha_marcado: new Date().toISOString().slice(0, 10),
+        updated_at:    new Date().toISOString(),
+      },
+      { onConflict: "factura_id" },
+    );
+  if (res.error) throw res.error;
 }
 
 // ---------------------------------------------------------------------------
