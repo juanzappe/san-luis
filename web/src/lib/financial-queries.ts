@@ -213,12 +213,18 @@ export async function fetchInversiones(): Promise<InversionesData> {
     }),
   ]);
 
+  // Sanitize string values that may have been stored as "nan" by old ETL runs
+  const dbStr = (v: unknown): string => {
+    const s = String(v ?? "").trim();
+    return s === "nan" || s === "null" ? "" : s;
+  };
+
   const holdings: InversionRow[] = (holdData ?? []).map((r) => ({
     id: r.id as number,
-    ticker: (r.ticker ?? "") as string,
-    nombre: (r.nombre ?? "") as string,
-    tipo: (r.tipo ?? "") as string,
-    moneda: (r.moneda ?? "ARS") as string,
+    ticker: dbStr(r.ticker),
+    nombre: dbStr(r.nombre),
+    tipo: dbStr(r.tipo),
+    moneda: dbStr(r.moneda) || "ARS",
     cantidad: Number(r.cantidad) || 0,
     valuacionPrecio: Number(r.valuacion_precio) || 0,
     valuacionMonto: Number(r.valuacion_monto) || 0,
@@ -368,5 +374,48 @@ export async function fetchCuentasPagar(): Promise<CuentaPagarRow[]> {
     monto: Number(r.imp_total) || 0,
     diasPendientes: daysDiff(r.fecha_emision as string, today),
     estado: r.estado as string,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// 6. Saldos de cuentas financieras (RPC get_saldos_cuentas)
+// ---------------------------------------------------------------------------
+
+export interface SaldoCuenta {
+  cuenta: string;    // 'inviu' | 'santander' | 'provincia' | 'mercado_pago' | 'caja'
+  nombre: string;
+  saldoArs: number;
+  saldoUsd: number | null;
+  fechaDato: string | null;
+  hasData: boolean;
+}
+
+const CUENTA_NOMBRES: Record<string, string> = {
+  inviu:        "Inviu (Broker)",
+  santander:    "Banco Santander",
+  provincia:    "Banco Provincia",
+  mercado_pago: "Mercado Pago",
+  caja:         "Caja (Efectivo)",
+};
+
+export async function fetchSaldosCuentas(): Promise<SaldoCuenta[]> {
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_saldos_cuentas");
+    if (res.error) throw res.error;
+    return (res.data ?? []) as {
+      cuenta: string;
+      saldo_ars: number | null;
+      saldo_usd: number | null;
+      fecha_dato: string | null;
+    }[];
+  });
+
+  return rows.map((r) => ({
+    cuenta:    r.cuenta,
+    nombre:    CUENTA_NOMBRES[r.cuenta] ?? r.cuenta,
+    saldoArs:  Number(r.saldo_ars) || 0,
+    saldoUsd:  r.saldo_usd != null ? Number(r.saldo_usd) : null,
+    fechaDato: r.fecha_dato ?? null,
+    hasData:   r.fecha_dato != null,
   }));
 }

@@ -1,257 +1,188 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from "recharts";
+import { useEffect, useState } from "react";
 import {
   Landmark,
   Banknote,
   Wallet,
   CreditCard,
   TrendingUp,
+  Building2,
   Loader2,
   AlertCircle,
+  RefreshCw,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from "@/components/ui/table";
-import {
-  type TenenciasData,
-  fetchTenencias,
-  tenenciaTipoLabel,
+  type SaldoCuenta,
+  fetchSaldosCuentas,
   formatARS,
-  shortLabel,
 } from "@/lib/financial-queries";
-import type {
-  Formatter, ValueType, NameType,
-} from "recharts/types/component/DefaultTooltipContent";
 
-const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
+function formatUSD(n: number): string {
+  return n.toLocaleString("es-AR", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  });
+}
 
-const PIE_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#ef4444", "#06b6d4", "#ec4899", "#64748b"];
+function formatFecha(iso: string | null): string {
+  if (!iso) return "—";
+  const [y, m, d] = iso.slice(0, 10).split("-");
+  return `${d}/${m}/${y}`;
+}
 
-function KpiCard({ title, value, icon: Icon }: { title: string; value: number; icon: React.ElementType }) {
+const CUENTA_ICON: Record<string, React.ElementType> = {
+  inviu:        Wallet,
+  santander:    Landmark,
+  provincia:    Building2,
+  mercado_pago: CreditCard,
+  caja:         Banknote,
+};
+
+const CUENTA_COLOR: Record<string, string> = {
+  inviu:        "border-l-blue-500",
+  santander:    "border-l-red-500",
+  provincia:    "border-l-sky-500",
+  mercado_pago: "border-l-cyan-500",
+  caja:         "border-l-amber-500",
+};
+
+function CuentaCard({ c }: { c: SaldoCuenta }) {
+  const Icon = CUENTA_ICON[c.cuenta] ?? Landmark;
+  const colorClass = CUENTA_COLOR[c.cuenta] ?? "border-l-gray-400";
+
   return (
-    <Card>
+    <Card className={`border-l-4 ${colorClass}`}>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+        <CardTitle className="text-base font-semibold">{c.nombre}</CardTitle>
+        <Icon className="h-5 w-5 text-muted-foreground" />
       </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{formatARS(value)}</div>
+      <CardContent className="space-y-1">
+        {c.hasData ? (
+          <>
+            <p className="text-3xl font-bold">{formatARS(c.saldoArs)}</p>
+            {c.saldoUsd != null && c.saldoUsd > 0 && (
+              <p className="text-sm text-muted-foreground">{formatUSD(c.saldoUsd)} USD</p>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Último dato: {formatFecha(c.fechaDato)}
+            </p>
+          </>
+        ) : (
+          <div className="flex items-center gap-2 py-2">
+            <AlertCircle className="h-4 w-4 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Sin datos</p>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
 }
 
 export default function TenenciasPage() {
-  const [data, setData] = useState<TenenciasData | null>(null);
+  const [cuentas, setCuentas] = useState<SaldoCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchTenencias()
-      .then(setData)
+  const load = () => {
+    setLoading(true);
+    setError(null);
+    fetchSaldosCuentas()
+      .then(setCuentas)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
-  }, []);
+  };
 
-  // Aggregate current by tipo
-  const { byTipo, total } = useMemo(() => {
-    if (!data?.current.length) return { byTipo: [] as { tipo: string; label: string; saldo: number }[], total: 0 };
-    const map = new Map<string, number>();
-    let t = 0;
-    for (const r of data.current) {
-      const key = r.tipo;
-      map.set(key, (map.get(key) ?? 0) + r.saldoArs);
-      t += r.saldoArs;
-    }
-    const arr = Array.from(map.entries())
-      .map(([tipo, saldo]) => ({ tipo, label: tenenciaTipoLabel(tipo), saldo }))
-      .sort((a, b) => b.saldo - a.saldo);
-    return { byTipo: arr, total: t };
-  }, [data]);
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-3 text-muted-foreground">Cargando datos…</span>
+        <span className="ml-3 text-muted-foreground">Cargando saldos…</span>
       </div>
     );
   }
+
   if (error) {
     return (
-      <Card><CardContent className="flex items-center gap-3 py-8">
-        <AlertCircle className="h-5 w-5 text-red-500" /><p className="text-sm">{error}</p>
-      </CardContent></Card>
+      <Card>
+        <CardContent className="flex items-center gap-3 py-8">
+          <AlertCircle className="h-5 w-5 text-red-500" />
+          <div>
+            <p className="font-medium">Error al cargar saldos</p>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <button
+              onClick={load}
+              className="mt-3 inline-flex items-center gap-2 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reintentar
+            </button>
+          </div>
+        </CardContent>
+      </Card>
     );
   }
-  if (!data?.hasData) {
-    return (
-      <Card><CardContent className="py-8 text-center">
-        <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="mt-3 font-medium">Sin datos de tenencias</p>
-        <p className="text-sm text-muted-foreground">Ejecutá el ETL para importar saldos.</p>
-      </CardContent></Card>
-    );
-  }
 
-  // KPI values by tipo
-  const saldoBanco = byTipo.filter((r) => r.tipo === "cuenta_bancaria").reduce((s, r) => s + r.saldo, 0);
-  const saldoCaja = byTipo.filter((r) => r.tipo === "caja_pesos" || r.tipo === "caja_dolares").reduce((s, r) => s + r.saldo, 0);
-  const saldoMP = byTipo.filter((r) => r.tipo === "billetera_digital").reduce((s, r) => s + r.saldo, 0);
-  const saldoInv = byTipo.filter((r) => r.tipo === "broker" || r.tipo === "plazo_fijo" || r.tipo === "fci").reduce((s, r) => s + r.saldo, 0);
+  const total = cuentas.reduce((s, c) => s + (c.hasData ? c.saldoArs : 0), 0);
+  const totalUsd = cuentas.reduce((s, c) => s + (c.saldoUsd ?? 0), 0);
 
-  // Donut data
-  const donutData = byTipo.map((r) => ({ name: r.label, value: r.saldo }));
-
-  // History charts
-  const allTipos = Array.from(new Set(data.history.flatMap((h) => Object.keys(h.byTipo))));
-  const histChart = data.history.slice(-12).map((h) => {
-    const entry: Record<string, string | number> = { label: shortLabel(h.periodo) };
-    for (const t of allTipos) {
-      entry[tenenciaTipoLabel(t)] = h.byTipo[t] ?? 0;
-    }
-    entry.total = h.total;
-    return entry;
-  });
+  // Order: inviu, santander, provincia, mercado_pago, caja
+  const ORDER = ["inviu", "santander", "provincia", "mercado_pago", "caja"];
+  const sorted = [...cuentas].sort(
+    (a, b) => ORDER.indexOf(a.cuenta) - ORDER.indexOf(b.cuenta),
+  );
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Tenencias</h1>
-        <p className="text-muted-foreground">Foto patrimonial del día</p>
+        <p className="text-muted-foreground">Saldo actual por cuenta financiera</p>
       </div>
 
-      {/* KPIs */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
-        <KpiCard title="Tenencia Total" value={total} icon={TrendingUp} />
-        <KpiCard title="Efectivo en Caja" value={saldoCaja} icon={Banknote} />
-        <KpiCard title="Bancos" value={saldoBanco} icon={Landmark} />
-        <KpiCard title="Mercado Pago" value={saldoMP} icon={CreditCard} />
-        <KpiCard title="Inversiones" value={saldoInv} icon={Wallet} />
+      {/* Cuenta cards */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {sorted.map((c) => (
+          <CuentaCard key={c.cuenta} c={c} />
+        ))}
       </div>
 
-      {/* Charts */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Donut */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">Distribución por Fuente</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <PieChart>
-                <Pie
-                  data={donutData}
-                  cx="50%"
-                  cy="50%"
-                  innerRadius={60}
-                  outerRadius={110}
-                  dataKey="value"
-                  nameKey="name"
-                  label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`}
-                  labelLine={false}
-                  fontSize={11}
-                >
-                  {donutData.map((_, i) => (
-                    <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip formatter={arsTooltip} />
-              </PieChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Line: total evolution */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">Evolución de Tenencia Total</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <LineChart data={histChart}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Line type="monotone" dataKey="total" name="Total" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        {/* Stacked bars by tipo */}
-        <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">Evolución por Fuente</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={histChart}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Legend />
-                {allTipos.map((t, i) => (
-                  <Bar
-                    key={t}
-                    dataKey={tenenciaTipoLabel(t)}
-                    stackId="a"
-                    fill={PIE_COLORS[i % PIE_COLORS.length]}
-                    radius={i === allTipos.length - 1 ? [4, 4, 0, 0] : undefined}
-                  />
-                ))}
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Detail table */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Detalle de Tenencias</CardTitle></CardHeader>
-        <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Fuente</TableHead>
-                <TableHead>Cuenta</TableHead>
-                <TableHead className="text-right">Saldo</TableHead>
-                <TableHead className="text-right">% del Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.current.sort((a, b) => b.saldoArs - a.saldoArs).map((r, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium">{tenenciaTipoLabel(r.tipo)}</TableCell>
-                  <TableCell>{r.denominacion || "—"}</TableCell>
-                  <TableCell className="text-right">{formatARS(r.saldoArs)}</TableCell>
-                  <TableCell className="text-right">
-                    {total > 0 ? `${((r.saldoArs / total) * 100).toFixed(1)}%` : "—"}
-                  </TableCell>
-                </TableRow>
-              ))}
-              <TableRow className="border-t-2 font-bold">
-                <TableCell>Total</TableCell>
-                <TableCell />
-                <TableCell className="text-right">{formatARS(total)}</TableCell>
-                <TableCell className="text-right">100%</TableCell>
-              </TableRow>
-            </TableBody>
-          </Table>
+      {/* Total consolidado */}
+      <Card className="border-2">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+          <CardTitle className="text-base font-semibold">Total Consolidado</CardTitle>
+          <TrendingUp className="h-5 w-5 text-muted-foreground" />
+        </CardHeader>
+        <CardContent className="space-y-1">
+          <p className="text-3xl font-bold">{formatARS(total)}</p>
+          {totalUsd > 0 && (
+            <p className="text-sm text-muted-foreground">
+              Incluye {formatUSD(totalUsd)} USD en cartera de inversiones
+            </p>
+          )}
+          <div className="mt-3 space-y-1">
+            {sorted.filter((c) => c.hasData).map((c) => (
+              <div key={c.cuenta} className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">{c.nombre}</span>
+                <span className="font-medium">
+                  {formatARS(c.saldoArs)}
+                  {total > 0 && (
+                    <span className="ml-2 text-xs text-muted-foreground">
+                      {((c.saldoArs / total) * 100).toFixed(1)}%
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
     </div>
