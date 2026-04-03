@@ -46,8 +46,10 @@ const RECPAM_HISTORICO: Record<string, number> = {
 };
 // Ratio Posición Monetaria Neta vs Ingresos (derivado: 0.218 / 0.10, donde 0.10 = inflación mensual promedio 2024)
 const RATIO_PMN = 2.18;
-// Fallback cuando no hay datos IPC en tabla para el período (mantiene comportamiento previo)
-const RATIO_RECPAM_FALLBACK = 0.218;
+// Fallback de inflación mensual cuando no hay dato IPC cargado para el período.
+// Se usa la última inflación conocida; si el mapa está vacío se usa este valor fijo.
+// Feb 2026 = 2.9 % — actualizar cuando se cargue un dato más reciente.
+const INFLACION_FALLBACK_PCT = 0.029;
 
 // Amortizaciones anuales de estados contables auditados
 const AMORTIZACIONES_ANUAL: Record<string, number> = {
@@ -297,10 +299,18 @@ export default function EstadoResultadosPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Latest IPC value available, or the hardcoded fallback — used when a period has no IPC data
+  const ipcFallback = useMemo(
+    () =>
+      ipcMap.size > 0
+        ? ipcMap.get([...ipcMap.keys()].sort().at(-1)!)!
+        : INFLACION_FALLBACK_PCT,
+    [ipcMap],
+  );
+
   // Adjust for inflation + compute RECPAM, Amortizaciones, EBITDA
   const data: ExtendedResultadoRow[] = useMemo(
-    () =>
-      raw.map((r) => {
+    () => raw.map((r) => {
         const year = r.periodo.split("-")[0];
         const ing = adjust(r.ingresos, r.periodo);
         const costOp = adjust(r.costosOperativos, r.periodo);
@@ -311,9 +321,9 @@ export default function EstadoResultadosPage() {
         const margenBruto = ing - costOp - sueldos - cargasSoc;
 
         // RECPAM: datos auditados para años históricos; estimado para el resto.
-        // Estimación: RECPAM = ingresos × RATIO_PMN × inflación_mensual_real
+        // Estimación: RECPAM = ingresos × RATIO_PMN × inflación_mensual
         // donde RATIO_PMN ≈ 2.18 (posición monetaria neta / ingresos, derivado de 0.218 / 0.10)
-        // Si no hay dato IPC en tabla, fallback al ratio fijo 0.218 (comportamiento previo).
+        // Fallback: última inflación conocida (ipcFallback), no ratio fijo.
         let recpamNominal: number;
         let recpamEstimado: boolean;
         let recpamConIpcReal: boolean;
@@ -327,7 +337,9 @@ export default function EstadoResultadosPage() {
             recpamNominal = r.ingresos * RATIO_PMN * inflacionDecimal;
             recpamConIpcReal = true;
           } else {
-            recpamNominal = r.ingresos * RATIO_RECPAM_FALLBACK;
+            // Usar última inflación conocida en lugar del ratio fijo 21.8%
+            // (que estaba calibrado para ~10 % mensual de 2024 y sobrestima 7x con inflación del 3 %)
+            recpamNominal = r.ingresos * RATIO_PMN * ipcFallback;
             recpamConIpcReal = false;
           }
           recpamEstimado = true;
@@ -366,7 +378,7 @@ export default function EstadoResultadosPage() {
           margenPct,
         };
       }),
-    [raw, adjust, ipcMap],
+    [raw, adjust, ipcMap, ipcFallback],
   );
 
   // Available years from data
@@ -558,7 +570,7 @@ export default function EstadoResultadosPage() {
                   if (!r.recpamEstimado) return null;
                   return r.recpamConIpcReal
                     ? "Estimado con inflación IPC real (ingresos × 2.18 × IPC mensual)"
-                    : `Estimado con ratio fijo ${(RATIO_RECPAM_FALLBACK * 100).toFixed(1)}% de ingresos (sin dato IPC)`;
+                    : `Estimado con última inflación conocida (ingresos × 2.18 × ${(ipcFallback * 100).toFixed(1)}%)`;
                 })}
               />
               <PnlLine
