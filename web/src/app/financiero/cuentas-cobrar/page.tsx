@@ -20,9 +20,12 @@ import {
   AlertTriangle,
   Loader2,
   AlertCircle,
+  Search,
+  X,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
@@ -68,6 +71,21 @@ export default function CuentasCobrarPage() {
   const [error, setError] = useState<string | null>(null);
   // Track in-flight checkbox saves to show a spinner per row
   const [saving, setSaving] = useState<Set<number>>(new Set());
+
+  // Filters (applied in the table only; KPIs/charts are always from full pendientes)
+  const [searchQuery, setSearchQuery]   = useState("");
+  const [statusFilter, setStatusFilter] = useState<"todos" | "pendiente" | "pagado">("todos");
+  const [fechaDesde, setFechaDesde]     = useState("");
+  const [fechaHasta, setFechaHasta]     = useState("");
+
+  const hasActiveFilters = searchQuery !== "" || statusFilter !== "todos" || fechaDesde !== "" || fechaHasta !== "";
+
+  function clearFilters() {
+    setSearchQuery("");
+    setStatusFilter("todos");
+    setFechaDesde("");
+    setFechaHasta("");
+  }
 
   useEffect(() => {
     fetchCuentasCobrar()
@@ -133,6 +151,20 @@ export default function CuentasCobrarPage() {
       return b.diasPendientes - a.diasPendientes;
     });
   }, [data]);
+
+  // Filter bar — applied on top of sorted (AND logic)
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return sorted.filter((r) => {
+      if (q && !r.cliente.toLowerCase().includes(q) && !r.cuit.toLowerCase().includes(q)) return false;
+      if (statusFilter === "pendiente" && r.pagada)  return false;
+      if (statusFilter === "pagado"    && !r.pagada) return false;
+      // fechaEmision is YYYY-MM-DD — lexicographic comparison works correctly
+      if (fechaDesde && r.fechaEmision < fechaDesde) return false;
+      if (fechaHasta && r.fechaEmision > fechaHasta) return false;
+      return true;
+    });
+  }, [sorted, searchQuery, statusFilter, fechaDesde, fechaHasta]);
 
   if (loading) {
     return (
@@ -235,11 +267,78 @@ export default function CuentasCobrarPage() {
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Detalle de Facturas</CardTitle>
             <span className="text-xs text-muted-foreground">
-              {kpis.qty} pendientes · {data.length - kpis.qty} cobradas
+              {filtered.length !== sorted.length
+                ? `${filtered.length} de ${sorted.length} facturas`
+                : `${kpis.qty} pendientes · ${data.length - kpis.qty} cobradas`}
             </span>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          {/* Filter bar */}
+          <div className="flex flex-wrap items-end gap-3">
+            {/* Text search */}
+            <div className="relative min-w-[200px] flex-1">
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Buscar cliente o CUIT…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8"
+              />
+            </div>
+
+            {/* Status selector */}
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {(["todos", "pendiente", "pagado"] as const).map((opt) => (
+                <button
+                  key={opt}
+                  onClick={() => setStatusFilter(opt)}
+                  className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    statusFilter === opt
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {opt === "todos" ? "Todos" : opt === "pendiente" ? "Pendiente" : "Pagado"}
+                </button>
+              ))}
+            </div>
+
+            {/* Date range */}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5">
+                <span className="whitespace-nowrap text-xs text-muted-foreground">Desde</span>
+                <Input
+                  type="date"
+                  value={fechaDesde}
+                  onChange={(e) => setFechaDesde(e.target.value)}
+                  className="w-36"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="whitespace-nowrap text-xs text-muted-foreground">Hasta</span>
+                <Input
+                  type="date"
+                  value={fechaHasta}
+                  onChange={(e) => setFechaHasta(e.target.value)}
+                  className="w-36"
+                />
+              </div>
+            </div>
+
+            {/* Clear button — shown only when a filter is active */}
+            {hasActiveFilters && (
+              <button
+                onClick={clearFilters}
+                className="flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+                Limpiar filtros
+              </button>
+            )}
+          </div>
+
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -256,7 +355,14 @@ export default function CuentasCobrarPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sorted.map((r) => (
+                {filtered.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={9} className="py-8 text-center text-sm text-muted-foreground">
+                      No hay facturas que coincidan con los filtros aplicados.
+                    </TableCell>
+                  </TableRow>
+                )}
+                {filtered.map((r) => (
                   <TableRow
                     key={r.id}
                     className={r.pagada ? "opacity-40" : ""}
@@ -291,7 +397,8 @@ export default function CuentasCobrarPage() {
               </TableBody>
             </Table>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
+          </div>
+          <p className="text-xs text-muted-foreground">
             Facturas marcadas como cobradas se muestran con opacidad reducida y no se contabilizan en los KPIs.
             Las mayores de 30 días sin registro manual se consideran cobradas automáticamente.
           </p>

@@ -82,9 +82,17 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
         if "valuaci" in cell0_lower:
             fecha_valuacion = parse_fecha_argentina(cell1)
         elif "mep" in cell0_lower:
-            tc_mep = safe_float(cell1) or 0.0
+            # TC values are formatted as plain floats ("1427.4"), not Argentine format.
+            # Using safe_float would strip the dot as a thousands separator → wrong value.
+            try:
+                tc_mep = float(cell1) if cell1 else 0.0
+            except (ValueError, TypeError):
+                tc_mep = 0.0
         elif "ccl" in cell0_lower:
-            tc_ccl = safe_float(cell1) or 0.0
+            try:
+                tc_ccl = float(cell1) if cell1 else 0.0
+            except (ValueError, TypeError):
+                tc_ccl = 0.0
 
     if tc_mep <= 0:
         logger.warning("  TC MEP no encontrado en metadata — los montos USD no se convertirán correctamente")
@@ -121,6 +129,10 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
                 current_tipo = "fci"
             else:
                 current_tipo = "otro"
+            continue
+
+        # Skip rows before the first "Tipo de Activo:" section (metadata header rows)
+        if current_tipo is None:
             continue
 
         # Saltar headers y subtotales

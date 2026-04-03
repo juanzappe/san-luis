@@ -24,7 +24,9 @@ import { InflationToggle, useInflation } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
+  type ResultadoRow,
   fetchEgresos,
+  fetchResultado,
   formatARS,
   formatPct,
   pctDelta,
@@ -77,7 +79,7 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
         key: r.periodo,
         label: periodoLabel(r.periodo),
         categorias: r.categorias,
-        sueldos: r.sueldos,
+        sueldos: r.sueldosNeto + r.cargasSociales,
         comerciales: r.comerciales,
         ganancias: r.ganancias,
         financieros: r.financieros,
@@ -103,7 +105,7 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
     for (const [cat, monto] of Object.entries(r.categorias)) {
       cur.categorias[cat] = (cur.categorias[cat] ?? 0) + monto;
     }
-    cur.sueldos += r.sueldos;
+    cur.sueldos += r.sueldosNeto + r.cargasSociales;
     cur.comerciales += r.comerciales;
     cur.ganancias += r.ganancias;
     cur.financieros += r.financieros;
@@ -157,17 +159,29 @@ function KpiCard({
 export default function EgresosPage() {
   const { adjust } = useInflation();
   const [raw, setRaw] = useState<EgresoRow[]>([]);
+  const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
-    fetchEgresos()
-      .then(setRaw)
+    Promise.all([fetchEgresos(), fetchResultado()])
+      .then(([egresos, resultado]) => {
+        setRaw(egresos);
+        setRawResultado(resultado);
+      })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
+
+  // Map ResultadoRow by periodo — provides ganancias calculated with the same
+  // formula as estado-resultados (TASA_GANANCIAS × resultadoAntesGanancias),
+  // replacing the RPC field which only reflects actual AFIP payments (often zero).
+  const resultadoMap = useMemo(
+    () => new Map(rawResultado.map((r) => [r.periodo, r])),
+    [rawResultado],
+  );
 
   // Discover all category names sorted by total descending
   const allCategories = useMemo(() => {
@@ -216,21 +230,28 @@ export default function EgresosPage() {
     );
   }
 
-  // Apply inflation adjustment
+  // Apply inflation adjustment.
+  // ganancias: use ResultadoRow.ganancias (= resultadoAntesGanancias × TASA_GANANCIAS),
+  //   same calculation as estado-resultados — the RPC field reflects actual AFIP payments
+  //   which are often zero for recent months.
+  // sueldosNeto + cargasSociales: adjusted separately so aggregateEgresos can use them.
   const data: EgresoRow[] = raw.map((r) => {
     const adjCats: Record<string, number> = {};
     for (const [cat, monto] of Object.entries(r.categorias)) {
       adjCats[cat] = adjust(monto, r.periodo);
     }
+    const resultadoGanancias = resultadoMap.get(r.periodo)?.ganancias ?? 0;
     return {
       ...r,
       operativos: adjust(r.operativos, r.periodo),
       comerciales: adjust(r.comerciales, r.periodo),
       financieros: adjust(r.financieros, r.periodo),
-      ganancias: adjust(r.ganancias, r.periodo),
+      ganancias: adjust(resultadoGanancias, r.periodo),
       total: adjust(r.total, r.periodo),
       categorias: adjCats,
       sueldos: adjust(r.sueldos, r.periodo),
+      sueldosNeto: adjust(r.sueldosNeto, r.periodo),
+      cargasSociales: adjust(r.cargasSociales, r.periodo),
       impuestos: adjust(r.impuestos, r.periodo),
     };
   });
@@ -251,7 +272,7 @@ export default function EgresosPage() {
   const chartData = data.slice(-12).map((r) => ({
     label: shortLabel(r.periodo),
     "Costos Operativos": costosOp(r),
-    "Sueldos": r.sueldos,
+    "Sueldos": r.sueldosNeto + r.cargasSociales,
     "Impuestos": r.comerciales,
     "Imp. Ganancias": r.ganancias,
     "Financieros": r.financieros,
@@ -284,9 +305,9 @@ export default function EgresosPage() {
           color={OPERATIVOS_COLOR}
         />
         <KpiCard
-          title="Sueldos"
-          value={last.sueldos}
-          delta={prev ? pctDelta(last.sueldos, prev.sueldos) : null}
+          title="Sueldos y CS"
+          value={last.sueldosNeto + last.cargasSociales}
+          delta={prev ? pctDelta(last.sueldosNeto + last.cargasSociales, prev.sueldosNeto + prev.cargasSociales) : null}
           color={SUELDOS_COLOR}
         />
         <KpiCard
@@ -361,7 +382,7 @@ export default function EgresosPage() {
                   {allCategories.map((cat) => (
                     <TableHead key={cat} className="text-right">{cat}</TableHead>
                   ))}
-                  <TableHead className="text-right">Sueldos</TableHead>
+                  <TableHead className="text-right">Sueldos y CS</TableHead>
                   <TableHead className="text-right">Impuestos</TableHead>
                   <TableHead className="text-right">Imp. Ganancias</TableHead>
                   <TableHead className="text-right">Financieros</TableHead>
