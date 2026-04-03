@@ -326,7 +326,8 @@ export async function fetchCuentasCobrar(): Promise<CuentaCobrarRow[]> {
     fetchWithRetry(async () => {
       const res = await supabase
         .from("factura_cobro_estado")
-        .select("factura_id, pagada");
+        .select("factura_id, pagada")
+        .eq("tipo", "cobrar");
       if (res.error) throw res.error;
       return res.data;
     }),
@@ -368,17 +369,22 @@ export async function fetchCuentasCobrar(): Promise<CuentaCobrarRow[]> {
   });
 }
 
-export async function toggleFacturaPagada(facturaId: number, pagada: boolean): Promise<void> {
+export async function toggleFacturaPagada(
+  facturaId: number,
+  pagada: boolean,
+  tipo: "cobrar" | "pagar" = "cobrar",
+): Promise<void> {
   const res = await supabase
     .from("factura_cobro_estado")
     .upsert(
       {
         factura_id:    facturaId,
+        tipo,
         pagada,
         fecha_marcado: new Date().toISOString().slice(0, 10),
         updated_at:    new Date().toISOString(),
       },
-      { onConflict: "factura_id" },
+      { onConflict: "factura_id,tipo" },
     );
   if (res.error) throw res.error;
 }
@@ -397,37 +403,64 @@ export interface CuentaPagarRow {
   monto: number;
   diasPendientes: number;
   estado: string;
+  /** Effective paid status: manual override if set, else auto-rule (> 30 days → paid) */
+  pagada: boolean;
+  /** null = no manual record; boolean = explicit user override */
+  pagadaManual: boolean | null;
 }
 
 export async function fetchCuentasPagar(): Promise<CuentaPagarRow[]> {
-  const data = await fetchWithRetry(async () => {
-    const res = await supabase
-      .from("factura_recibida")
-      .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_emisor, nro_doc_emisor, tipo_comprobante, punto_venta, numero_desde, estado")
-      .in("estado", ["pendiente", "parcial"]);
-    if (res.error) throw res.error;
-    return res.data;
-  });
+  const [invoiceData, estadoData] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("factura_recibida")
+        .select("id, fecha_emision, fecha_vencimiento_pago, imp_total, denominacion_emisor, nro_doc_emisor, tipo_comprobante, punto_venta, numero_desde, estado")
+        .in("estado", ["pendiente", "parcial"]);
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+    fetchWithRetry(async () => {
+      const res = await supabase
+        .from("factura_cobro_estado")
+        .select("factura_id, pagada")
+        .eq("tipo", "pagar");
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+  ]);
 
-  if (!data) return [];
+  if (!invoiceData) return [];
+
+  const estadoMap = new Map<number, boolean>();
+  for (const e of estadoData ?? []) {
+    estadoMap.set(e.factura_id as number, e.pagada as boolean);
+  }
 
   const today = new Date();
 
-  return data.map((r) => ({
-    id: r.id as number,
-    proveedor: (r.denominacion_emisor ?? "—") as string,
-    cuit: (r.nro_doc_emisor ?? "") as string,
-    factura: formatFactura(
-      Number(r.tipo_comprobante) || 0,
-      Number(r.punto_venta) || 0,
-      Number(r.numero_desde) || 0,
-    ),
-    fechaEmision: r.fecha_emision as string,
-    vencimiento: (r.fecha_vencimiento_pago as string) ?? null,
-    monto: Number(r.imp_total) || 0,
-    diasPendientes: daysDiff(r.fecha_emision as string, today),
-    estado: r.estado as string,
-  }));
+  return invoiceData.map((r) => {
+    const dias = daysDiff(r.fecha_emision as string, today);
+    const pagadaManual = estadoMap.has(r.id as number) ? estadoMap.get(r.id as number)! : null;
+    const pagada = pagadaManual !== null ? pagadaManual : dias > 30;
+
+    return {
+      id: r.id as number,
+      proveedor: (r.denominacion_emisor ?? "—") as string,
+      cuit: (r.nro_doc_emisor ?? "") as string,
+      factura: formatFactura(
+        Number(r.tipo_comprobante) || 0,
+        Number(r.punto_venta) || 0,
+        Number(r.numero_desde) || 0,
+      ),
+      fechaEmision: r.fecha_emision as string,
+      vencimiento: (r.fecha_vencimiento_pago as string) ?? null,
+      monto: Number(r.imp_total) || 0,
+      diasPendientes: dias,
+      estado: r.estado as string,
+      pagada,
+      pagadaManual,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
