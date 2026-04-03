@@ -27,6 +27,8 @@ import {
   CreditCard,
   AlertCircle,
   RefreshCw,
+  ArrowDownCircle,
+  ArrowUpCircle,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +51,10 @@ import {
 } from "@/lib/queries";
 import { useInflation, InflationToggle } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
+import {
+  type FlujoDeFondosRow,
+  fetchFlujoDeFondos,
+} from "@/lib/financial-queries";
 
 // ---------------------------------------------------------------------------
 // Color palette
@@ -75,12 +81,14 @@ function KpiCard({
   delta,
   icon: Icon,
   invertDelta,
+  valueClassName,
 }: {
   title: string;
   value: number;
   delta: number | null;
   icon: React.ElementType;
   invertDelta?: boolean;
+  valueClassName?: string;
 }) {
   const deltaPositive = delta !== null && (invertDelta ? delta < 0 : delta > 0);
   const deltaNegative = delta !== null && (invertDelta ? delta > 0 : delta < 0);
@@ -92,7 +100,7 @@ function KpiCard({
         <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{formatARS(value)}</div>
+        <div className={`text-2xl font-bold ${valueClassName ?? ""}`}>{formatARS(value)}</div>
         {delta !== null ? (
           <p
             className={`text-xs ${
@@ -203,6 +211,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [flujoRaw, setFlujoRaw] = useState<FlujoDeFondosRow[]>([]);
   const { adjust } = useInflation();
 
   const loadData = () => {
@@ -222,6 +231,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadData();
+    fetchFlujoDeFondos().then(setFlujoRaw).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -293,6 +303,25 @@ export default function Dashboard() {
       },
     };
   }, [data, adjustedMonthly, activePeriodo]);
+
+  // Flujo de Fondos — inflation-adjusted rows and KPIs for selected month
+  const { flujoLast, flujoПrev } = useMemo(() => {
+    if (flujoRaw.length === 0) return { flujoLast: null, flujoПrev: null };
+
+    let acum = 0;
+    const adjusted = flujoRaw.map((r) => {
+      const tc = adjust(r.totalCobros, r.periodo);
+      const tp = adjust(r.totalPagos, r.periodo);
+      const fn = tc - tp;
+      acum += fn;
+      return { periodo: r.periodo, totalCobros: tc, totalPagos: tp, flujoNeto: fn, acumulado: acum };
+    });
+
+    const idx = adjusted.findIndex((r) => r.periodo === activePeriodo);
+    const last = idx >= 0 ? adjusted[idx] : adjusted[adjusted.length - 1];
+    const prev = idx >= 1 ? adjusted[idx - 1] : idx === -1 && adjusted.length >= 2 ? adjusted[adjusted.length - 2] : null;
+    return { flujoLast: last, flujoПrev: prev };
+  }, [flujoRaw, activePeriodo, adjust]);
 
   // --- Loading / retrying state ---
   if (loading) {
@@ -402,6 +431,33 @@ export default function Dashboard() {
           delta={kpis.deltaResultado}
           icon={TrendingUp}
         />
+      </div>
+
+      {/* Flujo de Fondos KPIs */}
+      <div>
+        <p className="mb-3 text-sm font-medium text-muted-foreground">Flujo de Fondos</p>
+        <div className="grid gap-4 md:grid-cols-3">
+          <KpiCard
+            title="Total Cobrado"
+            value={flujoLast?.totalCobros ?? 0}
+            delta={flujoLast && flujoПrev ? pctDelta(flujoLast.totalCobros, flujoПrev.totalCobros) : null}
+            icon={ArrowDownCircle}
+          />
+          <KpiCard
+            title="Total Pagado"
+            value={flujoLast?.totalPagos ?? 0}
+            delta={flujoLast && flujoПrev ? pctDelta(flujoLast.totalPagos, flujoПrev.totalPagos) : null}
+            icon={ArrowUpCircle}
+            invertDelta
+          />
+          <KpiCard
+            title="Flujo Neto"
+            value={flujoLast?.flujoNeto ?? 0}
+            delta={flujoLast && flujoПrev ? pctDelta(flujoLast.flujoNeto, flujoПrev.flujoNeto) : null}
+            icon={TrendingUp}
+            valueClassName={flujoLast ? (flujoLast.flujoNeto >= 0 ? "text-green-600" : "text-red-600") : undefined}
+          />
+        </div>
       </div>
 
       {/* Charts — 2x2 grid */}
