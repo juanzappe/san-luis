@@ -156,13 +156,59 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Ganancias — estimated at effective tax rate
+// Ganancias — estimated at effective tax rate + RECPAM-adjusted base
 // ---------------------------------------------------------------------------
 
 // Tasa efectiva Imp. Ganancias — promedio 2023-2024 de estados contables auditados
 const TASA_GANANCIAS = 0.367;
 
 export { TASA_GANANCIAS };
+
+// RECPAM anual auditado (positivo = pérdida por inflación, negativo = ganancia)
+export const RECPAM_HISTORICO: Record<string, number> = {
+  "2024": 364599000,
+  "2023": 496052700,
+  "2022": -61205150,
+  "2021": -69080530,
+};
+
+// Ratio Posición Monetaria Neta / Ingresos (derivado: 0.218 / 0.10 inflación media 2024)
+export const RATIO_PMN = 2.18;
+
+// Inflación mensual de respaldo cuando no hay dato IPC cargado.
+// Feb 2026 = 2.9% — actualizar cuando se cargue un dato más reciente.
+export const INFLACION_FALLBACK_PCT = 0.029;
+
+/**
+ * Devuelve el valor de inflación mensual de respaldo:
+ * la entrada más reciente en ipcMap, o INFLACION_FALLBACK_PCT si el mapa está vacío.
+ */
+export function computeIpcFallback(ipcMap: Map<string, number>): number {
+  return ipcMap.size > 0
+    ? ipcMap.get([...ipcMap.keys()].sort().at(-1)!)!
+    : INFLACION_FALLBACK_PCT;
+}
+
+/**
+ * Devuelve las ganancias NOMINALES (sin ajuste por inflación) para un período,
+ * usando la misma lógica que estado-resultados/page.tsx:
+ *   TASA_GANANCIAS × (resultadoAntesGanancias − RECPAM)
+ *
+ * El llamador debe aplicar adjust() para obtener el valor en pesos constantes.
+ * Fuente única de verdad para que Egresos y ER coincidan exactamente.
+ */
+export function computeGananciasNominal(
+  r: ResultadoRow,
+  ipcMap: Map<string, number>,
+  ipcFallback: number,
+): number {
+  const year = r.periodo.split("-")[0];
+  const recpamNominal = year in RECPAM_HISTORICO
+    ? RECPAM_HISTORICO[year] / 12
+    : r.ingresos * RATIO_PMN * (ipcMap.get(r.periodo) ?? ipcFallback);
+  const resAntesGan = r.resultadoAntesGanancias - recpamNominal;
+  return resAntesGan > 0 ? resAntesGan * TASA_GANANCIAS : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Estado de Resultados — full P&L structure

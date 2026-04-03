@@ -28,6 +28,10 @@ import {
   periodoLabel,
   shortLabel,
   TASA_GANANCIAS,
+  RECPAM_HISTORICO,
+  RATIO_PMN,
+  INFLACION_FALLBACK_PCT,
+  computeIpcFallback,
 } from "@/lib/economic-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
@@ -36,20 +40,8 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-// Datos de estados contables auditados (hardcoded)
-// RECPAM puro — positive = pérdida por inflación (se resta), negative = ganancia (se suma)
-const RECPAM_HISTORICO: Record<string, number> = {
-  "2024": 364599000,
-  "2023": 496052700,
-  "2022": -61205150,
-  "2021": -69080530,
-};
-// Ratio Posición Monetaria Neta vs Ingresos (derivado: 0.218 / 0.10, donde 0.10 = inflación mensual promedio 2024)
-const RATIO_PMN = 2.18;
-// Fallback de inflación mensual cuando no hay dato IPC cargado para el período.
-// Se usa la última inflación conocida; si el mapa está vacío se usa este valor fijo.
-// Feb 2026 = 2.9 % — actualizar cuando se cargue un dato más reciente.
-const INFLACION_FALLBACK_PCT = 0.029;
+// RECPAM_HISTORICO, RATIO_PMN, INFLACION_FALLBACK_PCT importados de economic-queries
+// (fuente única compartida con egresos/page.tsx)
 
 // Amortizaciones anuales de estados contables auditados
 const AMORTIZACIONES_ANUAL: Record<string, number> = {
@@ -300,13 +292,7 @@ export default function EstadoResultadosPage() {
   }, []);
 
   // Latest IPC value available, or the hardcoded fallback — used when a period has no IPC data
-  const ipcFallback = useMemo(
-    () =>
-      ipcMap.size > 0
-        ? ipcMap.get([...ipcMap.keys()].sort().at(-1)!)!
-        : INFLACION_FALLBACK_PCT,
-    [ipcMap],
-  );
+  const ipcFallback = useMemo(() => computeIpcFallback(ipcMap), [ipcMap]);
 
   // Adjust for inflation + compute RECPAM, Amortizaciones, EBITDA
   const data: ExtendedResultadoRow[] = useMemo(
