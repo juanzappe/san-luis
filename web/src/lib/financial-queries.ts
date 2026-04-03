@@ -167,6 +167,7 @@ export interface InversionRow {
   tipo: string;
   moneda: string;
   cantidad: number;
+  precioCompra: number;
   valuacionPrecio: number;
   valuacionMonto: number;
   valuacionUsd: number;
@@ -200,7 +201,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     fetchWithRetry(async () => {
       const res = await supabase
         .from("inversion")
-        .select("id, ticker, nombre, tipo, moneda, cantidad, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct, fecha_valuacion")
+        .select("id, ticker, nombre, tipo, moneda, cantidad, precio_compra, valuacion_precio, valuacion_monto, valuacion_usd, costo_total, resultado, variacion_pct, fecha_valuacion")
         .eq("estado", "vigente")
         .order("fecha_valuacion", { ascending: false });
       if (res.error) throw res.error;
@@ -232,6 +233,7 @@ export async function fetchInversiones(): Promise<InversionesData> {
     tipo: dbStr(r.tipo),
     moneda: dbStr(r.moneda) || "ARS",
     cantidad: Number(r.cantidad) || 0,
+    precioCompra: Number(r.precio_compra) || 0,
     valuacionPrecio: Number(r.valuacion_precio) || 0,
     valuacionMonto: Number(r.valuacion_monto) || 0,
     valuacionUsd: Number(r.valuacion_usd) || 0,
