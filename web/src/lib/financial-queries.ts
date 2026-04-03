@@ -213,12 +213,18 @@ export async function fetchInversiones(): Promise<InversionesData> {
     }),
   ]);
 
+  // Sanitize string values that may have been stored as "nan" by old ETL runs
+  const dbStr = (v: unknown): string => {
+    const s = String(v ?? "").trim();
+    return s === "nan" || s === "null" ? "" : s;
+  };
+
   const holdings: InversionRow[] = (holdData ?? []).map((r) => ({
     id: r.id as number,
-    ticker: (r.ticker ?? "") as string,
-    nombre: (r.nombre ?? "") as string,
-    tipo: (r.tipo ?? "") as string,
-    moneda: (r.moneda ?? "ARS") as string,
+    ticker: dbStr(r.ticker),
+    nombre: dbStr(r.nombre),
+    tipo: dbStr(r.tipo),
+    moneda: dbStr(r.moneda) || "ARS",
     cantidad: Number(r.cantidad) || 0,
     valuacionPrecio: Number(r.valuacion_precio) || 0,
     valuacionMonto: Number(r.valuacion_monto) || 0,
