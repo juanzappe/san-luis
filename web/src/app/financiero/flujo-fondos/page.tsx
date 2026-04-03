@@ -28,6 +28,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { MonthSelector } from "@/components/month-selector";
 import {
   type FlujoDeFondosRow,
   fetchFlujoDeFondos,
@@ -55,6 +56,74 @@ const COLORS = {
   comisiones: "#64748b",
   neto: "#3b82f6",
 };
+
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const GRANULARITY_LABELS: Record<Granularity, string> = {
+  mensual: "Mensual",
+  trimestral: "Trimestral",
+  anual: "Anual",
+};
+
+const QUARTER_LABELS: Record<string, string> = {
+  "01": "Q1", "02": "Q1", "03": "Q1",
+  "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3",
+  "10": "Q4", "11": "Q4", "12": "Q4",
+};
+
+interface AggregatedFlujo {
+  key: string;
+  label: string;
+  cobrosEfectivo: number;
+  cobrosBanco: number;
+  cobrosMP: number;
+  totalCobros: number;
+  pagosProveedores: number;
+  sueldos: number;
+  impuestos: number;
+  comisionesBancarias: number;
+  totalPagos: number;
+  flujoNeto: number;
+  acumulado: number;
+}
+
+function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granularity): AggregatedFlujo[] {
+  if (granularity === "mensual") {
+    return [...data]
+      .map((r) => ({ ...r, key: r.periodo, label: periodoLabel(r.periodo) }))
+      .sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  const buckets = new Map<string, AggregatedFlujo>();
+  // data is sorted ascending — iterate in order so last acumulado per bucket is correct
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
+    const cur = buckets.get(bucketKey) ?? {
+      key: bucketKey,
+      label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
+      cobrosEfectivo: 0, cobrosBanco: 0, cobrosMP: 0, totalCobros: 0,
+      pagosProveedores: 0, sueldos: 0, impuestos: 0, comisionesBancarias: 0,
+      totalPagos: 0, flujoNeto: 0,
+      acumulado: 0,
+    };
+    cur.cobrosEfectivo += r.cobrosEfectivo;
+    cur.cobrosBanco += r.cobrosBanco;
+    cur.cobrosMP += r.cobrosMP;
+    cur.totalCobros += r.totalCobros;
+    cur.pagosProveedores += r.pagosProveedores;
+    cur.sueldos += r.sueldos;
+    cur.impuestos += r.impuestos;
+    cur.comisionesBancarias += r.comisionesBancarias;
+    cur.totalPagos += r.totalPagos;
+    cur.flujoNeto += r.flujoNeto;
+    cur.acumulado = r.acumulado; // last row in bucket = end-of-period cumulative
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
+}
 
 function KpiCard({
   title, value, delta, icon: Icon, invertDelta,
@@ -88,6 +157,8 @@ export default function FlujoDeFondosPage() {
   const [raw, setRaw] = useState<FlujoDeFondosRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
     fetchFlujoDeFondos()
@@ -143,8 +214,11 @@ export default function FlujoDeFondosPage() {
     };
   });
 
-  const last = data[data.length - 1];
-  const prev = data.length >= 2 ? data[data.length - 2] : null;
+  const periodos = data.map((r) => r.periodo);
+  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
+  const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
+  const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
+  const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
   const acum12 = data.slice(-12).reduce((s, r) => s + r.flujoNeto, 0);
 
   const chartData = data.slice(-24).map((r) => ({ ...r, label: shortLabel(r.periodo) }));
@@ -156,10 +230,13 @@ export default function FlujoDeFondosPage() {
           <h1 className="text-3xl font-bold tracking-tight">Flujo de Fondos</h1>
           <p className="text-muted-foreground">Método directo — {periodoLabel(last.periodo)}</p>
         </div>
-        <InflationToggle />
+        <div className="flex items-center gap-2">
+          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
+          <InflationToggle />
+        </div>
       </div>
 
-      {/* KPIs */}
+      {/* KPIs — reflejan el mes seleccionado */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard title="Total Cobrado" value={last.totalCobros} delta={prev ? pctDelta(last.totalCobros, prev.totalCobros) : null} icon={ArrowDownCircle} />
         <KpiCard title="Total Pagado" value={last.totalPagos} delta={prev ? pctDelta(last.totalPagos, prev.totalPagos) : null} icon={ArrowUpCircle} invertDelta />
@@ -172,7 +249,7 @@ export default function FlujoDeFondosPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Cobros vs Pagos</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -189,7 +266,7 @@ export default function FlujoDeFondosPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Flujo Neto Acumulado</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -205,7 +282,7 @@ export default function FlujoDeFondosPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Composición de Cobros</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -223,7 +300,7 @@ export default function FlujoDeFondosPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Composición de Pagos</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={300}>
+            <ResponsiveContainer width="100%" height={400}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -240,9 +317,26 @@ export default function FlujoDeFondosPage() {
         </Card>
       </div>
 
-      {/* Table */}
+      {/* Table with granularity selector */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Resumen Mensual</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Resumen {GRANULARITY_LABELS[granularity]}</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
@@ -263,9 +357,9 @@ export default function FlujoDeFondosPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {[...data].reverse().map((r) => (
-                  <TableRow key={r.periodo}>
-                    <TableCell className="font-medium whitespace-nowrap">{periodoLabel(r.periodo)}</TableCell>
+                {aggregateFlujoDeFondos(data, granularity).map((r) => (
+                  <TableRow key={r.key}>
+                    <TableCell className="font-medium whitespace-nowrap">{r.label}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cobrosEfectivo)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cobrosBanco)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cobrosMP)}</TableCell>
