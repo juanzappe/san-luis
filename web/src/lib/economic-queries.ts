@@ -265,9 +265,10 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
       const sueldos = egr?.sueldosNeto ?? 0;
       const cargasSociales = egr?.cargasSociales ?? 0;
-      // Costos Comerciales: pagos de impuestos + IIBB (5%) + Seg. e Hig. (1%) sobre imp_total
+      // Costos Comerciales: only IIBB (5%) + Seg. e Hig. (1%) on imp_total from factura_emitida
       const impTotal = impTotalMap.get(p) ?? 0;
-      const costosCom = (egr?.comerciales ?? 0) + impTotal * 0.05 + impTotal * 0.01;
+      const costosCom = impTotal * 0.05 + impTotal * 0.01;
+      // Costos Financieros: bank fees + interest + Imp. al Cheque (already in RPC via 'impuesto s/deb', 'impuesto s/cred')
       const costosFin = egr?.financieros ?? 0;
 
       const margenBruto = ing - costosOp - sueldos - cargasSociales;
