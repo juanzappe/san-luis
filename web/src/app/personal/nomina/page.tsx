@@ -42,6 +42,70 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
+type Granularity = "mensual" | "trimestral" | "anual";
+
+const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+const QUARTER_LABELS: Record<string, string> = { "01": "Q1", "02": "Q1", "03": "Q1", "04": "Q2", "05": "Q2", "06": "Q2", "07": "Q3", "08": "Q3", "09": "Q3", "10": "Q4", "11": "Q4", "12": "Q4" };
+
+interface AggRow {
+  key: string;
+  label: string;
+  cantEmpleados: number;
+  sueldosNetos: number;
+  cargasSociales: number;
+  costoTotal: number;
+  costoPromedio: number;
+  ingresos: number;
+  pctSobreIngresos: number;
+}
+
+function aggregateNomina(data: NominaRow[], granularity: Granularity): AggRow[] {
+  if (granularity === "mensual") {
+    return [...data].map((r) => {
+      const [y, m] = r.periodo.split("-");
+      return {
+        key: r.periodo,
+        label: `${MONTH_NAMES[parseInt(m, 10) - 1]} ${y}`,
+        ...r,
+      };
+    }).sort((a, b) => b.key.localeCompare(a.key));
+  }
+
+  const buckets = new Map<string, { empSum: number; empCount: number; sueldos: number; cargas: number; costoTotal: number; ingresos: number }>();
+  for (const r of data) {
+    const [y, m] = r.periodo.split("-");
+    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
+    const cur = buckets.get(bucketKey) ?? { empSum: 0, empCount: 0, sueldos: 0, cargas: 0, costoTotal: 0, ingresos: 0 };
+    cur.empSum += r.cantEmpleados;
+    cur.empCount += 1;
+    cur.sueldos += r.sueldosNetos;
+    cur.cargas += r.cargasSociales;
+    cur.costoTotal += r.costoTotal;
+    cur.ingresos += r.ingresos;
+    buckets.set(bucketKey, cur);
+  }
+
+  return Array.from(buckets.entries())
+    .map(([k, v]) => {
+      const avgEmp = v.empCount > 0 ? Math.round(v.empSum / v.empCount) : 0;
+      const label = granularity === "trimestral"
+        ? `${k.split("-")[1]} ${k.split("-")[0]}`
+        : k;
+      return {
+        key: k,
+        label,
+        cantEmpleados: avgEmp,
+        sueldosNetos: v.sueldos,
+        cargasSociales: v.cargas,
+        costoTotal: v.costoTotal,
+        costoPromedio: avgEmp > 0 ? v.costoTotal / avgEmp : 0,
+        ingresos: v.ingresos,
+        pctSobreIngresos: v.ingresos > 0 ? (v.costoTotal / v.ingresos) * 100 : 0,
+      };
+    })
+    .sort((a, b) => b.key.localeCompare(a.key));
+}
+
 function KpiCard({ title, value, delta, icon: Icon }: { title: string; value: string; delta: string | null; icon: React.ElementType }) {
   return (
     <Card>
@@ -65,6 +129,7 @@ export default function NominaPage() {
   const [raw, setRaw] = useState<NominaRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [granularity, setGranularity] = useState<Granularity>("mensual");
   const { adjust } = useInflation();
 
   useEffect(() => {
@@ -229,7 +294,24 @@ export default function NominaPage() {
 
       {/* Table */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Detalle Mensual</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Detalle Mensual</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGranularity(g)}
+                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  granularity === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
@@ -245,9 +327,9 @@ export default function NominaPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {[...data].reverse().map((r) => (
-                  <TableRow key={r.periodo}>
-                    <TableCell className="font-medium">{periodoLabel(r.periodo)}</TableCell>
+                {aggregateNomina(data, granularity).map((r) => (
+                  <TableRow key={r.key}>
+                    <TableCell className="font-medium">{r.label}</TableCell>
                     <TableCell className="text-right">{r.cantEmpleados}</TableCell>
                     <TableCell className="text-right">{formatARS(r.sueldosNetos)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cargasSociales)}</TableCell>
