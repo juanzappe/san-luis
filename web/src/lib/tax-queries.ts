@@ -127,8 +127,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
       const res = await supabase.rpc("get_iibb_mensual");
       if (res.error) throw res.error;
       return (res.data ?? []) as Array<{
-        periodo: string; retenciones: number; reversas: number;
-        percepciones: number; iibb_neto: number;
+        periodo: string; iibb: number;
       }>;
     }),
   ]);
@@ -221,10 +220,10 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addTipo("sicore", month, monto, "arca");
   }
 
-  // --- E) IIBB from movimiento_bancario (retenciones + percepciones) ---
+  // --- E) IIBB from iibb_posicion (SIFERE data) ---
   for (const row of iibbRows) {
-    const neto = Number(row.iibb_neto) || 0;
-    if (neto > 0) addTipo("iibb", row.periodo, neto, "arba");
+    const amount = Number(row.iibb) || 0;
+    if (amount > 0) addTipo("iibb", row.periodo, amount, "arba");
   }
 
   // --- F) Municipal taxes from impuesto_obligacion (devengado, gap-fill) ---
