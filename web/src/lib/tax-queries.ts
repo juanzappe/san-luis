@@ -103,7 +103,7 @@ export interface ResumenFiscalData {
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   // Batch 1: light queries (free up connections before heavy ones)
-  const [obligaciones, pagos, chequeRows] = await Promise.all([
+  const [obligaciones, pagos, chequeRows, iibbRows] = await Promise.all([
     fetchWithRetry(async () => {
       const res = await supabase.rpc("get_obligaciones_resumen");
       if (res.error) throw res.error;
@@ -123,6 +123,14 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
       }>;
     }),
     fetchChequeMensual(),
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_iibb_mensual");
+      if (res.error) throw res.error;
+      return (res.data ?? []) as Array<{
+        periodo: string; retenciones: number; reversas: number;
+        percepciones: number; iibb_neto: number;
+      }>;
+    }),
   ]);
 
   // Batch 2: heavy queries (max 3 concurrent: iva + ingresos + egresos via fetchResultado)
@@ -213,13 +221,10 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addTipo("sicore", month, monto, "arca");
   }
 
-  // --- E) IIBB from impuesto_obligacion ---
-  for (const o of obligaciones) {
-    if (o.tipo !== "iibb") continue;
-    const month = (o.periodo ?? "") as string;
-    if (!month) continue;
-    const amount = Number(o.monto_determinado) || 0;
-    if (amount > 0) addTipo("iibb", month, amount, "arba");
+  // --- E) IIBB from movimiento_bancario (retenciones + percepciones) ---
+  for (const row of iibbRows) {
+    const neto = Number(row.iibb_neto) || 0;
+    if (neto > 0) addTipo("iibb", row.periodo, neto, "arba");
   }
 
   // --- F) Municipal taxes from impuesto_obligacion (devengado, gap-fill) ---
