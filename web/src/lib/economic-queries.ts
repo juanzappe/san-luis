@@ -166,7 +166,7 @@ export { TASA_GANANCIAS };
 
 // RECPAM anual auditado (positivo = pérdida por inflación, negativo = ganancia)
 export const RECPAM_HISTORICO: Record<string, number> = {
-  "2024": 467917000,  // Balance auditado 2024
+  "2024": 364598954,  // Balance auditado 2024 (nominal, sin ajuste por inflación)
   "2023": 496052700,
   "2022": -61205150,
   "2021": -69080530,
@@ -230,31 +230,16 @@ export interface ResultadoRow {
 }
 
 export async function fetchResultado(): Promise<ResultadoRow[]> {
-  const [ingresos, egresos, ivaIngresosData] = await fetchWithRetry(() =>
-    Promise.all([
-      fetchIngresos(),
-      fetchEgresos(),
-      supabase.rpc("get_iva_ingresos_mensual").then((res) => {
-        if (res.error) throw res.error;
-        return (res.data ?? []) as Array<{ periodo: string; iva_debito: number; iva_credito: number; ingresos: number; neto_gravado: number }>;
-      }),
-    ])
+  const [ingresos, egresos] = await fetchWithRetry(() =>
+    Promise.all([fetchIngresos(), fetchEgresos()])
   );
 
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
   const egrMap = new Map(egresos.map((r) => [r.periodo, r]));
 
-  // neto_gravado from factura_emitida (base for IIBB 4.5% and Seg. e Hig. 1%)
-  const netoGravadoMap = new Map<string, number>();
-  for (const row of ivaIngresosData) {
-    const cur = netoGravadoMap.get(row.periodo) ?? 0;
-    netoGravadoMap.set(row.periodo, cur + (Number(row.neto_gravado) || 0));
-  }
-
   const allP = new Set<string>();
   ingMap.forEach((_, k) => allP.add(k));
   egrMap.forEach((_, k) => allP.add(k));
-  netoGravadoMap.forEach((_, k) => allP.add(k));
 
   return Array.from(allP)
     .sort()
@@ -265,10 +250,9 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
       const sueldos = egr?.sueldosNeto ?? 0;
       const cargasSociales = egr?.cargasSociales ?? 0;
-      // Costos Comerciales: IIBB (4.5%) + Seg. e Hig. (1%) on neto gravado from factura_emitida
-      const netoGravado = netoGravadoMap.get(p) ?? 0;
-      const costosCom = netoGravado * 0.045 + netoGravado * 0.01;
-      // Costos Financieros: bank fees + interest + Imp. al Cheque (already in RPC via 'impuesto s/deb', 'impuesto s/cred')
+      // Costos Comerciales & Financieros: set to 0 here, overridden by the page
+      // using data from fetchResumenFiscal() to avoid duplicating tax logic
+      const costosCom = 0;
       const costosFin = egr?.financieros ?? 0;
 
       const margenBruto = ing - costosOp - sueldos - cargasSociales;

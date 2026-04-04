@@ -33,6 +33,7 @@ import {
   INFLACION_FALLBACK_PCT,
   computeIpcFallback,
 } from "@/lib/economic-queries";
+import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
   Formatter, ValueType, NameType,
@@ -276,16 +277,18 @@ export default function EstadoResultadosPage() {
   const { adjust } = useInflation();
   const [raw, setRaw] = useState<ResultadoRow[]>([]);
   const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
+  const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetchResultado(), fetchIpcMensualMap()])
-      .then(([rows, ipc]) => {
+    Promise.all([fetchResultado(), fetchIpcMensualMap(), fetchResumenFiscal()])
+      .then(([rows, ipc, fiscal]) => {
         setRaw(rows);
         setIpcMap(ipc);
+        setTaxMap(new Map(fiscal.mensual.map((r) => [r.periodo, r])));
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
@@ -302,8 +305,14 @@ export default function EstadoResultadosPage() {
         const costOp = adjust(r.costosOperativos, r.periodo);
         const sueldos = adjust(r.sueldos, r.periodo);
         const cargasSoc = adjust(r.cargasSociales, r.periodo);
-        const costCom = adjust(r.costosComercialesAdmin, r.periodo);
-        const costFin = adjust(r.costosFinancieros, r.periodo);
+        // Costos Comerciales from Resumen Fiscal: IIBB + Seg. e Hig. + Publicidad + Esp. Público + SICORE
+        const tax = taxMap.get(r.periodo);
+        const costComNominal = tax
+          ? tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico + tax.sicore
+          : r.costosComercialesAdmin;
+        const costCom = adjust(costComNominal, r.periodo);
+        // Costos Financieros: bank fees/interest + Imp. al Cheque from Resumen Fiscal
+        const costFin = adjust(r.costosFinancieros + (tax?.cheque ?? 0), r.periodo);
         const margenBruto = ing - costOp - sueldos - cargasSoc;
 
         // RECPAM: datos auditados para años históricos; estimado para el resto.
@@ -364,7 +373,7 @@ export default function EstadoResultadosPage() {
           margenPct,
         };
       }),
-    [raw, adjust, ipcMap, ipcFallback],
+    [raw, adjust, ipcMap, ipcFallback, taxMap],
   );
 
   // Available years from data

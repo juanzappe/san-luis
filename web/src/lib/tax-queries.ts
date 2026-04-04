@@ -159,7 +159,8 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addToMap(ivaDebitoMap, row.periodo, Number(row.iva_debito) || 0);
     addToMap(ivaCreditoMap, row.periodo, Number(row.iva_credito) || 0);
     addToMap(ingresosMap, row.periodo, Number(row.ingresos) || 0);
-    addToMap(netoGravadoMap, row.periodo, Number(row.neto_gravado) || 0);
+    const ng = Number(row.neto_gravado) || 0;
+    addToMap(netoGravadoMap, row.periodo, ng > 0 ? ng : (Number(row.ingresos) || 0) / 1.21);
   }
   // Merge IVA neto into tipoMonthMap
   const allIvaPeriods = new Set<string>();
