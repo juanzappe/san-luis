@@ -35,6 +35,7 @@ import {
   computeIpcFallback,
   computeGananciasNominal,
 } from "@/lib/economic-queries";
+import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
   Formatter, ValueType, NameType,
@@ -164,17 +165,19 @@ export default function EgresosPage() {
   const [raw, setRaw] = useState<EgresoRow[]>([]);
   const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
   const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
+  const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
-    Promise.all([fetchEgresos(), fetchResultado(), fetchIpcMensualMap()])
-      .then(([egresos, resultado, ipc]) => {
+    Promise.all([fetchEgresos(), fetchResultado(), fetchIpcMensualMap(), fetchResumenFiscal()])
+      .then(([egresos, resultado, ipc, fiscal]) => {
         setRaw(egresos);
         setRawResultado(resultado);
         setIpcMap(ipc);
+        setTaxMap(new Map(fiscal.mensual.map((r) => [r.periodo, r])));
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
@@ -252,13 +255,17 @@ export default function EgresosPage() {
     const gananciasNom = resultadoRow
       ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
       : 0;
+    // Add Imp. al Cheque from Resumen Fiscal to Financieros
+    const cheque = taxMap.get(r.periodo)?.cheque ?? 0;
+    const financierosConCheque = r.financieros + cheque;
+    const totalConCheque = r.total + cheque;
     return {
       ...r,
       operativos: adjust(r.operativos, r.periodo),
       comerciales: adjust(r.comerciales, r.periodo),
-      financieros: adjust(r.financieros, r.periodo),
+      financieros: adjust(financierosConCheque, r.periodo),
       ganancias: adjust(gananciasNom, r.periodo),
-      total: adjust(r.total, r.periodo),
+      total: adjust(totalConCheque, r.periodo),
       categorias: adjCats,
       sueldos: adjust(r.sueldos, r.periodo),
       sueldosNeto: adjust(r.sueldosNeto, r.periodo),
