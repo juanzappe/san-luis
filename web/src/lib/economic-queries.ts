@@ -248,7 +248,8 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
   const netoGravadoMap = new Map<string, number>();
   for (const row of ivaIngresosData) {
     const cur = netoGravadoMap.get(row.periodo) ?? 0;
-    netoGravadoMap.set(row.periodo, cur + (Number(row.neto_gravado) || 0));
+    const ng = Number(row.neto_gravado) || 0;
+    netoGravadoMap.set(row.periodo, cur + (ng > 0 ? ng : (Number(row.ingresos) || 0) / 1.21));
   }
 
   const allP = new Set<string>();
