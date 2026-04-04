@@ -6,6 +6,9 @@ import {
   Bar,
   LineChart,
   Line,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -13,7 +16,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle } from "lucide-react";
+import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle, CalendarDays, TrendingUp, TrendingDown } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -188,6 +191,322 @@ function YoYChart({ data, dataKey, title, color, height = 300 }: {
 }
 
 // ---------------------------------------------------------------------------
+// Monthly average by year
+// ---------------------------------------------------------------------------
+interface YearAvg {
+  year: string;
+  mostrador: number;
+  restobar: number;
+  servicios: number;
+  total: number;
+  months: number;
+}
+
+function MonthlyAverageByYear({ data }: { data: IngresoRow[] }) {
+  const rows = useMemo(() => {
+    const byYear = new Map<string, { mostrador: number; restobar: number; servicios: number; total: number; months: number }>();
+    for (const r of data) {
+      const y = r.periodo.slice(0, 4);
+      const cur = byYear.get(y) ?? { mostrador: 0, restobar: 0, servicios: 0, total: 0, months: 0 };
+      cur.mostrador += r.mostrador;
+      cur.restobar += r.restobar;
+      cur.servicios += r.servicios;
+      cur.total += r.total;
+      cur.months += 1;
+      byYear.set(y, cur);
+    }
+
+    const result: YearAvg[] = Array.from(byYear.entries())
+      .map(([year, v]) => ({
+        year,
+        mostrador: v.mostrador / v.months,
+        restobar: v.restobar / v.months,
+        servicios: v.servicios / v.months,
+        total: v.total / v.months,
+        months: v.months,
+      }))
+      .sort((a, b) => b.year.localeCompare(a.year));
+
+    return result;
+  }, [data]);
+
+  if (rows.length === 0) return null;
+
+  const getDelta = (idx: number, field: keyof Pick<YearAvg, "mostrador" | "restobar" | "servicios" | "total">) => {
+    if (idx >= rows.length - 1) return null;
+    return pctDelta(rows[idx][field], rows[idx + 1][field]);
+  };
+
+  const deltaCell = (delta: number | null) => {
+    if (delta === null) return null;
+    return (
+      <span className={`ml-1.5 text-xs font-normal ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+        {formatPct(delta)}
+      </span>
+    );
+  };
+
+  const monthsNote = rows.map((r) => `${r.year}: ${r.months} ${r.months === 1 ? "mes" : "meses"}`).join(" · ");
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Promedio Mensual por Año</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Año</TableHead>
+              <TableHead className="text-right">Mostrador</TableHead>
+              <TableHead className="text-right">Restobar</TableHead>
+              <TableHead className="text-right">Servicios</TableHead>
+              <TableHead className="text-right font-bold">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r, i) => (
+              <TableRow key={r.year}>
+                <TableCell className="font-medium">{r.year}</TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.mostrador)}{deltaCell(getDelta(i, "mostrador"))}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.restobar)}{deltaCell(getDelta(i, "restobar"))}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.servicios)}{deltaCell(getDelta(i, "servicios"))}
+                </TableCell>
+                <TableCell className="text-right font-bold">
+                  {formatARS(r.total)}{deltaCell(getDelta(i, "total"))}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Basado en {monthsNote}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// YTD Comparative Banner
+// ---------------------------------------------------------------------------
+interface YtdData {
+  currentYear: string;
+  prevYear: string;
+  firstMonth: string;
+  lastMonth: string;
+  current: { mostrador: number; restobar: number; servicios: number; total: number };
+  previous: { mostrador: number; restobar: number; servicios: number; total: number };
+  hasPrevData: boolean;
+}
+
+function useYtdComparison(data: IngresoRow[]): YtdData | null {
+  return useMemo(() => {
+    if (data.length === 0) return null;
+
+    // Find the most recent year that has data
+    const years = new Set(data.map((r) => r.periodo.slice(0, 4)));
+    const sortedYears = Array.from(years).sort();
+    const currentYear = sortedYears[sortedYears.length - 1];
+    const prevYear = String(Number(currentYear) - 1);
+
+    // Get months with data in current year
+    const currentMonths = data
+      .filter((r) => r.periodo.startsWith(currentYear))
+      .map((r) => r.periodo.slice(5, 7))
+      .sort();
+
+    if (currentMonths.length === 0) return null;
+
+    const firstMonth = currentMonths[0];
+    const lastMonth = currentMonths[currentMonths.length - 1];
+
+    // Sum current year
+    const current = { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+    for (const r of data) {
+      if (r.periodo.startsWith(currentYear)) {
+        current.mostrador += r.mostrador;
+        current.restobar += r.restobar;
+        current.servicios += r.servicios;
+        current.total += r.total;
+      }
+    }
+
+    // Sum same months from previous year
+    const previous = { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+    let hasPrevData = false;
+    for (const m of currentMonths) {
+      const match = data.find((r) => r.periodo === `${prevYear}-${m}`);
+      if (match) {
+        hasPrevData = true;
+        previous.mostrador += match.mostrador;
+        previous.restobar += match.restobar;
+        previous.servicios += match.servicios;
+        previous.total += match.total;
+      }
+    }
+
+    return { currentYear, prevYear, firstMonth, lastMonth, current, previous, hasPrevData };
+  }, [data]);
+}
+
+function formatCompact(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$ ${(n / 1e9).toFixed(1)}B`;
+  if (Math.abs(n) >= 1e6) return `$ ${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$ ${(n / 1e3).toFixed(0)}K`;
+  return formatARS(n);
+}
+
+function YtdBanner({ data }: { data: IngresoRow[] }) {
+  const ytd = useYtdComparison(data);
+  if (!ytd) return null;
+
+  const monthRange = `${MONTH_NAMES[parseInt(ytd.firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(ytd.lastMonth, 10) - 1]}`;
+  const totalDelta = ytd.hasPrevData ? pctDelta(ytd.current.total, ytd.previous.total) : null;
+
+  const unitBreakdown = (
+    [
+      { label: "Mostrador", cur: ytd.current.mostrador, prev: ytd.previous.mostrador },
+      { label: "Restobar", cur: ytd.current.restobar, prev: ytd.previous.restobar },
+      { label: "Servicios", cur: ytd.current.servicios, prev: ytd.previous.servicios },
+    ] as const
+  ).map((u) => ({
+    ...u,
+    delta: ytd.hasPrevData ? pctDelta(u.cur, u.prev) : null,
+  }));
+
+  return (
+    <Card className="bg-muted/40">
+      <CardContent className="py-4">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
+          <span className="text-sm font-medium">
+            Acumulado {monthRange} {ytd.currentYear}:
+          </span>
+          <span className="text-sm font-bold">{formatARS(ytd.current.total)}</span>
+          {ytd.hasPrevData ? (
+            <>
+              <span className="text-sm text-muted-foreground">vs</span>
+              <span className="text-sm text-muted-foreground">
+                {monthRange} {ytd.prevYear}: {formatARS(ytd.previous.total)}
+              </span>
+              {totalDelta !== null && (
+                <span className={`inline-flex items-center gap-0.5 text-sm font-semibold ${totalDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  {totalDelta >= 0 ? (
+                    <TrendingUp className="h-3.5 w-3.5" />
+                  ) : (
+                    <TrendingDown className="h-3.5 w-3.5" />
+                  )}
+                  {formatPct(totalDelta)}
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="text-sm text-muted-foreground">Sin datos comparables</span>
+          )}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {unitBreakdown.map((u) => (
+            <span key={u.label}>
+              {u.label}: <span className="font-medium text-foreground">{formatCompact(u.cur)}</span>
+              {u.delta !== null ? (
+                <span className={`ml-1 ${u.delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                  ({formatPct(u.delta)})
+                </span>
+              ) : null}
+            </span>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Donut chart — participation by business unit
+// ---------------------------------------------------------------------------
+const DONUT_DATA_KEYS = [
+  { key: "mostrador", name: "Mostrador", color: COLORS.mostrador },
+  { key: "restobar", name: "Restobar", color: COLORS.restobar },
+  { key: "servicios", name: "Servicios", color: COLORS.servicios },
+] as const;
+
+function ParticipationDonut({ selected }: { selected: IngresoRow }) {
+  const periodoLabel = `${MONTH_NAMES[parseInt(selected.periodo.slice(5, 7), 10) - 1]} ${selected.periodo.slice(0, 4)}`;
+
+  const donutData = useMemo(() => {
+    return DONUT_DATA_KEYS.map((d) => ({
+      name: d.name,
+      value: selected[d.key as keyof IngresoRow] as number,
+      color: d.color,
+    })).filter((d) => d.value > 0);
+  }, [selected]);
+
+  const total = selected.total;
+
+  return (
+    <div>
+      <p className="text-sm font-medium mb-2">Participación — {periodoLabel}</p>
+      <ResponsiveContainer width="100%" height={260}>
+        <PieChart>
+          <Pie
+            data={donutData}
+            dataKey="value"
+            nameKey="name"
+            cx="50%"
+            cy="50%"
+            innerRadius="55%"
+            outerRadius="80%"
+            paddingAngle={2}
+          >
+            {donutData.map((d) => (
+              <Cell key={d.name} fill={d.color} />
+            ))}
+          </Pie>
+          <Tooltip formatter={(v) => formatARS(Number(v ?? 0))} />
+          {/* Center label */}
+          <text
+            x="50%"
+            y="48%"
+            textAnchor="middle"
+            dominantBaseline="central"
+            className="fill-foreground text-lg font-bold"
+          >
+            {formatCompact(total)}
+          </text>
+          <text
+            x="50%"
+            y="58%"
+            textAnchor="middle"
+            dominantBaseline="central"
+            className="fill-muted-foreground text-[10px]"
+          >
+            Total
+          </text>
+        </PieChart>
+      </ResponsiveContainer>
+      <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs mt-1">
+        {DONUT_DATA_KEYS.map((d) => {
+          const val = selected[d.key as keyof IngresoRow] as number;
+          const pct = total > 0 ? ((val / total) * 100).toFixed(1) : "0.0";
+          return (
+            <span key={d.key} className="flex items-center gap-1.5">
+              <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: d.color }} />
+              {d.name} {pct}%
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function IngresosPage() {
@@ -302,24 +621,33 @@ export default function IngresosPage() {
         />
       </div>
 
-      {/* Stacked bar chart (last 12 months) */}
+      {/* YTD Comparative Banner */}
+      <YtdBanner data={allData} />
+
+      {/* Monthly average by year */}
+      <MonthlyAverageByYear data={allData} />
+
+      {/* Stacked bar chart + Donut (side by side on desktop) */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Ingresos por Unidad de Negocio</CardTitle>
         </CardHeader>
         <CardContent>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="label" fontSize={12} />
-              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar dataKey="mostrador" name="Mostrador" stackId="a" fill={COLORS.mostrador} />
-              <Bar dataKey="restobar" name="Restobar" stackId="a" fill={COLORS.restobar} />
-              <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <Legend />
+                <Bar dataKey="mostrador" name="Mostrador" stackId="a" fill={COLORS.mostrador} />
+                <Bar dataKey="restobar" name="Restobar" stackId="a" fill={COLORS.restobar} />
+                <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <ParticipationDonut selected={last} />
+          </div>
         </CardContent>
       </Card>
 

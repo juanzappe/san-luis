@@ -131,11 +131,15 @@ def run(conn, logger, full: bool = False) -> int:
             if not venta_db_id:
                 continue
             for det in data["detalles"]:
+                # Normalizar producto: "CONFITERIA" y "restovar" son restobar
+                producto_raw = safe_str(det.get("Producto"))
+                if producto_raw and producto_raw.strip().lower() in ('confiteria', 'restovar'):
+                    producto_raw = 'restobar'
                 detalle_records.append({
                     "venta_id": venta_db_id,
                     "id_producto_pos": safe_str(det.get("idProducto")),
                     "codigo_producto": safe_str(det.get("sCodProducto")),
-                    "producto": safe_str(det.get("Producto")),
+                    "producto": producto_raw,
                     "costo": safe_float(det.get("Costo")),
                     "precio_unitario": safe_float(det.get("Precio U")),
                     "cantidad": safe_float(det.get("Cantidad")),
