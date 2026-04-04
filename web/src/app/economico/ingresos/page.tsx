@@ -188,6 +188,108 @@ function YoYChart({ data, dataKey, title, color, height = 300 }: {
 }
 
 // ---------------------------------------------------------------------------
+// Monthly average by year
+// ---------------------------------------------------------------------------
+interface YearAvg {
+  year: string;
+  mostrador: number;
+  restobar: number;
+  servicios: number;
+  total: number;
+  months: number;
+}
+
+function MonthlyAverageByYear({ data }: { data: IngresoRow[] }) {
+  const rows = useMemo(() => {
+    const byYear = new Map<string, { mostrador: number; restobar: number; servicios: number; total: number; months: number }>();
+    for (const r of data) {
+      const y = r.periodo.slice(0, 4);
+      const cur = byYear.get(y) ?? { mostrador: 0, restobar: 0, servicios: 0, total: 0, months: 0 };
+      cur.mostrador += r.mostrador;
+      cur.restobar += r.restobar;
+      cur.servicios += r.servicios;
+      cur.total += r.total;
+      cur.months += 1;
+      byYear.set(y, cur);
+    }
+
+    const result: YearAvg[] = Array.from(byYear.entries())
+      .map(([year, v]) => ({
+        year,
+        mostrador: v.mostrador / v.months,
+        restobar: v.restobar / v.months,
+        servicios: v.servicios / v.months,
+        total: v.total / v.months,
+        months: v.months,
+      }))
+      .sort((a, b) => b.year.localeCompare(a.year));
+
+    return result;
+  }, [data]);
+
+  if (rows.length === 0) return null;
+
+  const getDelta = (idx: number, field: keyof Pick<YearAvg, "mostrador" | "restobar" | "servicios" | "total">) => {
+    if (idx >= rows.length - 1) return null;
+    return pctDelta(rows[idx][field], rows[idx + 1][field]);
+  };
+
+  const deltaCell = (delta: number | null) => {
+    if (delta === null) return null;
+    return (
+      <span className={`ml-1.5 text-xs font-normal ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+        {formatPct(delta)}
+      </span>
+    );
+  };
+
+  const monthsNote = rows.map((r) => `${r.year}: ${r.months} ${r.months === 1 ? "mes" : "meses"}`).join(" · ");
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Promedio Mensual por Año</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Año</TableHead>
+              <TableHead className="text-right">Mostrador</TableHead>
+              <TableHead className="text-right">Restobar</TableHead>
+              <TableHead className="text-right">Servicios</TableHead>
+              <TableHead className="text-right font-bold">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r, i) => (
+              <TableRow key={r.year}>
+                <TableCell className="font-medium">{r.year}</TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.mostrador)}{deltaCell(getDelta(i, "mostrador"))}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.restobar)}{deltaCell(getDelta(i, "restobar"))}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatARS(r.servicios)}{deltaCell(getDelta(i, "servicios"))}
+                </TableCell>
+                <TableCell className="text-right font-bold">
+                  {formatARS(r.total)}{deltaCell(getDelta(i, "total"))}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Basado en {monthsNote}
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function IngresosPage() {
@@ -301,6 +403,9 @@ export default function IngresosPage() {
           icon={Utensils}
         />
       </div>
+
+      {/* Monthly average by year */}
+      <MonthlyAverageByYear data={allData} />
 
       {/* Stacked bar chart (last 12 months) */}
       <Card>
