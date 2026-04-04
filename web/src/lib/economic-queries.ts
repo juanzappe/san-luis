@@ -166,7 +166,7 @@ export { TASA_GANANCIAS };
 
 // RECPAM anual auditado (positivo = pérdida por inflación, negativo = ganancia)
 export const RECPAM_HISTORICO: Record<string, number> = {
-  "2024": 364599000,
+  "2024": 467917000,  // Balance auditado 2024
   "2023": 496052700,
   "2022": -61205150,
   "2021": -69080530,
@@ -230,16 +230,31 @@ export interface ResultadoRow {
 }
 
 export async function fetchResultado(): Promise<ResultadoRow[]> {
-  const [ingresos, egresos] = await fetchWithRetry(() =>
-    Promise.all([fetchIngresos(), fetchEgresos()])
+  const [ingresos, egresos, ivaIngresosData] = await fetchWithRetry(() =>
+    Promise.all([
+      fetchIngresos(),
+      fetchEgresos(),
+      supabase.rpc("get_iva_ingresos_mensual").then((res) => {
+        if (res.error) throw res.error;
+        return (res.data ?? []) as Array<{ periodo: string; iva_debito: number; iva_credito: number; ingresos: number }>;
+      }),
+    ])
   );
 
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
   const egrMap = new Map(egresos.map((r) => [r.periodo, r]));
 
+  // imp_total from factura_emitida (base for IIBB 5% and Seg. e Hig. 1%)
+  const impTotalMap = new Map<string, number>();
+  for (const row of ivaIngresosData) {
+    const cur = impTotalMap.get(row.periodo) ?? 0;
+    impTotalMap.set(row.periodo, cur + (Number(row.ingresos) || 0));
+  }
+
   const allP = new Set<string>();
   ingMap.forEach((_, k) => allP.add(k));
   egrMap.forEach((_, k) => allP.add(k));
+  impTotalMap.forEach((_, k) => allP.add(k));
 
   return Array.from(allP)
     .sort()
@@ -250,7 +265,9 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
       const sueldos = egr?.sueldosNeto ?? 0;
       const cargasSociales = egr?.cargasSociales ?? 0;
-      const costosCom = egr?.comerciales ?? 0;
+      // Costos Comerciales: pagos de impuestos + IIBB (5%) + Seg. e Hig. (1%) sobre imp_total
+      const impTotal = impTotalMap.get(p) ?? 0;
+      const costosCom = (egr?.comerciales ?? 0) + impTotal * 0.05 + impTotal * 0.01;
       const costosFin = egr?.financieros ?? 0;
 
       const margenBruto = ing - costosOp - sueldos - cargasSociales;
