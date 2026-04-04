@@ -236,7 +236,7 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       fetchEgresos(),
       supabase.rpc("get_iva_ingresos_mensual").then((res) => {
         if (res.error) throw res.error;
-        return (res.data ?? []) as Array<{ periodo: string; iva_debito: number; iva_credito: number; ingresos: number }>;
+        return (res.data ?? []) as Array<{ periodo: string; iva_debito: number; iva_credito: number; ingresos: number; neto_gravado: number }>;
       }),
     ])
   );
@@ -244,17 +244,17 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
   const ingMap = new Map(ingresos.map((r) => [r.periodo, r.total]));
   const egrMap = new Map(egresos.map((r) => [r.periodo, r]));
 
-  // imp_total from factura_emitida (base for IIBB 5% and Seg. e Hig. 1%)
-  const impTotalMap = new Map<string, number>();
+  // neto_gravado from factura_emitida (base for IIBB 4.5% and Seg. e Hig. 1%)
+  const netoGravadoMap = new Map<string, number>();
   for (const row of ivaIngresosData) {
-    const cur = impTotalMap.get(row.periodo) ?? 0;
-    impTotalMap.set(row.periodo, cur + (Number(row.ingresos) || 0));
+    const cur = netoGravadoMap.get(row.periodo) ?? 0;
+    netoGravadoMap.set(row.periodo, cur + (Number(row.neto_gravado) || 0));
   }
 
   const allP = new Set<string>();
   ingMap.forEach((_, k) => allP.add(k));
   egrMap.forEach((_, k) => allP.add(k));
-  impTotalMap.forEach((_, k) => allP.add(k));
+  netoGravadoMap.forEach((_, k) => allP.add(k));
 
   return Array.from(allP)
     .sort()
@@ -265,9 +265,9 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
       const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
       const sueldos = egr?.sueldosNeto ?? 0;
       const cargasSociales = egr?.cargasSociales ?? 0;
-      // Costos Comerciales: only IIBB (5%) + Seg. e Hig. (1%) on imp_total from factura_emitida
-      const impTotal = impTotalMap.get(p) ?? 0;
-      const costosCom = impTotal * 0.05 + impTotal * 0.01;
+      // Costos Comerciales: IIBB (4.5%) + Seg. e Hig. (1%) on neto gravado from factura_emitida
+      const netoGravado = netoGravadoMap.get(p) ?? 0;
+      const costosCom = netoGravado * 0.045 + netoGravado * 0.01;
       // Costos Financieros: bank fees + interest + Imp. al Cheque (already in RPC via 'impuesto s/deb', 'impuesto s/cred')
       const costosFin = egr?.financieros ?? 0;
 
