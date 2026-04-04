@@ -131,7 +131,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
       const res = await supabase.rpc("get_iva_ingresos_mensual");
       if (res.error) throw res.error;
       return (res.data ?? []) as Array<{
-        periodo: string; iva_debito: number; iva_credito: number; ingresos: number;
+        periodo: string; iva_debito: number; iva_credito: number; ingresos: number; neto_gravado: number;
       }>;
     }),
     fetchResultado() as Promise<ResultadoRow[]>,
@@ -154,10 +154,12 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const ivaDebitoMap = new Map<string, number>();
   const ivaCreditoMap = new Map<string, number>();
   const ingresosMap = new Map<string, number>();
+  const netoGravadoMap = new Map<string, number>();
   for (const row of ivaMensualRows) {
     addToMap(ivaDebitoMap, row.periodo, Number(row.iva_debito) || 0);
     addToMap(ivaCreditoMap, row.periodo, Number(row.iva_credito) || 0);
     addToMap(ingresosMap, row.periodo, Number(row.ingresos) || 0);
+    addToMap(netoGravadoMap, row.periodo, Number(row.neto_gravado) || 0);
   }
   // Merge IVA neto into tipoMonthMap
   const allIvaPeriods = new Set<string>();
@@ -213,16 +215,16 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addTipo("sicore", month, monto, "arca");
   }
 
-  // --- E) IIBB — 5% of facturación (imp_total from factura_emitida) ---
-  ingresosMap.forEach((imp_total, month) => {
-    const iibb = imp_total * 0.05;
+  // --- E) IIBB — 4.5% of neto gravado (imp_neto_gravado_total from factura_emitida) ---
+  netoGravadoMap.forEach((neto, month) => {
+    const iibb = neto * 0.045;
     if (iibb > 0) addTipo("iibb", month, iibb, "arba");
   });
 
   // --- F) Municipal taxes ---
-  // Seg. e Higiene: 1% of facturación (imp_total from factura_emitida)
-  ingresosMap.forEach((imp_total, month) => {
-    const segHig = imp_total * 0.01;
+  // Seg. e Higiene: 1% of neto gravado (imp_neto_gravado_total from factura_emitida)
+  netoGravadoMap.forEach((neto, month) => {
+    const segHig = neto * 0.01;
     if (segHig > 0) addTipo("segHigiene", month, segHig, "municipio");
   });
 
