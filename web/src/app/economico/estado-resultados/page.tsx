@@ -339,7 +339,10 @@ export default function EstadoResultadosPage() {
           }
           recpamEstimado = true;
         }
-        const recpam = adjust(recpamNominal, r.periodo);
+        // For historical RECPAM (2024 and earlier), the value is at Dec prices
+        // of that year, so use "YYYY-12" as base month for inflation adjustment.
+        const recpamBase = (year in RECPAM_HISTORICO) ? `${year}-12` : r.periodo;
+        const recpam = adjust(recpamNominal, recpamBase);
 
         // Amortizaciones: historical (distributed monthly) or base 2024
         const amortNominal = year in AMORTIZACIONES_ANUAL
