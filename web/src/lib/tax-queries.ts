@@ -103,7 +103,7 @@ export interface ResumenFiscalData {
 
 export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   // Batch 1: light queries (free up connections before heavy ones)
-  const [obligaciones, pagos, chequeRows, iibbRows] = await Promise.all([
+  const [obligaciones, pagos, chequeRows] = await Promise.all([
     fetchWithRetry(async () => {
       const res = await supabase.rpc("get_obligaciones_resumen");
       if (res.error) throw res.error;
@@ -123,13 +123,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
       }>;
     }),
     fetchChequeMensual(),
-    fetchWithRetry(async () => {
-      const res = await supabase.rpc("get_iibb_mensual");
-      if (res.error) throw res.error;
-      return (res.data ?? []) as Array<{
-        periodo: string; iibb: number;
-      }>;
-    }),
   ]);
 
   // Batch 2: heavy queries (max 3 concurrent: iva + ingresos + egresos via fetchResultado)
@@ -220,18 +213,21 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     addTipo("sicore", month, monto, "arca");
   }
 
-  // --- E) IIBB from iibb_posicion (SIFERE data) ---
-  for (const row of iibbRows) {
-    const amount = Number(row.iibb) || 0;
-    if (amount > 0) addTipo("iibb", row.periodo, amount, "arba");
-  }
+  // --- E) IIBB — 5% of facturación (imp_total from factura_emitida) ---
+  ingresosMap.forEach((imp_total, month) => {
+    const iibb = imp_total * 0.05;
+    if (iibb > 0) addTipo("iibb", month, iibb, "arba");
+  });
 
-  // --- F) Municipal taxes from impuesto_obligacion (devengado, gap-fill) ---
-  // Collect records per tasa type, sorted by periodo.
-  // If there's a gap between consecutive records, distribute the amount
-  // evenly across all months in the gap (the record covers multiple months).
+  // --- F) Municipal taxes ---
+  // Seg. e Higiene: 1% of facturación (imp_total from factura_emitida)
+  ingresosMap.forEach((imp_total, month) => {
+    const segHig = imp_total * 0.01;
+    if (segHig > 0) addTipo("segHigiene", month, segHig, "municipio");
+  });
+
+  // Publicidad & Esp. Público: from impuesto_obligacion (devengado, gap-fill)
   const municipalMap: Record<string, string> = {
-    tasa_seguridad_higiene: "segHigiene",
     tasa_publicidad_propaganda: "publicidad",
     tasa_ocupacion_espacio_publico: "espacioPublico",
   };
@@ -269,7 +265,6 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
 
     for (let i = 0; i < records.length; i++) {
       const rec = records[i];
-      // Determine how many months this record covers
       const nextPeriodo = i + 1 < records.length ? records[i + 1].periodo : null;
       const span = nextPeriodo ? monthsBetween(rec.periodo, nextPeriodo) : 1;
       const monthCount = Math.max(span, 1);
