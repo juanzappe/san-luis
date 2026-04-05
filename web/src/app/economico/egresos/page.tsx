@@ -31,6 +31,7 @@ import {
   shortLabel,
 } from "@/lib/economic-queries";
 import { useEgresosData } from "@/lib/use-egresos-data";
+import { computeGastosComerciales } from "@/lib/tax-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -144,7 +145,7 @@ function KpiCard({
 // Main
 // ---------------------------------------------------------------------------
 export default function EgresosPage() {
-  const { data, taxData, loading, error, periodos } = useEgresosData();
+  const { data, resultadoData, loading, error, periodos } = useEgresosData();
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
@@ -206,11 +207,11 @@ export default function EgresosPage() {
   const lastCostosOp = costosOp(last);
   const prevCostosOp = prev ? costosOp(prev) : null;
 
-  // Gastos Comerciales devengado: from taxData (IIBB + Seg. e Hig. + municipales), not from RPC
+  // Gastos Comerciales devengado: 5.5% of ingresos netos + cuotas fijas
+  // Uses the same ingresos base as the P&L (ResultadoRow.ingresos)
   const gastosComerciales = (r: EgresoRow) => {
-    const tax = taxData.get(r.periodo);
-    if (!tax) return 0;
-    return tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico;
+    const ingresos = resultadoData.get(r.periodo)?.ingresos ?? 0;
+    return computeGastosComerciales(ingresos, r.periodo);
   };
 
   // Total = components sum (avoids the percibido comerciales from RPC)

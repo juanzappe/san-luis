@@ -16,6 +16,7 @@ import { fetchIpcMensualMap } from "@/lib/macro-queries";
 export interface UseEgresosDataResult {
   data: EgresoRow[];
   taxData: Map<string, ResumenMensualRow>;
+  resultadoData: Map<string, ResultadoRow>;
   loading: boolean;
   error: string | null;
   periodos: string[];
@@ -87,5 +88,5 @@ export function useEgresosData(): UseEgresosDataResult {
 
   const periodos = useMemo(() => data.map((r) => r.periodo), [data]);
 
-  return { data, taxData: taxMap, loading, error, periodos };
+  return { data, taxData: taxMap, resultadoData: resultadoMap, loading, error, periodos };
 }

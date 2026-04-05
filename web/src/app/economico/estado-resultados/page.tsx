@@ -30,10 +30,9 @@ import {
   TASA_GANANCIAS,
   RECPAM_HISTORICO,
   RATIO_PMN,
-  INFLACION_FALLBACK_PCT,
   computeIpcFallback,
 } from "@/lib/economic-queries";
-import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
+import { fetchResumenFiscal, computeGastosComerciales, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
 import type {
   Formatter, ValueType, NameType,
@@ -305,13 +304,12 @@ export default function EstadoResultadosPage() {
         const costOp = adjust(r.costosOperativos, r.periodo);
         const sueldos = adjust(r.sueldos, r.periodo);
         const cargasSoc = adjust(r.cargasSociales, r.periodo);
-        // Costos Comerciales from Resumen Fiscal: IIBB + Seg. e Hig. + Publicidad + Esp. Público
-        const tax = taxMap.get(r.periodo);
-        const costComNominal = tax
-          ? tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico
-          : r.costosComercialesAdmin;
+        // Costos Comerciales: 4.5% IIBB + 1% Seg. e Hig. + cuotas fijas municipales
+        // Uses r.ingresos (same base shown in the P&L) for consistency across views
+        const costComNominal = computeGastosComerciales(r.ingresos, r.periodo);
         const costCom = adjust(costComNominal, r.periodo);
         // Costos Financieros: bank fees/interest + Imp. al Cheque from Resumen Fiscal
+        const tax = taxMap.get(r.periodo);
         const costFin = adjust(r.costosFinancieros + (tax?.cheque ?? 0), r.periodo);
         const margenBruto = ing - costOp - sueldos - cargasSoc;
 

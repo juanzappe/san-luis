@@ -185,7 +185,7 @@ export const INFLACION_FALLBACK_PCT = 0.029;
  */
 export function computeIpcFallback(ipcMap: Map<string, number>): number {
   return ipcMap.size > 0
-    ? ipcMap.get([...ipcMap.keys()].sort().at(-1)!)!
+    ? ipcMap.get(Array.from(ipcMap.keys()).sort().at(-1)!)!
     : INFLACION_FALLBACK_PCT;
 }
 

@@ -14,6 +14,7 @@ import { InflationToggle } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
+  type ResultadoRow,
   formatARS,
   formatPct,
   pctDelta,
@@ -57,19 +58,21 @@ interface AggregatedRow {
 function aggregateRows(
   data: EgresoRow[],
   taxData: Map<string, ResumenMensualRow>,
-  extractValue: (r: EgresoRow, tax?: ResumenMensualRow) => number,
-  extractBreakdown: ((r: EgresoRow, tax?: ResumenMensualRow) => Record<string, number>) | undefined,
+  resultadoData: Map<string, ResultadoRow>,
+  extractValue: (r: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => number,
+  extractBreakdown: ((r: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => Record<string, number>) | undefined,
   granularity: Granularity,
 ): AggregatedRow[] {
   if (granularity === "mensual") {
     return [...data]
       .map((r) => {
         const tax = taxData.get(r.periodo);
+        const res = resultadoData.get(r.periodo);
         return {
           key: r.periodo,
           label: periodoLabel(r.periodo),
-          value: extractValue(r, tax),
-          breakdown: extractBreakdown?.(r, tax) ?? {},
+          value: extractValue(r, tax, res),
+          breakdown: extractBreakdown?.(r, tax, res) ?? {},
         };
       })
       .sort((a, b) => b.key.localeCompare(a.key));
@@ -80,8 +83,9 @@ function aggregateRows(
     const [y, m] = r.periodo.split("-");
     const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
     const tax = taxData.get(r.periodo);
-    const val = extractValue(r, tax);
-    const bd = extractBreakdown?.(r, tax) ?? {};
+    const res = resultadoData.get(r.periodo);
+    const val = extractValue(r, tax, res);
+    const bd = extractBreakdown?.(r, tax, res) ?? {};
     const cur = buckets.get(bucketKey);
     if (!cur) {
       buckets.set(bucketKey, {
@@ -151,8 +155,8 @@ const DEFAULT_COLORS = [
 export interface EgresoDetailPageProps {
   title: string;
   subtitle: string;
-  extractValue: (row: EgresoRow, tax?: ResumenMensualRow) => number;
-  extractBreakdown?: (row: EgresoRow, tax?: ResumenMensualRow) => Record<string, number>;
+  extractValue: (row: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => number;
+  extractBreakdown?: (row: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => Record<string, number>;
   breakdownColors?: Record<string, string>;
   /** Extra content rendered after the main sections (e.g. IVA section) */
   children?: React.ReactNode;
@@ -170,7 +174,7 @@ export function EgresoDetailPage({
   breakdownColors,
   children,
 }: EgresoDetailPageProps) {
-  const { data, taxData, loading, error, periodos } = useEgresosData();
+  const { data, taxData, resultadoData, loading, error, periodos } = useEgresosData();
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
@@ -179,15 +183,15 @@ export function EgresoDetailPage({
   const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
   const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
 
-  const lastValue = last ? extractValue(last, taxData.get(last.periodo)) : 0;
-  const prevValue = prev ? extractValue(prev, taxData.get(prev.periodo)) : null;
+  const lastValue = last ? extractValue(last, taxData.get(last.periodo), resultadoData.get(last.periodo)) : 0;
+  const prevValue = prev ? extractValue(prev, taxData.get(prev.periodo), resultadoData.get(prev.periodo)) : null;
 
   // Discover breakdown keys sorted by total descending
   const breakdownKeys = useMemo(() => {
     if (!extractBreakdown) return [];
     const totals = new Map<string, number>();
     for (const r of data) {
-      const bd = extractBreakdown(r, taxData.get(r.periodo));
+      const bd = extractBreakdown(r, taxData.get(r.periodo), resultadoData.get(r.periodo));
       for (const [k, v] of Object.entries(bd)) {
         totals.set(k, (totals.get(k) ?? 0) + v);
       }
@@ -195,14 +199,14 @@ export function EgresoDetailPage({
     return Array.from(totals.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([name]) => name);
-  }, [data, taxData, extractBreakdown]);
+  }, [data, taxData, resultadoData, extractBreakdown]);
 
   // Chart data — last 12 months
   const chartData = useMemo(() => {
     const slice = data.slice(-12);
     if (extractBreakdown && breakdownKeys.length > 0) {
       return slice.map((r) => {
-        const bd = extractBreakdown(r, taxData.get(r.periodo));
+        const bd = extractBreakdown(r, taxData.get(r.periodo), resultadoData.get(r.periodo));
         const row: Record<string, string | number> = { label: shortLabel(r.periodo) };
         for (const k of breakdownKeys) {
           row[k] = bd[k] ?? 0;
@@ -212,9 +216,9 @@ export function EgresoDetailPage({
     }
     return slice.map((r) => ({
       label: shortLabel(r.periodo),
-      [title]: extractValue(r, taxData.get(r.periodo)),
+      [title]: extractValue(r, taxData.get(r.periodo), resultadoData.get(r.periodo)),
     }));
-  }, [data, taxData, extractBreakdown, breakdownKeys, extractValue, title]);
+  }, [data, taxData, resultadoData, extractBreakdown, breakdownKeys, extractValue, title]);
 
   // Color map for breakdown bars
   const colorMap = useMemo(() => {
@@ -260,7 +264,7 @@ export function EgresoDetailPage({
     );
   }
 
-  const aggregated = aggregateRows(data, taxData, extractValue, extractBreakdown, granularity);
+  const aggregated = aggregateRows(data, taxData, resultadoData, extractValue, extractBreakdown, granularity);
   const hasBreakdown = extractBreakdown && breakdownKeys.length > 0;
   const chartKeys = hasBreakdown ? breakdownKeys : [title];
 
