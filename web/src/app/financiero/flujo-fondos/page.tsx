@@ -210,13 +210,14 @@ export default function FlujoDeFondosPage() {
     const co = adjust(r.comisionesBancarias, r.periodo);
     const em = adjust(r.egresosMP, r.periodo);
     const tp = pp + su + im + co + em;
+    const rs = adjust(r.retirosSocios, r.periodo);
     const fn = tc - tp;
     acum += fn;
     return {
       periodo: r.periodo,
       cobrosEfectivo: ce, cobrosBanco: cb, cobrosMP: cm, totalCobros: tc,
       pagosProveedores: pp, sueldos: su, impuestos: im, comisionesBancarias: co, egresosMP: em, totalPagos: tp,
-      flujoNeto: fn, acumulado: acum,
+      flujoNeto: fn, acumulado: acum, retirosSocios: rs,
     };
   });
 
