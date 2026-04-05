@@ -243,8 +243,7 @@ export default function Dashboard() {
       const ing = adjust(r.ingresos, r.periodo);
       const eOp = adjust(r.egresosOp, r.periodo);
       const sue = adjust(r.sueldos, r.periodo);
-      const netoGravado = r.ingresos / 1.21;
-      const comDevengado = computeGastosComerciales(netoGravado, r.periodo);
+      const comDevengado = computeGastosComerciales(r.ingresos, r.periodo);
       const com = adjust(comDevengado, r.periodo);
       const fin = adjust(r.financieros, r.periodo);
       const egTotal = eOp + sue + com + fin;
