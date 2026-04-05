@@ -144,6 +144,10 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
         if not ticker or not nombre:
             continue
 
+        # Skip subtotal rows (text may be in nombre column, not ticker)
+        if "subtotal" in nombre.lower():
+            continue
+
         # Columnas de referencia (sin fórmulas)
         moneda = _clean_moneda(_clean_str(df.iloc[i, 5]) if df.shape[1] > 5 else None)
         disponibles  = safe_float(df.iloc[i, 4]) or 0.0   # col 4: Disponibles (real)
