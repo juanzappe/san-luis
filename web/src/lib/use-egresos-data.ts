@@ -9,6 +9,7 @@ import {
   fetchResultado,
   computeIpcFallback,
   computeGananciasNominal,
+  computeGananciasBaseNominal,
 } from "@/lib/economic-queries";
 import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
@@ -66,6 +67,9 @@ export function useEgresosData(): UseEgresosDataResult {
       const gananciasNom = resultadoRow
         ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
         : 0;
+      const gananciasBaseNom = resultadoRow
+        ? computeGananciasBaseNominal(resultadoRow, ipcMap, ipcFallback)
+        : 0;
       // Add Imp. al Cheque from Resumen Fiscal to Financieros
       const cheque = taxMap.get(r.periodo)?.cheque ?? 0;
       const financierosConCheque = r.financieros + cheque;
@@ -76,6 +80,7 @@ export function useEgresosData(): UseEgresosDataResult {
         comerciales: adjust(r.comerciales, r.periodo),
         financieros: adjust(financierosConCheque, r.periodo),
         ganancias: adjust(gananciasNom, r.periodo),
+        gananciasBase: adjust(gananciasBaseNom, r.periodo),
         total: adjust(totalConCheque, r.periodo),
         categorias: adjCats,
         sueldos: adjust(r.sueldos, r.periodo),

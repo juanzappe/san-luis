@@ -92,6 +92,7 @@ export interface EgresoRow {
   comerciales: number; // impuestos (no ganancias)
   financieros: number; // bank fees & interest
   ganancias: number; // imp. a las ganancias
+  gananciasBase: number; // resultado antes de ganancias (pre-clamp, for correct annual aggregation)
   total: number;
   // Dynamic category breakdown (from proveedor segmentation)
   categorias: Record<string, number>; // { "Insumos": 1234, "Nafta": 5678, ... }
@@ -145,6 +146,7 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       comerciales,
       financieros,
       ganancias: gan,
+      gananciasBase: 0, // overridden in useEgresosData with RECPAM-adjusted base
       total: sueldosMes + proveedoresMes + comerciales + financieros + gan + cargasSoc,
       categorias,
       sueldos: sueldosMes,
@@ -197,7 +199,12 @@ export function computeIpcFallback(ipcMap: Map<string, number>): number {
  * El llamador debe aplicar adjust() para obtener el valor en pesos constantes.
  * Fuente única de verdad para que Egresos y ER coincidan exactamente.
  */
-export function computeGananciasNominal(
+/**
+ * Devuelve la base imponible NOMINAL de Ganancias (resultado antes de ganancias − RECPAM),
+ * SIN clampar a 0. El llamador decide si aplica max(0,...) × TASA_GANANCIAS.
+ * Necesaria para agregar correctamente a nivel trimestral/anual.
+ */
+export function computeGananciasBaseNominal(
   r: ResultadoRow,
   ipcMap: Map<string, number>,
   ipcFallback: number,
@@ -206,8 +213,16 @@ export function computeGananciasNominal(
   const recpamNominal = year in RECPAM_HISTORICO
     ? RECPAM_HISTORICO[year] / 12
     : r.ingresos * RATIO_PMN * (ipcMap.get(r.periodo) ?? ipcFallback);
-  const resAntesGan = r.resultadoAntesGanancias - recpamNominal;
-  return resAntesGan > 0 ? resAntesGan * TASA_GANANCIAS : 0;
+  return r.resultadoAntesGanancias - recpamNominal;
+}
+
+export function computeGananciasNominal(
+  r: ResultadoRow,
+  ipcMap: Map<string, number>,
+  ipcFallback: number,
+): number {
+  const base = computeGananciasBaseNominal(r, ipcMap, ipcFallback);
+  return base > 0 ? base * TASA_GANANCIAS : 0;
 }
 
 // ---------------------------------------------------------------------------

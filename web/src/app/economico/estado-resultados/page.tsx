@@ -100,7 +100,7 @@ function aggregateResultado(
       cur.recpamEstimado = cur.recpamEstimado || r.recpamEstimado;
       cur.recpamConIpcReal = cur.recpamConIpcReal || r.recpamConIpcReal;
       cur.amortizaciones += r.amortizaciones;
-      cur.ganancias += r.ganancias;
+      cur.ganancias += r.ganancias; // summed monthly; recalculated below
       cur.margenBruto += r.margenBruto;
       cur.ebitda = cur.margenBruto + cur.amortizaciones;
       cur.resultadoAntesGanancias += r.resultadoAntesGanancias;
@@ -108,6 +108,16 @@ function aggregateResultado(
       cur.margenPct = cur.ingresos > 0 ? (cur.resultadoNeto / cur.ingresos) * 100 : 0;
     }
   }
+
+  // Recalculate ganancias on the aggregated base to avoid inflated rates
+  // (monthly clamping at 0 inflates the annual sum when some months are negative)
+  Array.from(buckets.values()).forEach((cur) => {
+    cur.ganancias = cur.resultadoAntesGanancias > 0
+      ? cur.resultadoAntesGanancias * TASA_GANANCIAS
+      : 0;
+    cur.resultadoNeto = cur.resultadoAntesGanancias - cur.ganancias;
+    cur.margenPct = cur.ingresos > 0 ? (cur.resultadoNeto / cur.ingresos) * 100 : 0;
+  });
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
