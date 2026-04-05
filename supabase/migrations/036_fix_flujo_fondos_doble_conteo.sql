@@ -45,16 +45,23 @@ RETURNS TABLE(
     GROUP BY 1
   ),
 
-  -- Cobros: créditos bancarios EXCLUDING cash deposits and MP transfers
+  -- Cobros: créditos bancarios EXCLUDING cash deposits, MP transfers, and internal transfers
   banco_cred AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(credito, 0)) AS cobros
     FROM movimiento_bancario
     WHERE COALESCE(credito, 0) > 0
       -- Exclude cash deposits (caja → banco): already counted in cobros_efectivo
+      -- Provincia: "CREDITO TRASPASO CAJERO AUTOM."
+      -- Santander: "Deposito de efectivo en sucursal", "DEPOSITO POR CAJA ..."
+      AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito por caja%'
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito de efectivo%'
+      -- Exclude internal transfers (between own bank accounts)
+      -- Provincia: "CREDITO TRANSFERENCIA I" (interna)
+      AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRANSFERENCIA I'
       -- Exclude MP transfers (MP → banco): already counted in cobros_mp
+      -- Santander: "... mercado pago ..."
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
     GROUP BY 1
   ),
