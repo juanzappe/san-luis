@@ -17,6 +17,29 @@ function addToMap(map: Map<string, number>, key: string, val: number) {
 }
 
 // ---------------------------------------------------------------------------
+// Cuotas fijas municipales (promedio mensual por año)
+// ---------------------------------------------------------------------------
+
+export const CUOTAS_FIJAS: Record<string, Record<number, number>> = {
+  publicidad:     { 2024: 50000, 2025: 75300, 2026: 100200 },
+  espacioPublico: { 2024: 17000, 2025: 25500, 2026: 33600 },
+};
+
+export function getCuotaFija(tipo: 'publicidad' | 'espacioPublico', periodo: string): number {
+  const year = parseInt(periodo.slice(0, 4), 10);
+  const map = CUOTAS_FIJAS[tipo];
+  if (map[year]) return map[year];
+  const years = Object.keys(map).map(Number).sort((a, b) => b - a);
+  return map[years[0]] ?? 0;
+}
+
+/** Compute devengado gastos comerciales for a single month given neto_gravado. */
+export function computeGastosComerciales(netoGravado: number, periodo: string): number {
+  return netoGravado * 0.045 + netoGravado * 0.01
+    + getCuotaFija('publicidad', periodo) + getCuotaFija('espacioPublico', periodo);
+}
+
+// ---------------------------------------------------------------------------
 // Impuesto al Cheque — RPC get_cheque_mensual (LEY 25413 debits, server-side)
 // ---------------------------------------------------------------------------
 
@@ -229,56 +252,11 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     if (segHig > 0) addTipo("segHigiene", month, segHig, "municipio");
   });
 
-  // Publicidad & Esp. Público: from impuesto_obligacion (devengado, gap-fill)
-  const municipalMap: Record<string, string> = {
-    tasa_publicidad_propaganda: "publicidad",
-    tasa_ocupacion_espacio_publico: "espacioPublico",
-  };
-  const municipalByTipo = new Map<string, Array<{ periodo: string; amount: number }>>();
-  for (const o of obligaciones) {
-    const tipoStr = o.tipo as string;
-    if (!municipalMap[tipoStr]) continue;
-    const periodo = (o.periodo as string) ?? "";
-    if (!periodo) continue;
-    const amount = Number(o.monto_determinado) || 0;
-    if (amount <= 0) continue;
-    if (!municipalByTipo.has(tipoStr)) municipalByTipo.set(tipoStr, []);
-    municipalByTipo.get(tipoStr)!.push({ periodo, amount });
-  }
-
-  // Helper: advance YYYY-MM by n months
-  const addMonths = (ym: string, n: number): string => {
-    let y = parseInt(ym.slice(0, 4));
-    let m = parseInt(ym.slice(5, 7)) + n;
-    while (m > 12) { y++; m -= 12; }
-    while (m < 1) { y--; m += 12; }
-    return `${y}-${String(m).padStart(2, "0")}`;
-  };
-
-  // Helper: months between two YYYY-MM strings (inclusive of start, exclusive of end)
-  const monthsBetween = (a: string, b: string): number => {
-    const [ay, am] = a.split("-").map(Number);
-    const [by, bm] = b.split("-").map(Number);
-    return (by - ay) * 12 + (bm - am);
-  };
-
-  for (const [tipoStr, records] of Array.from(municipalByTipo.entries())) {
-    const mapped = municipalMap[tipoStr];
-    records.sort((a, b) => a.periodo.localeCompare(b.periodo));
-
-    for (let i = 0; i < records.length; i++) {
-      const rec = records[i];
-      const nextPeriodo = i + 1 < records.length ? records[i + 1].periodo : null;
-      const span = nextPeriodo ? monthsBetween(rec.periodo, nextPeriodo) : 1;
-      const monthCount = Math.max(span, 1);
-      const perMonth = rec.amount / monthCount;
-
-      for (let j = 0; j < monthCount; j++) {
-        const month = addMonths(rec.periodo, j);
-        addTipo(mapped, month, perMonth, "municipio");
-      }
-    }
-  }
+  // Publicidad & Esp. Público: fixed monthly cuotas
+  netoGravadoMap.forEach((_, month) => {
+    addTipo("publicidad", month, getCuotaFija('publicidad', month), "municipio");
+    addTipo("espacioPublico", month, getCuotaFija('espacioPublico', month), "municipio");
+  });
 
   // (Ingresos already populated from RPC in section A above)
 
@@ -299,7 +277,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const segHigiene = get("segHigiene");
     const publicidad = get("publicidad");
     const espacioPublico = get("espacioPublico");
-    const total = ivaNeto + gananciasEst + sicore + cheque + iibb + segHigiene + publicidad + espacioPublico;
+    const total = ivaNeto + gananciasEst + cheque + iibb + segHigiene + publicidad + espacioPublico;
     const ingresos = ingresosMap.get(p) ?? 0;
     const presionFiscal = ingresos > 0 ? (total / ingresos) * 100 : null;
     return { periodo: p, ivaNeto, gananciasEst, sicore, cheque, iibb, segHigiene, publicidad, espacioPublico, total, ingresos, presionFiscal };
