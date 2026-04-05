@@ -201,10 +201,13 @@ def safe_int(val) -> int | None:
 
 
 def safe_float(val) -> float | None:
-    """Convierte a float de forma segura."""
+    """Convierte a float de forma segura. Rechaza NaN de pandas."""
     if val is None:
         return None
     if isinstance(val, (int, float)):
+        import math
+        if math.isnan(val):
+            return None
         return float(val)
     return parse_monto_argentino(str(val))
 
