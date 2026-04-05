@@ -4,28 +4,36 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
-  BarChart3,
   Wallet,
   Users,
-  Megaphone,
-  Calculator,
-  Receipt,
   Building2,
   LayoutDashboard,
-  Briefcase,
   Database,
   Upload,
   TrendingUp,
   ChevronDown,
   Home,
+  FileText,
+  Globe,
 } from "lucide-react";
 import { useState } from "react";
+
+interface NavLeaf {
+  label: string;
+  href: string;
+}
+
+interface NavChild {
+  label: string;
+  href: string;
+  children?: NavLeaf[];
+}
 
 interface NavItem {
   label: string;
   href: string;
   icon: React.ElementType;
-  children?: { label: string; href: string }[];
+  children?: NavChild[];
 }
 
 const navigation: NavItem[] = [
@@ -33,13 +41,29 @@ const navigation: NavItem[] = [
   {
     label: "Económicos",
     href: "/economico",
-    icon: BarChart3,
+    icon: TrendingUp,
     children: [
       { label: "Estado de Resultados", href: "/economico/estado-resultados" },
-      { label: "Ingresos", href: "/economico/ingresos" },
-      { label: "Egresos", href: "/economico/egresos" },
-      { label: "Balance", href: "/economico/balance" },
-      { label: "Indicadores", href: "/economico/indicadores" },
+      {
+        label: "Ingresos",
+        href: "/economico/ingresos",
+        children: [
+          { label: "Servicios", href: "/economico/ingresos/servicios" },
+          { label: "Mostrador", href: "/economico/ingresos/mostrador" },
+          { label: "Restobar", href: "/economico/ingresos/restobar" },
+        ],
+      },
+      {
+        label: "Egresos",
+        href: "/economico/egresos",
+        children: [
+          { label: "Costos Operativos", href: "/economico/egresos/costos-operativos" },
+          { label: "Sueldos", href: "/economico/egresos/sueldos" },
+          { label: "Gastos Comerciales", href: "/economico/egresos/gastos-comerciales" },
+          { label: "Gastos Financieros", href: "/economico/egresos/gastos-financieros" },
+          { label: "Imp. a las Ganancias", href: "/economico/egresos/impuesto-ganancias" },
+        ],
+      },
     ],
   },
   {
@@ -49,62 +73,108 @@ const navigation: NavItem[] = [
     children: [
       { label: "Flujo de Fondos", href: "/financiero/flujo-fondos" },
       { label: "Tenencias", href: "/financiero/tenencias" },
-      { label: "Inversiones", href: "/financiero/inversiones" },
-      { label: "Cuentas por Cobrar", href: "/financiero/cuentas-cobrar" },
       { label: "Cuentas por Pagar", href: "/financiero/cuentas-pagar" },
-    ],
-  },
-  {
-    label: "Personal",
-    href: "/personal",
-    icon: Users,
-    children: [
-      { label: "Nómina", href: "/personal/nomina" },
-      { label: "Empleados", href: "/personal/empleados" },
-      { label: "Cargas Sociales", href: "/personal/cargas-sociales" },
-      { label: "Organigrama", href: "/personal/organigrama" },
+      { label: "Cuentas por Cobrar", href: "/financiero/cuentas-cobrar" },
     ],
   },
   {
     label: "Comercial",
     href: "/comercial",
-    icon: Megaphone,
+    icon: Users,
     children: [
       { label: "Clientes", href: "/comercial/clientes" },
       { label: "Proveedores", href: "/comercial/proveedores" },
-      { label: "Segmentación", href: "/comercial/segmentacion" },
-      { label: "Marketing", href: "/comercial/marketing" },
     ],
   },
-  { label: "Costos", href: "/costos", icon: Calculator },
+  { label: "Datos del Negocio", href: "/datos-negocio", icon: Building2 },
   {
-    label: "Impuestos",
-    href: "/impuestos",
-    icon: Receipt,
+    label: "EECC",
+    href: "/eecc",
+    icon: FileText,
     children: [
-      { label: "Resumen Fiscal", href: "/impuestos/resumen" },
-      { label: "Posición IVA", href: "/impuestos/iva" },
-      { label: "Pagos", href: "/impuestos/pagos" },
-      { label: "Calendario", href: "/impuestos/calendario" },
+      { label: "Balance", href: "/eecc/balance" },
+      { label: "Indicadores", href: "/eecc/indicadores" },
     ],
   },
-  {
-    label: "Unidades de Negocio",
-    href: "/unidades",
-    icon: Building2,
-    children: [
-      { label: "Resumen", href: "/unidades/resumen" },
-      { label: "Mostrador", href: "/unidades/mostrador" },
-      { label: "Restobar", href: "/unidades/restobar" },
-      { label: "Servicios", href: "/unidades/servicios" },
-      { label: "Decoración", href: "/unidades/decoracion" },
-    ],
-  },
-  { label: "Datos del Negocio", href: "/datos-negocio", icon: Briefcase },
+  { label: "Indicadores Macro", href: "/indicadores-macro", icon: Globe },
   { label: "Datasets", href: "/datasets", icon: Database },
-  { label: "Importar", href: "/importar", icon: Upload },
-  { label: "Indicadores Macro", href: "/macro", icon: TrendingUp },
+  { label: "Importar Datos", href: "/importar", icon: Upload },
 ];
+
+function NavSubGroup({ item }: { item: NavChild }) {
+  const pathname = usePathname();
+  const isActive =
+    pathname === item.href || pathname.startsWith(item.href + "/");
+  const [open, setOpen] = useState(isActive);
+
+  if (!item.children) {
+    return (
+      <Link
+        href={item.href}
+        className={cn(
+          "block rounded-lg px-3 py-1.5 text-sm transition-colors",
+          pathname === item.href
+            ? "bg-primary text-primary-foreground"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        )}
+      >
+        {item.label}
+      </Link>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className={cn(
+          "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors",
+          isActive
+            ? "text-accent-foreground font-medium"
+            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+        )}
+      >
+        <Link
+          href={item.href}
+          onClick={(e) => e.stopPropagation()}
+          className={cn(
+            "flex-1 text-left rounded px-1 -mx-1 transition-colors",
+            pathname === item.href && "bg-primary text-primary-foreground"
+          )}
+        >
+          {item.label}
+        </Link>
+        <ChevronDown
+          className={cn(
+            "h-3 w-3 shrink-0 transition-transform",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+      {open && (
+        <div className="ml-3 mt-1 space-y-0.5 border-l pl-3">
+          {item.children.map((child) => {
+            const childActive = pathname === child.href;
+            return (
+              <Link
+                key={child.href}
+                href={child.href}
+                className={cn(
+                  "block rounded-lg px-3 py-1 text-xs transition-colors",
+                  childActive
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+                )}
+              >
+                {child.label}
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function NavGroup({ item }: { item: NavItem }) {
   const pathname = usePathname();
@@ -152,23 +222,24 @@ function NavGroup({ item }: { item: NavItem }) {
       </button>
       {open && (
         <div className="ml-4 mt-1 space-y-1 border-l pl-4">
-          {item.children.map((child) => {
-            const childActive = pathname === child.href;
-            return (
+          {item.children.map((child) =>
+            child.children ? (
+              <NavSubGroup key={child.href} item={child} />
+            ) : (
               <Link
                 key={child.href}
                 href={child.href}
                 className={cn(
                   "block rounded-lg px-3 py-1.5 text-sm transition-colors",
-                  childActive
+                  pathname === child.href
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                 )}
               >
                 {child.label}
               </Link>
-            );
-          })}
+            )
+          )}
         </div>
       )}
     </div>
