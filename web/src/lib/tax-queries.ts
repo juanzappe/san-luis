@@ -4,7 +4,7 @@
  */
 import { supabase } from "./supabase";
 import { fetchWithRetry } from "./fetchWithRetry";
-import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, type ResultadoRow } from "./economic-queries";
+import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, fetchIngresos, type ResultadoRow } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
 
@@ -148,8 +148,8 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     fetchChequeMensual(),
   ]);
 
-  // Batch 2: heavy queries (max 3 concurrent: iva + ingresos + egresos via fetchResultado)
-  const [ivaMensualRows, resultadoData] = await Promise.all([
+  // Batch 2: heavy queries (iva + resultado + ingresos POS)
+  const [ivaMensualRows, resultadoData, ingresosData] = await Promise.all([
     fetchWithRetry(async () => {
       const res = await supabase.rpc("get_iva_ingresos_mensual");
       if (res.error) throw res.error;
@@ -158,6 +158,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
       }>;
     }),
     fetchResultado() as Promise<ResultadoRow[]>,
+    fetchIngresos(),
   ]);
 
   // ---------------------------------------------------------------------------
@@ -185,6 +186,17 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const ng = Number(row.neto_gravado) || 0;
     addToMap(netoGravadoMap, row.periodo, ng > 0 ? ng : (Number(row.ingresos) || 0) / 1.21);
   }
+  // Add POS sales (mostrador + restobar) to netoGravadoMap and ingresosMap.
+  // get_iva_ingresos_mensual only has factura_emitida (servicios + facturas directas).
+  // POS sales (venta_detalle.neto) are already net of IVA.
+  for (const row of ingresosData) {
+    const posNeto = row.mostrador + row.restobar;
+    if (posNeto > 0) {
+      addToMap(netoGravadoMap, row.periodo, posNeto);
+      addToMap(ingresosMap, row.periodo, posNeto);
+    }
+  }
+
   // Merge IVA neto into tipoMonthMap
   const allIvaPeriods = new Set<string>();
   ivaDebitoMap.forEach((_, k) => allIvaPeriods.add(k));
