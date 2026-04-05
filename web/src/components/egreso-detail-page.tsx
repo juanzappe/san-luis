@@ -289,8 +289,8 @@ export function EgresoDetailPage({
           delta={prevValue !== null ? pctDelta(lastValue, prevValue) : null}
         />
         {hasBreakdown && breakdownKeys.slice(0, 5).map((k) => {
-          const lastBd = last ? (extractBreakdown!(last, taxData.get(last.periodo))[k] ?? 0) : 0;
-          const prevBd = prev ? (extractBreakdown!(prev, taxData.get(prev.periodo))[k] ?? 0) : null;
+          const lastBd = last ? (extractBreakdown!(last, taxData.get(last.periodo), resultadoData.get(last.periodo))[k] ?? 0) : 0;
+          const prevBd = prev ? (extractBreakdown!(prev, taxData.get(prev.periodo), resultadoData.get(prev.periodo))[k] ?? 0) : null;
           return (
             <KpiCard
               key={k}

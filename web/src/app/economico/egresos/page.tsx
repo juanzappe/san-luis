@@ -20,7 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { InflationToggle } from "@/lib/inflation";
+import { InflationToggle, useInflation } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
@@ -145,6 +145,7 @@ function KpiCard({
 // Main
 // ---------------------------------------------------------------------------
 export default function EgresosPage() {
+  const { adjust } = useInflation();
   const { data, resultadoData, loading, error, periodos } = useEgresosData();
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
@@ -211,7 +212,7 @@ export default function EgresosPage() {
   // Uses the same ingresos base as the P&L (ResultadoRow.ingresos)
   const gastosComerciales = (r: EgresoRow) => {
     const ingresos = resultadoData.get(r.periodo)?.ingresos ?? 0;
-    return computeGastosComerciales(ingresos, r.periodo);
+    return adjust(computeGastosComerciales(ingresos, r.periodo), r.periodo);
   };
 
   // Total = components sum (avoids the percibido comerciales from RPC)

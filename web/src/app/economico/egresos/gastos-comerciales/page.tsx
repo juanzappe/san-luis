@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EgresoDetailPage } from "@/components/egreso-detail-page";
 import type { EgresoRow, ResultadoRow } from "@/lib/economic-queries";
 import { formatARS, shortLabel } from "@/lib/economic-queries";
+import { useInflation } from "@/lib/inflation";
 import type { ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchPosicionIva, computeGastosComerciales, getCuotaFija, type IvaMensualRow } from "@/lib/tax-queries";
 import type {
@@ -25,25 +26,8 @@ const COLORS: Record<string, string> = {
   "Ocupación Esp. Público": "#ec4899",
 };
 
-function extractValue(_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): number {
-  const ingresos = resultado?.ingresos ?? 0;
-  return computeGastosComerciales(ingresos, resultado?.periodo ?? _r.periodo);
-}
-
-function extractBreakdown(_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): Record<string, number> {
-  const ingresos = resultado?.ingresos ?? 0;
-  const periodo = resultado?.periodo ?? _r.periodo;
-  const bd: Record<string, number> = {};
-  const iibb = ingresos * 0.045;
-  const segHig = ingresos * 0.01;
-  const pub = getCuotaFija('publicidad', periodo);
-  const esp = getCuotaFija('espacioPublico', periodo);
-  if (iibb > 0) bd["Ingresos Brutos"] = iibb;
-  if (segHig > 0) bd["Seg. e Higiene"] = segHig;
-  if (pub > 0) bd["Publicidad"] = pub;
-  if (esp > 0) bd["Ocupación Esp. Público"] = esp;
-  return bd;
-}
+// extractValue and extractBreakdown are defined inside the component
+// so they can access useInflation().adjust via closure.
 
 // ---------------------------------------------------------------------------
 // Posición IVA Section (informational, separate from Gastos Comerciales total)
@@ -159,6 +143,35 @@ function PosicionIvaSection() {
 // ---------------------------------------------------------------------------
 
 export default function GastosComercialesPage() {
+  const { adjust } = useInflation();
+
+  const extractValue = useCallback(
+    (_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): number => {
+      const ingresos = resultado?.ingresos ?? 0;
+      const periodo = resultado?.periodo ?? _r.periodo;
+      return adjust(computeGastosComerciales(ingresos, periodo), periodo);
+    },
+    [adjust],
+  );
+
+  const extractBreakdown = useCallback(
+    (_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): Record<string, number> => {
+      const ingresos = resultado?.ingresos ?? 0;
+      const periodo = resultado?.periodo ?? _r.periodo;
+      const bd: Record<string, number> = {};
+      const iibb = adjust(ingresos * 0.045, periodo);
+      const segHig = adjust(ingresos * 0.01, periodo);
+      const pub = adjust(getCuotaFija('publicidad', periodo), periodo);
+      const esp = adjust(getCuotaFija('espacioPublico', periodo), periodo);
+      if (iibb > 0) bd["Ingresos Brutos"] = iibb;
+      if (segHig > 0) bd["Seg. e Higiene"] = segHig;
+      if (pub > 0) bd["Publicidad"] = pub;
+      if (esp > 0) bd["Ocupación Esp. Público"] = esp;
+      return bd;
+    },
+    [adjust],
+  );
+
   return (
     <EgresoDetailPage
       title="Gastos Comerciales"
