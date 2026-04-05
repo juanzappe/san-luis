@@ -54,6 +54,7 @@ const COLORS = {
   sueldos: "#f97316",
   impuestos: "#06b6d4",
   comisiones: "#64748b",
+  retirosSocios: "#d946ef",
   neto: "#3b82f6",
 };
 
@@ -87,6 +88,7 @@ interface AggregatedFlujo {
   totalPagos: number;
   flujoNeto: number;
   acumulado: number;
+  retirosSocios: number;
 }
 
 function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granularity): AggregatedFlujo[] {
@@ -107,7 +109,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
       cobrosEfectivo: 0, cobrosBanco: 0, cobrosMP: 0, totalCobros: 0,
       pagosProveedores: 0, sueldos: 0, impuestos: 0, comisionesBancarias: 0,
       egresosMP: 0, totalPagos: 0, flujoNeto: 0,
-      acumulado: 0,
+      acumulado: 0, retirosSocios: 0,
     };
     cur.cobrosEfectivo += r.cobrosEfectivo;
     cur.cobrosBanco += r.cobrosBanco;
@@ -118,6 +120,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     cur.impuestos += r.impuestos;
     cur.comisionesBancarias += r.comisionesBancarias;
     cur.egresosMP += r.egresosMP;
+    cur.retirosSocios += r.retirosSocios;
     cur.totalPagos += r.totalPagos;
     cur.flujoNeto += r.flujoNeto;
     cur.acumulado = r.acumulado; // last row in bucket = end-of-period cumulative
@@ -318,6 +321,7 @@ export default function FlujoDeFondosPage() {
                 <Bar dataKey="impuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
                 <Bar dataKey="comisionesBancarias" name="Comisiones" stackId="p" fill={COLORS.comisiones} />
                 <Bar dataKey="egresosMP" name="Egresos MP" stackId="p" fill={COLORS.mp} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="retirosSocios" name="Retiros socios" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -359,6 +363,7 @@ export default function FlujoDeFondosPage() {
                   <TableHead className="text-right">Impuestos</TableHead>
                   <TableHead className="text-right">Comisiones</TableHead>
                   <TableHead className="text-right">Egresos MP</TableHead>
+                  <TableHead className="text-right">Retiros</TableHead>
                   <TableHead className="text-right font-bold">Pagos</TableHead>
                   <TableHead className="text-right font-bold">Neto</TableHead>
                   <TableHead className="text-right font-bold">Acumulado</TableHead>
@@ -377,6 +382,7 @@ export default function FlujoDeFondosPage() {
                     <TableCell className="text-right">{formatARS(r.impuestos)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.comisionesBancarias)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.egresosMP)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.retirosSocios)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalPagos)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.flujoNeto >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.flujoNeto)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.acumulado >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.acumulado)}</TableCell>
