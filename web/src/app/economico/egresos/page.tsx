@@ -24,6 +24,7 @@ import { InflationToggle, useInflation } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
+  TASA_GANANCIAS,
   formatARS,
   formatPct,
   pctDelta,
@@ -67,6 +68,7 @@ interface AggregatedEgreso {
   sueldos: number;
   comerciales: number; // gastos comerciales devengado (IIBB + Seg. e Hig. + municipales)
   ganancias: number;
+  gananciasBase: number; // pre-clamp base for correct annual recalculation
   financieros: number;
   total: number;
 }
@@ -87,6 +89,7 @@ function aggregateEgresos(data: AggregatedEgreso[], granularity: Granularity): A
       sueldos: 0,
       comerciales: 0,
       ganancias: 0,
+      gananciasBase: 0,
       financieros: 0,
       total: 0,
     };
@@ -96,10 +99,18 @@ function aggregateEgresos(data: AggregatedEgreso[], granularity: Granularity): A
     cur.sueldos += r.sueldos;
     cur.comerciales += r.comerciales;
     cur.ganancias += r.ganancias;
+    cur.gananciasBase += r.gananciasBase;
     cur.financieros += r.financieros;
     cur.total += r.total;
     buckets.set(bucketKey, cur);
   }
+
+  // Recalculate ganancias on aggregated base (monthly clamp-at-0 inflates annual rate)
+  Array.from(buckets.values()).forEach((cur) => {
+    const oldGan = cur.ganancias;
+    cur.ganancias = cur.gananciasBase > 0 ? cur.gananciasBase * TASA_GANANCIAS : 0;
+    cur.total += cur.ganancias - oldGan;
+  });
 
   return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
 }
@@ -230,6 +241,7 @@ export default function EgresosPage() {
     sueldos: r.sueldosNeto + r.cargasSociales,
     comerciales: gastosComerciales(r),
     ganancias: r.ganancias,
+    gananciasBase: r.gananciasBase,
     financieros: r.financieros,
     total: totalEgresos(r),
   }));

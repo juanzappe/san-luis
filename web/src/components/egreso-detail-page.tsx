@@ -62,6 +62,7 @@ function aggregateRows(
   extractValue: (r: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => number,
   extractBreakdown: ((r: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => Record<string, number>) | undefined,
   granularity: Granularity,
+  aggregateValue?: (rows: EgresoRow[]) => number,
 ): AggregatedRow[] {
   if (granularity === "mensual") {
     return [...data]
@@ -78,6 +79,8 @@ function aggregateRows(
       .sort((a, b) => b.key.localeCompare(a.key));
   }
 
+  // Group rows into buckets for quarterly/annual aggregation
+  const bucketRows = new Map<string, EgresoRow[]>();
   const buckets = new Map<string, AggregatedRow>();
   for (const r of data) {
     const [y, m] = r.periodo.split("-");
@@ -94,12 +97,21 @@ function aggregateRows(
         value: val,
         breakdown: { ...bd },
       });
+      if (aggregateValue) bucketRows.set(bucketKey, [r]);
     } else {
       cur.value += val;
       for (const [k, v] of Object.entries(bd)) {
         cur.breakdown[k] = (cur.breakdown[k] ?? 0) + v;
       }
+      if (aggregateValue) bucketRows.get(bucketKey)!.push(r);
     }
+  }
+
+  // When aggregateValue is provided, override the summed value with a recalculation
+  if (aggregateValue) {
+    Array.from(bucketRows.entries()).forEach(([key, rows]) => {
+      buckets.get(key)!.value = aggregateValue(rows);
+    });
   }
 
   return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
@@ -158,6 +170,13 @@ export interface EgresoDetailPageProps {
   extractValue: (row: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => number;
   extractBreakdown?: (row: EgresoRow, tax?: ResumenMensualRow, resultado?: ResultadoRow) => Record<string, number>;
   breakdownColors?: Record<string, string>;
+  /**
+   * When provided, overrides sum-based aggregation for quarterly/annual views.
+   * Receives all EgresoRows in the bucket and returns the aggregated value.
+   * Used by Imp. a las Ganancias to recalculate on the summed base instead of
+   * summing monthly clamped values (which inflates the annual effective rate).
+   */
+  aggregateValue?: (rows: EgresoRow[]) => number;
   /** Extra content rendered after the main sections (e.g. IVA section) */
   children?: React.ReactNode;
 }
@@ -172,6 +191,7 @@ export function EgresoDetailPage({
   extractValue,
   extractBreakdown,
   breakdownColors,
+  aggregateValue,
   children,
 }: EgresoDetailPageProps) {
   const { data, taxData, resultadoData, loading, error, periodos } = useEgresosData();
@@ -264,7 +284,7 @@ export function EgresoDetailPage({
     );
   }
 
-  const aggregated = aggregateRows(data, taxData, resultadoData, extractValue, extractBreakdown, granularity);
+  const aggregated = aggregateRows(data, taxData, resultadoData, extractValue, extractBreakdown, granularity, aggregateValue);
   const hasBreakdown = extractBreakdown && breakdownKeys.length > 0;
   const chartKeys = hasBreakdown ? breakdownKeys : [title];
 
