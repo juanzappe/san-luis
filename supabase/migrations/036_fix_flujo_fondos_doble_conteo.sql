@@ -8,8 +8,13 @@
 -- Fix:
 --   - banco_cred: exclude cash deposits and MP transfers (identified by concepto patterns)
 --   - Add egresos_mp: MP outflows (excluding 'Retiro de dinero' which is just an internal transfer)
+--
+-- NOTE: Must DROP first because return type changed (added egresos_mp column).
+-- CREATE OR REPLACE cannot change the return type of an existing function.
 
-CREATE OR REPLACE FUNCTION get_flujo_fondos()
+DROP FUNCTION IF EXISTS get_flujo_fondos();
+
+CREATE FUNCTION get_flujo_fondos()
 RETURNS TABLE(
   periodo text,
   cobros_efectivo numeric,
