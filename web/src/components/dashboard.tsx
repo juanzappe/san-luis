@@ -55,6 +55,7 @@ import {
   type FlujoDeFondosRow,
   fetchFlujoDeFondos,
 } from "@/lib/financial-queries";
+import { computeGastosComerciales } from "@/lib/tax-queries";
 
 // ---------------------------------------------------------------------------
 // Color palette
@@ -242,7 +243,9 @@ export default function Dashboard() {
       const ing = adjust(r.ingresos, r.periodo);
       const eOp = adjust(r.egresosOp, r.periodo);
       const sue = adjust(r.sueldos, r.periodo);
-      const com = adjust(r.comerciales, r.periodo);
+      const netoGravado = r.ingresos / 1.21;
+      const comDevengado = computeGastosComerciales(netoGravado, r.periodo);
+      const com = adjust(comDevengado, r.periodo);
       const fin = adjust(r.financieros, r.periodo);
       const egTotal = eOp + sue + com + fin;
       const res = ing - egTotal;

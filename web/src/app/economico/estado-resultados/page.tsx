@@ -305,10 +305,10 @@ export default function EstadoResultadosPage() {
         const costOp = adjust(r.costosOperativos, r.periodo);
         const sueldos = adjust(r.sueldos, r.periodo);
         const cargasSoc = adjust(r.cargasSociales, r.periodo);
-        // Costos Comerciales from Resumen Fiscal: IIBB + Seg. e Hig. + Publicidad + Esp. Público + SICORE
+        // Costos Comerciales from Resumen Fiscal: IIBB + Seg. e Hig. + Publicidad + Esp. Público
         const tax = taxMap.get(r.periodo);
         const costComNominal = tax
-          ? tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico + tax.sicore
+          ? tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico
           : r.costosComercialesAdmin;
         const costCom = adjust(costComNominal, r.periodo);
         // Costos Financieros: bank fees/interest + Imp. al Cheque from Resumen Fiscal

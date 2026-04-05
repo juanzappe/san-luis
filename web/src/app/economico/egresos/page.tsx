@@ -40,7 +40,7 @@ const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 
 // Fixed colors for the KPI categories
 const OPERATIVOS_COLOR = "#f59e0b";
 const SUELDOS_COLOR = "#6366f1";
-const IMPUESTOS_COLOR = "#ef4444";
+const COMERCIALES_COLOR = "#ef4444";
 const FINANCIEROS_COLOR = "#8b5cf6";
 const GANANCIAS_COLOR = "#ec4899";
 
@@ -64,7 +64,7 @@ interface AggregatedEgreso {
   label: string;
   categorias: Record<string, number>;
   sueldos: number;
-  comerciales: number; // impuestos operativos sin IVA
+  comerciales: number; // gastos comerciales devengado (IIBB + Seg. e Hig. + municipales)
   ganancias: number;
   financieros: number;
   total: number;
@@ -206,11 +206,19 @@ export default function EgresosPage() {
   const lastCostosOp = costosOp(last);
   const prevCostosOp = prev ? costosOp(prev) : null;
 
-  // IVA subtraction: IVA is NOT an egreso — subtract from comerciales and total
-  const ivaForPeriod = (periodo: string) => taxData.get(periodo)?.ivaNeto ?? 0;
+  // Gastos Comerciales devengado: from taxData (IIBB + Seg. e Hig. + municipales), not from RPC
+  const gastosComerciales = (r: EgresoRow) => {
+    const tax = taxData.get(r.periodo);
+    if (!tax) return 0;
+    return tax.iibb + tax.segHigiene + tax.publicidad + tax.espacioPublico;
+  };
 
-  const comercialesSinIva = (r: EgresoRow) => r.comerciales - ivaForPeriod(r.periodo);
-  const totalSinIva = (r: EgresoRow) => r.total - ivaForPeriod(r.periodo);
+  // Total = components sum (avoids the percibido comerciales from RPC)
+  const totalEgresos = (r: EgresoRow) => {
+    const ops = Object.values(r.categorias).reduce((a, b) => a + b, 0);
+    const sueldos = r.sueldosNeto + r.cargasSociales;
+    return ops + sueldos + gastosComerciales(r) + r.ganancias + r.financieros;
+  };
 
   // Build aggregated rows (with IVA subtracted) for chart + table
   const rowsForAgg: AggregatedEgreso[] = data.map((r) => ({
@@ -218,18 +226,18 @@ export default function EgresosPage() {
     label: periodoLabel(r.periodo),
     categorias: r.categorias,
     sueldos: r.sueldosNeto + r.cargasSociales,
-    comerciales: comercialesSinIva(r),
+    comerciales: gastosComerciales(r),
     ganancias: r.ganancias,
     financieros: r.financieros,
-    total: totalSinIva(r),
+    total: totalEgresos(r),
   }));
 
-  // Chart data — 5 stacked categories (Impuestos = comerciales sin IVA, Ganancias separate)
+  // Chart data — 5 stacked categories
   const chartData = data.slice(-12).map((r) => ({
     label: shortLabel(r.periodo),
     "Costos Operativos": costosOp(r),
     "Sueldos": r.sueldosNeto + r.cargasSociales,
-    "Impuestos": comercialesSinIva(r),
+    "Gastos Comerciales": gastosComerciales(r),
     "Imp. Ganancias": r.ganancias,
     "Financieros": r.financieros,
   }));
@@ -251,8 +259,8 @@ export default function EgresosPage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
         <KpiCard
           title="Total Egresos"
-          value={totalSinIva(last)}
-          delta={prev ? pctDelta(totalSinIva(last), totalSinIva(prev)) : null}
+          value={totalEgresos(last)}
+          delta={prev ? pctDelta(totalEgresos(last), totalEgresos(prev)) : null}
         />
         <KpiCard
           title="Costos Operativos"
@@ -267,10 +275,10 @@ export default function EgresosPage() {
           color={SUELDOS_COLOR}
         />
         <KpiCard
-          title="Impuestos"
-          value={comercialesSinIva(last)}
-          delta={prev ? pctDelta(comercialesSinIva(last), comercialesSinIva(prev)) : null}
-          color={IMPUESTOS_COLOR}
+          title="Gastos Comerciales"
+          value={gastosComerciales(last)}
+          delta={prev ? pctDelta(gastosComerciales(last), gastosComerciales(prev)) : null}
+          color={COMERCIALES_COLOR}
         />
         <KpiCard
           title="Imp. Ganancias"
@@ -301,7 +309,7 @@ export default function EgresosPage() {
               <Legend />
               <Bar dataKey="Costos Operativos" name="Costos Operativos" stackId="a" fill={OPERATIVOS_COLOR} />
               <Bar dataKey="Sueldos" name="Sueldos" stackId="a" fill={SUELDOS_COLOR} />
-              <Bar dataKey="Impuestos" name="Impuestos" stackId="a" fill={IMPUESTOS_COLOR} />
+              <Bar dataKey="Gastos Comerciales" name="Gastos Comerciales" stackId="a" fill={COMERCIALES_COLOR} />
               <Bar dataKey="Imp. Ganancias" name="Imp. Ganancias" stackId="a" fill={GANANCIAS_COLOR} />
               <Bar dataKey="Financieros" name="Financieros" stackId="a" fill={FINANCIEROS_COLOR} radius={[4, 4, 0, 0]} />
             </BarChart>
@@ -339,7 +347,7 @@ export default function EgresosPage() {
                     <TableHead key={cat} className="text-right">{cat}</TableHead>
                   ))}
                   <TableHead className="text-right">Sueldos y CS</TableHead>
-                  <TableHead className="text-right">Impuestos</TableHead>
+                  <TableHead className="text-right">Gastos Comerciales</TableHead>
                   <TableHead className="text-right">Imp. Ganancias</TableHead>
                   <TableHead className="text-right">Financieros</TableHead>
                   <TableHead className="text-right">Total</TableHead>

@@ -21,7 +21,6 @@ const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 
 const COLORS: Record<string, string> = {
   "Ingresos Brutos": "#ef4444",
   "Seg. e Higiene": "#f59e0b",
-  "SICORE": "#8b5cf6",
   "Publicidad": "#06b6d4",
   "Ocupación Esp. Público": "#ec4899",
 };
@@ -29,7 +28,7 @@ const COLORS: Record<string, string> = {
 function extractValue(_r: EgresoRow, tax?: ResumenMensualRow): number {
   if (!tax) return 0;
   return (tax.iibb ?? 0) + (tax.segHigiene ?? 0) + (tax.publicidad ?? 0) +
-    (tax.espacioPublico ?? 0) + (tax.sicore ?? 0);
+    (tax.espacioPublico ?? 0);
 }
 
 function extractBreakdown(_r: EgresoRow, tax?: ResumenMensualRow): Record<string, number> {
@@ -37,7 +36,6 @@ function extractBreakdown(_r: EgresoRow, tax?: ResumenMensualRow): Record<string
   const bd: Record<string, number> = {};
   if (tax.iibb > 0) bd["Ingresos Brutos"] = tax.iibb;
   if (tax.segHigiene > 0) bd["Seg. e Higiene"] = tax.segHigiene;
-  if (tax.sicore > 0) bd["SICORE"] = tax.sicore;
   if (tax.publicidad > 0) bd["Publicidad"] = tax.publicidad;
   if (tax.espacioPublico > 0) bd["Ocupación Esp. Público"] = tax.espacioPublico;
   return bd;
@@ -160,7 +158,7 @@ export default function GastosComercialesPage() {
   return (
     <EgresoDetailPage
       title="Gastos Comerciales"
-      subtitle="IIBB, Tasa Seg. e Higiene, SICORE y tasas municipales — sin IVA ni Imp. al Cheque"
+      subtitle="IIBB, Tasa Seg. e Higiene y tasas municipales — sin IVA ni Imp. al Cheque"
       extractValue={extractValue}
       extractBreakdown={extractBreakdown}
       breakdownColors={COLORS}
