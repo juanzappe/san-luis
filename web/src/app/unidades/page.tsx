@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
 
-export default function UnidadesPage() {
-  redirect("/unidades/resumen");
+export default function UnidadesRedirect() {
+  redirect("/economico/ingresos");
 }

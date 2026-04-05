@@ -69,7 +69,7 @@ export default function EconomicoPage() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Económicos</h1>
         <p className="text-muted-foreground">
-          Estado de Resultados, Ventas, Egresos, Balance, Indicadores
+          Estado de Resultados, Ingresos y Egresos
         </p>
       </div>
 
@@ -148,24 +148,14 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=tu-anon-key`}
             desc: "Calculado automáticamente desde datos operativos",
           },
           {
-            title: "Ventas",
-            href: "/economico/ventas",
-            desc: "Por unidad de negocio, categoría y período",
+            title: "Ingresos",
+            href: "/economico/ingresos",
+            desc: "Servicios, Mostrador y Restobar — por unidad de negocio",
           },
           {
             title: "Egresos",
             href: "/economico/egresos",
-            desc: "Consolidados por categoría y fuente",
-          },
-          {
-            title: "Balance",
-            href: "/economico/balance",
-            desc: "Balance general del contador",
-          },
-          {
-            title: "Indicadores",
-            href: "/economico/indicadores",
-            desc: "Rentabilidad, liquidez, endeudamiento",
+            desc: "Costos operativos, sueldos, impuestos y financieros",
           },
         ].map((item) => (
           <Card key={item.href} className="hover:bg-accent/50 transition-colors">

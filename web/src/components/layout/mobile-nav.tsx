@@ -10,15 +10,12 @@ const links = [
   { label: "Inicio", href: "/" },
   { label: "Económicos", href: "/economico" },
   { label: "Financieros", href: "/financiero" },
-  { label: "Personal", href: "/personal" },
   { label: "Comercial", href: "/comercial" },
-  { label: "Costos", href: "/costos" },
-  { label: "Impuestos", href: "/impuestos" },
-  { label: "Unidades", href: "/unidades" },
   { label: "Datos del Negocio", href: "/datos-negocio" },
+  { label: "EECC", href: "/eecc" },
+  { label: "Indicadores Macro", href: "/indicadores-macro" },
   { label: "Datasets", href: "/datasets" },
   { label: "Importar", href: "/importar" },
-  { label: "Macro", href: "/macro" },
 ];
 
 export function MobileNav() {

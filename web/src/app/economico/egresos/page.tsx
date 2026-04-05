@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -20,23 +20,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { InflationToggle, useInflation } from "@/lib/inflation";
+import { InflationToggle } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type EgresoRow,
-  type ResultadoRow,
-  fetchEgresos,
-  fetchResultado,
   formatARS,
   formatPct,
   pctDelta,
   periodoLabel,
   shortLabel,
-  computeIpcFallback,
-  computeGananciasNominal,
 } from "@/lib/economic-queries";
-import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
-import { fetchIpcMensualMap } from "@/lib/macro-queries";
+import { useEgresosData } from "@/lib/use-egresos-data";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -70,31 +64,20 @@ interface AggregatedEgreso {
   label: string;
   categorias: Record<string, number>;
   sueldos: number;
-  comerciales: number; // impuestos operativos (IVA, IIBB, etc.) — sin ganancias
-  ganancias: number;   // imp. a las ganancias
+  comerciales: number; // impuestos operativos sin IVA
+  ganancias: number;
   financieros: number;
   total: number;
 }
 
-function aggregateEgresos(data: EgresoRow[], granularity: Granularity): AggregatedEgreso[] {
+function aggregateEgresos(data: AggregatedEgreso[], granularity: Granularity): AggregatedEgreso[] {
   if (granularity === "mensual") {
-    return [...data]
-      .map((r) => ({
-        key: r.periodo,
-        label: periodoLabel(r.periodo),
-        categorias: r.categorias,
-        sueldos: r.sueldosNeto + r.cargasSociales,
-        comerciales: r.comerciales,
-        ganancias: r.ganancias,
-        financieros: r.financieros,
-        total: r.total,
-      }))
-      .sort((a, b) => b.key.localeCompare(a.key));
+    return [...data].sort((a, b) => b.key.localeCompare(a.key));
   }
 
   const buckets = new Map<string, AggregatedEgreso>();
   for (const r of data) {
-    const [y, m] = r.periodo.split("-");
+    const [y, m] = r.key.split("-");
     const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
     const cur = buckets.get(bucketKey) ?? {
       key: bucketKey,
@@ -109,7 +92,7 @@ function aggregateEgresos(data: EgresoRow[], granularity: Granularity): Aggregat
     for (const [cat, monto] of Object.entries(r.categorias)) {
       cur.categorias[cat] = (cur.categorias[cat] ?? 0) + monto;
     }
-    cur.sueldos += r.sueldosNeto + r.cargasSociales;
+    cur.sueldos += r.sueldos;
     cur.comerciales += r.comerciales;
     cur.ganancias += r.ganancias;
     cur.financieros += r.financieros;
@@ -161,42 +144,14 @@ function KpiCard({
 // Main
 // ---------------------------------------------------------------------------
 export default function EgresosPage() {
-  const { adjust } = useInflation();
-  const [raw, setRaw] = useState<EgresoRow[]>([]);
-  const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
-  const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
-  const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { data, taxData, loading, error, periodos } = useEgresosData();
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
-
-  useEffect(() => {
-    Promise.all([fetchEgresos(), fetchResultado(), fetchIpcMensualMap(), fetchResumenFiscal()])
-      .then(([egresos, resultado, ipc, fiscal]) => {
-        setRaw(egresos);
-        setRawResultado(resultado);
-        setIpcMap(ipc);
-        setTaxMap(new Map(fiscal.mensual.map((r) => [r.periodo, r])));
-      })
-      .catch((e) => setError(e.message ?? "Error"))
-      .finally(() => setLoading(false));
-  }, []);
-
-  // Map ResultadoRow by periodo — needed to supply ingresos + resultadoAntesGanancias
-  // to computeGananciasNominal, which applies the same RECPAM-adjusted formula as ER.
-  const resultadoMap = useMemo(
-    () => new Map(rawResultado.map((r) => [r.periodo, r])),
-    [rawResultado],
-  );
-
-  // Same fallback logic as estado-resultados/page.tsx
-  const ipcFallback = useMemo(() => computeIpcFallback(ipcMap), [ipcMap]);
 
   // Discover all category names sorted by total descending
   const allCategories = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const r of raw) {
+    for (const r of data) {
       for (const [cat, monto] of Object.entries(r.categorias)) {
         totals.set(cat, (totals.get(cat) ?? 0) + monto);
       }
@@ -204,13 +159,13 @@ export default function EgresosPage() {
     return Array.from(totals.entries())
       .sort((a, b) => b[1] - a[1])
       .map(([name]) => name);
-  }, [raw]);
+  }, [data]);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-3 text-muted-foreground">Cargando datos…</span>
+        <span className="ml-3 text-muted-foreground">Cargando datos...</span>
       </div>
     );
   }
@@ -226,7 +181,7 @@ export default function EgresosPage() {
     );
   }
 
-  if (raw.length === 0) {
+  if (data.length === 0) {
     return (
       <Card>
         <CardContent className="py-8 text-center">
@@ -240,41 +195,6 @@ export default function EgresosPage() {
     );
   }
 
-  // Apply inflation adjustment.
-  // ganancias: computed with computeGananciasNominal — identical formula to estado-resultados:
-  //   TASA_GANANCIAS × (resultadoAntesGanancias − RECPAM), then adjust().
-  //   The RPC field was actual AFIP payments (cash basis, often zero for recent months);
-  //   ResultadoRow.ganancias was TASA_GANANCIAS × resultadoAntesGanancias (no RECPAM, overstated).
-  // sueldosNeto + cargasSociales: adjusted separately so aggregateEgresos can use them.
-  const data: EgresoRow[] = raw.map((r) => {
-    const adjCats: Record<string, number> = {};
-    for (const [cat, monto] of Object.entries(r.categorias)) {
-      adjCats[cat] = adjust(monto, r.periodo);
-    }
-    const resultadoRow = resultadoMap.get(r.periodo);
-    const gananciasNom = resultadoRow
-      ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
-      : 0;
-    // Add Imp. al Cheque from Resumen Fiscal to Financieros
-    const cheque = taxMap.get(r.periodo)?.cheque ?? 0;
-    const financierosConCheque = r.financieros + cheque;
-    const totalConCheque = r.total + cheque;
-    return {
-      ...r,
-      operativos: adjust(r.operativos, r.periodo),
-      comerciales: adjust(r.comerciales, r.periodo),
-      financieros: adjust(financierosConCheque, r.periodo),
-      ganancias: adjust(gananciasNom, r.periodo),
-      total: adjust(totalConCheque, r.periodo),
-      categorias: adjCats,
-      sueldos: adjust(r.sueldos, r.periodo),
-      sueldosNeto: adjust(r.sueldosNeto, r.periodo),
-      cargasSociales: adjust(r.cargasSociales, r.periodo),
-      impuestos: adjust(r.impuestos, r.periodo),
-    };
-  });
-
-  const periodos = data.map((r) => r.periodo);
   const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
   const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
@@ -286,12 +206,30 @@ export default function EgresosPage() {
   const lastCostosOp = costosOp(last);
   const prevCostosOp = prev ? costosOp(prev) : null;
 
-  // Chart data — 5 stacked categories (Impuestos = comerciales only, Ganancias separate)
+  // IVA subtraction: IVA is NOT an egreso — subtract from comerciales and total
+  const ivaForPeriod = (periodo: string) => taxData.get(periodo)?.ivaNeto ?? 0;
+
+  const comercialesSinIva = (r: EgresoRow) => r.comerciales - ivaForPeriod(r.periodo);
+  const totalSinIva = (r: EgresoRow) => r.total - ivaForPeriod(r.periodo);
+
+  // Build aggregated rows (with IVA subtracted) for chart + table
+  const rowsForAgg: AggregatedEgreso[] = data.map((r) => ({
+    key: r.periodo,
+    label: periodoLabel(r.periodo),
+    categorias: r.categorias,
+    sueldos: r.sueldosNeto + r.cargasSociales,
+    comerciales: comercialesSinIva(r),
+    ganancias: r.ganancias,
+    financieros: r.financieros,
+    total: totalSinIva(r),
+  }));
+
+  // Chart data — 5 stacked categories (Impuestos = comerciales sin IVA, Ganancias separate)
   const chartData = data.slice(-12).map((r) => ({
     label: shortLabel(r.periodo),
     "Costos Operativos": costosOp(r),
     "Sueldos": r.sueldosNeto + r.cargasSociales,
-    "Impuestos": r.comerciales,
+    "Impuestos": comercialesSinIva(r),
     "Imp. Ganancias": r.ganancias,
     "Financieros": r.financieros,
   }));
@@ -313,8 +251,8 @@ export default function EgresosPage() {
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
         <KpiCard
           title="Total Egresos"
-          value={last.total}
-          delta={prev ? pctDelta(last.total, prev.total) : null}
+          value={totalSinIva(last)}
+          delta={prev ? pctDelta(totalSinIva(last), totalSinIva(prev)) : null}
         />
         <KpiCard
           title="Costos Operativos"
@@ -330,8 +268,8 @@ export default function EgresosPage() {
         />
         <KpiCard
           title="Impuestos"
-          value={last.comerciales}
-          delta={prev ? pctDelta(last.comerciales, prev.comerciales) : null}
+          value={comercialesSinIva(last)}
+          delta={prev ? pctDelta(comercialesSinIva(last), comercialesSinIva(prev)) : null}
           color={IMPUESTOS_COLOR}
         />
         <KpiCard
@@ -408,7 +346,7 @@ export default function EgresosPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {aggregateEgresos(data, granularity).map((row) => (
+                {aggregateEgresos(rowsForAgg, granularity).map((row) => (
                   <TableRow key={row.key}>
                     <TableCell className="font-medium whitespace-nowrap">{row.label}</TableCell>
                     {allCategories.map((cat) => (
