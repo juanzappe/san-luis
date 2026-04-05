@@ -59,7 +59,7 @@ RETURNS TABLE(
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito de efectivo%'
       -- Exclude internal transfers (between own bank accounts)
       -- Provincia: "CREDITO TRANSFERENCIA I" (interna)
-      AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRANSFERENCIA I'
+      AND COALESCE(concepto, '') != 'CREDITO TRANSFERENCIA I'
       -- Exclude MP transfers (MP → banco): already counted in cobros_mp
       -- Santander: "... mercado pago ..."
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
