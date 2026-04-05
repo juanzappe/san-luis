@@ -247,12 +247,12 @@ export default function FlujoDeFondosPage() {
         <KpiCard title="Acumulado 12m" value={acum12} delta={null} icon={Sigma} />
       </div>
 
-      {/* Charts 2x2 */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      {/* Main charts — full width */}
+      <div className="grid gap-4">
         <Card>
           <CardHeader><CardTitle className="text-base">Cobros vs Pagos</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={420}>
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -269,7 +269,7 @@ export default function FlujoDeFondosPage() {
         <Card>
           <CardHeader><CardTitle className="text-base">Flujo Neto Acumulado</CardTitle></CardHeader>
           <CardContent>
-            <ResponsiveContainer width="100%" height={400}>
+            <ResponsiveContainer width="100%" height={420}>
               <LineChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
@@ -281,7 +281,10 @@ export default function FlujoDeFondosPage() {
             </ResponsiveContainer>
           </CardContent>
         </Card>
+      </div>
 
+      {/* Composition charts — 2 columns on desktop */}
+      <div className="grid gap-4 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle className="text-base">Composición de Cobros</CardTitle></CardHeader>
           <CardContent>
