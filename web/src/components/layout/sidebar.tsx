@@ -125,32 +125,32 @@ function NavSubGroup({ item }: { item: NavChild }) {
 
   return (
     <div>
-      <button
-        onClick={() => setOpen(!open)}
-        className={cn(
-          "flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors",
-          isActive
-            ? "text-accent-foreground font-medium"
-            : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-        )}
-      >
+      <div className="flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm">
         <Link
           href={item.href}
-          onClick={(e) => e.stopPropagation()}
           className={cn(
-            "flex-1 text-left rounded px-1 -mx-1 transition-colors",
-            pathname === item.href && "bg-primary text-primary-foreground"
+            "flex-1 text-left rounded transition-colors",
+            pathname === item.href
+              ? "text-primary font-medium"
+              : isActive
+                ? "text-accent-foreground font-medium"
+                : "text-muted-foreground hover:text-accent-foreground"
           )}
         >
           {item.label}
         </Link>
-        <ChevronDown
-          className={cn(
-            "h-3 w-3 shrink-0 transition-transform",
-            open && "rotate-180"
-          )}
-        />
-      </button>
+        <button
+          onClick={() => setOpen(!open)}
+          className="p-0.5 rounded hover:bg-accent transition-colors"
+        >
+          <ChevronDown
+            className={cn(
+              "h-3 w-3 shrink-0 transition-transform",
+              open && "rotate-180"
+            )}
+          />
+        </button>
+      </div>
       {open && (
         <div className="ml-3 mt-1 space-y-0.5 border-l pl-3">
           {item.children.map((child) => {
