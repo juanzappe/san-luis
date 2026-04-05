@@ -8,10 +8,10 @@ import { Loader2 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EgresoDetailPage } from "@/components/egreso-detail-page";
-import type { EgresoRow } from "@/lib/economic-queries";
+import type { EgresoRow, ResultadoRow } from "@/lib/economic-queries";
 import { formatARS, shortLabel } from "@/lib/economic-queries";
 import type { ResumenMensualRow } from "@/lib/tax-queries";
-import { fetchPosicionIva, type IvaMensualRow } from "@/lib/tax-queries";
+import { fetchPosicionIva, computeGastosComerciales, getCuotaFija, type IvaMensualRow } from "@/lib/tax-queries";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -25,19 +25,23 @@ const COLORS: Record<string, string> = {
   "Ocupación Esp. Público": "#ec4899",
 };
 
-function extractValue(_r: EgresoRow, tax?: ResumenMensualRow): number {
-  if (!tax) return 0;
-  return (tax.iibb ?? 0) + (tax.segHigiene ?? 0) + (tax.publicidad ?? 0) +
-    (tax.espacioPublico ?? 0);
+function extractValue(_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): number {
+  const ingresos = resultado?.ingresos ?? 0;
+  return computeGastosComerciales(ingresos, resultado?.periodo ?? _r.periodo);
 }
 
-function extractBreakdown(_r: EgresoRow, tax?: ResumenMensualRow): Record<string, number> {
-  if (!tax) return {};
+function extractBreakdown(_r: EgresoRow, _tax?: ResumenMensualRow, resultado?: ResultadoRow): Record<string, number> {
+  const ingresos = resultado?.ingresos ?? 0;
+  const periodo = resultado?.periodo ?? _r.periodo;
   const bd: Record<string, number> = {};
-  if (tax.iibb > 0) bd["Ingresos Brutos"] = tax.iibb;
-  if (tax.segHigiene > 0) bd["Seg. e Higiene"] = tax.segHigiene;
-  if (tax.publicidad > 0) bd["Publicidad"] = tax.publicidad;
-  if (tax.espacioPublico > 0) bd["Ocupación Esp. Público"] = tax.espacioPublico;
+  const iibb = ingresos * 0.045;
+  const segHig = ingresos * 0.01;
+  const pub = getCuotaFija('publicidad', periodo);
+  const esp = getCuotaFija('espacioPublico', periodo);
+  if (iibb > 0) bd["Ingresos Brutos"] = iibb;
+  if (segHig > 0) bd["Seg. e Higiene"] = segHig;
+  if (pub > 0) bd["Publicidad"] = pub;
+  if (esp > 0) bd["Ocupación Esp. Público"] = esp;
   return bd;
 }
 

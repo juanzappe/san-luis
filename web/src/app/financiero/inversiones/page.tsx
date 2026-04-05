@@ -228,7 +228,7 @@ export default function InversionesPage() {
       map.set(h.tipo, arr);
     }
     // Sort each group by valuation desc
-    for (const [, arr] of map) arr.sort((a, b) => b.valuacionMonto - a.valuacionMonto);
+    Array.from(map.values()).forEach((arr) => arr.sort((a, b) => b.valuacionMonto - a.valuacionMonto));
     return map;
   }, [latestHoldings]);
 
