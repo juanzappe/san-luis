@@ -37,10 +37,11 @@ import type {
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
 
-const TIPO_ORDER  = ["accion", "bono", "moneda", "fci", "plazo_fijo", "otro"] as const;
+const TIPO_ORDER  = ["accion", "cedear", "bono", "moneda", "fci", "plazo_fijo", "otro"] as const;
 const TIPO_LABELS: Record<string, string> = {
   bono:        "Bonos",
-  accion:      "Acciones y CEDEARs",
+  accion:      "Acciones",
+  cedear:      "CEDEARs",
   fci:         "FCI",
   plazo_fijo:  "Plazo Fijo",
   moneda:      "Moneda / Disponibilidades",
@@ -48,6 +49,7 @@ const TIPO_LABELS: Record<string, string> = {
 };
 const TIPO_COLORS: Record<string, string> = {
   accion:     "#3b82f6",
+  cedear:     "#ec4899",
   bono:       "#22c55e",
   moneda:     "#f59e0b",
   fci:        "#8b5cf6",
