@@ -83,6 +83,7 @@ interface AggregatedFlujo {
   sueldos: number;
   impuestos: number;
   comisionesBancarias: number;
+  egresosMP: number;
   totalPagos: number;
   flujoNeto: number;
   acumulado: number;
@@ -105,7 +106,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
       label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
       cobrosEfectivo: 0, cobrosBanco: 0, cobrosMP: 0, totalCobros: 0,
       pagosProveedores: 0, sueldos: 0, impuestos: 0, comisionesBancarias: 0,
-      totalPagos: 0, flujoNeto: 0,
+      egresosMP: 0, totalPagos: 0, flujoNeto: 0,
       acumulado: 0,
     };
     cur.cobrosEfectivo += r.cobrosEfectivo;
@@ -116,6 +117,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     cur.sueldos += r.sueldos;
     cur.impuestos += r.impuestos;
     cur.comisionesBancarias += r.comisionesBancarias;
+    cur.egresosMP += r.egresosMP;
     cur.totalPagos += r.totalPagos;
     cur.flujoNeto += r.flujoNeto;
     cur.acumulado = r.acumulado; // last row in bucket = end-of-period cumulative
@@ -203,13 +205,14 @@ export default function FlujoDeFondosPage() {
     const su = adjust(r.sueldos, r.periodo);
     const im = adjust(r.impuestos, r.periodo);
     const co = adjust(r.comisionesBancarias, r.periodo);
-    const tp = pp + su + im + co;
+    const em = adjust(r.egresosMP, r.periodo);
+    const tp = pp + su + im + co + em;
     const fn = tc - tp;
     acum += fn;
     return {
       periodo: r.periodo,
       cobrosEfectivo: ce, cobrosBanco: cb, cobrosMP: cm, totalCobros: tc,
-      pagosProveedores: pp, sueldos: su, impuestos: im, comisionesBancarias: co, totalPagos: tp,
+      pagosProveedores: pp, sueldos: su, impuestos: im, comisionesBancarias: co, egresosMP: em, totalPagos: tp,
       flujoNeto: fn, acumulado: acum,
     };
   });
@@ -310,7 +313,8 @@ export default function FlujoDeFondosPage() {
                 <Bar dataKey="pagosProveedores" name="Proveedores" stackId="p" fill={COLORS.proveedores} />
                 <Bar dataKey="sueldos" name="Sueldos" stackId="p" fill={COLORS.sueldos} />
                 <Bar dataKey="impuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
-                <Bar dataKey="comisionesBancarias" name="Comisiones" stackId="p" fill={COLORS.comisiones} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="comisionesBancarias" name="Comisiones" stackId="p" fill={COLORS.comisiones} />
+                <Bar dataKey="egresosMP" name="Egresos MP" stackId="p" fill={COLORS.mp} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -351,6 +355,7 @@ export default function FlujoDeFondosPage() {
                   <TableHead className="text-right">Sueldos</TableHead>
                   <TableHead className="text-right">Impuestos</TableHead>
                   <TableHead className="text-right">Comisiones</TableHead>
+                  <TableHead className="text-right">Egresos MP</TableHead>
                   <TableHead className="text-right font-bold">Pagos</TableHead>
                   <TableHead className="text-right font-bold">Neto</TableHead>
                   <TableHead className="text-right font-bold">Acumulado</TableHead>
@@ -368,6 +373,7 @@ export default function FlujoDeFondosPage() {
                     <TableCell className="text-right">{formatARS(r.sueldos)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.impuestos)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.comisionesBancarias)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.egresosMP)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalPagos)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.flujoNeto >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.flujoNeto)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.acumulado >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.acumulado)}</TableCell>

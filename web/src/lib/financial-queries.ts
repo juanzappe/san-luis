@@ -23,6 +23,7 @@ export interface FlujoDeFondosRow {
   sueldos: number;
   impuestos: number;
   comisionesBancarias: number;
+  egresosMP: number;
   totalPagos: number;
   flujoNeto: number;
   acumulado: number;
@@ -38,6 +39,7 @@ type RpcFlujoRow = {
   sueldos: number;
   impuestos: number;
   comisiones_bancarias: number;
+  egresos_mp: number;
 };
 
 export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
@@ -59,7 +61,8 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     const sueldos = Number(r.sueldos) || 0;
     const impuestos = Number(r.impuestos) || 0;
     const comisionesBancarias = Number(r.comisiones_bancarias) || 0;
-    const totalPagos = pagosProveedores + sueldos + impuestos + comisionesBancarias;
+    const egresosMP = Number(r.egresos_mp) || 0;
+    const totalPagos = pagosProveedores + sueldos + impuestos + comisionesBancarias + egresosMP;
 
     const flujoNeto = totalCobros - totalPagos;
     acum += flujoNeto;
@@ -67,7 +70,7 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     return {
       periodo: r.periodo,
       cobrosEfectivo, cobrosBanco, cobrosMP, totalCobros,
-      pagosProveedores, sueldos, impuestos, comisionesBancarias, totalPagos,
+      pagosProveedores, sueldos, impuestos, comisionesBancarias, egresosMP, totalPagos,
       flujoNeto,
       acumulado: acum,
     };
