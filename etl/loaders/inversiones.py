@@ -122,7 +122,7 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
             elif "bono" in tipo_raw:
                 current_tipo = "bono"
             elif "cedear" in tipo_raw:
-                current_tipo = "accion"   # CEDEARs → accion (no hay enum propio)
+                current_tipo = "cedear"
             elif "acci" in tipo_raw:
                 current_tipo = "accion"
             elif "fci" in tipo_raw:
