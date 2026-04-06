@@ -67,7 +67,7 @@ interface ExtendedResultadoRow extends ResultadoRow {
 // ---------------------------------------------------------------------------
 // Period aggregation
 // ---------------------------------------------------------------------------
-type Granularity = "mensual" | "trimestral" | "anual";
+type Granularity = "mensual" | "trimestral" | "anual" | "ytd";
 
 const QUARTER_MAP: Record<string, string> = {
   "01": "Q1", "02": "Q1", "03": "Q1",
@@ -76,14 +76,30 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
+const MONTH_SHORT: Record<string, string> = {
+  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+};
+
 function aggregateResultado(
   data: ExtendedResultadoRow[],
   granularity: Granularity,
+  ytdLastMonth?: number,
 ): ExtendedResultadoRow[] {
   if (granularity === "mensual") return data;
 
+  // For YTD: filter to months 1..N before aggregating by year
+  let source = data;
+  if (granularity === "ytd" && ytdLastMonth) {
+    source = data.filter((r) => {
+      const m = parseInt(r.periodo.split("-")[1], 10);
+      return m >= 1 && m <= ytdLastMonth;
+    });
+  }
+
   const buckets = new Map<string, ExtendedResultadoRow>();
-  for (const r of data) {
+  for (const r of source) {
     const [y, m] = r.periodo.split("-");
     const key = granularity === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
     const cur = buckets.get(key);
@@ -121,8 +137,11 @@ function aggregateResultado(
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
   if (g === "anual") return p;
+  if (g === "ytd" && ytdLastMonth) {
+    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+  }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
     return `${q} ${y}`;
@@ -190,6 +209,50 @@ interface WaterfallBar {
   value: number; // visible bar
   total?: boolean;
   color: string;
+}
+
+function buildAnnualWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
+  const bars: WaterfallBar[] = [];
+  let running = 0;
+
+  bars.push({ name: "Ingresos Netos", base: 0, value: row.ingresos, color: "#22c55e" });
+  running = row.ingresos;
+
+  bars.push({ name: "C. Operativos", base: running - row.costosOperativos, value: row.costosOperativos, color: "#ef4444" });
+  running -= row.costosOperativos;
+
+  const sueldosCS = row.sueldos + row.cargasSociales;
+  bars.push({ name: "Sueldos y CS", base: running - sueldosCS, value: sueldosCS, color: "#ef4444" });
+  running -= sueldosCS;
+
+  // Subtotal: Margen Bruto (from 0)
+  bars.push({ name: "Margen Bruto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  bars.push({ name: "C. Comerciales", base: running - row.costosComercialesAdmin, value: row.costosComercialesAdmin, color: "#ef4444" });
+  running -= row.costosComercialesAdmin;
+
+  bars.push({ name: "C. Financieros", base: running - row.costosFinancieros, value: row.costosFinancieros, color: "#ef4444" });
+  running -= row.costosFinancieros;
+
+  if (row.recpam !== 0) {
+    if (row.recpam > 0) {
+      bars.push({ name: "RECPAM", base: running - row.recpam, value: row.recpam, color: "#ef4444" });
+    } else {
+      bars.push({ name: "RECPAM", base: running, value: Math.abs(row.recpam), color: "#22c55e" });
+    }
+    running -= row.recpam;
+  }
+
+  // Subtotal: Resultado antes de Ganancias (from 0)
+  bars.push({ name: "Res. antes Gan.", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  bars.push({ name: "Imp. Ganancias", base: running - row.ganancias, value: row.ganancias, color: "#ef4444" });
+  running -= row.ganancias;
+
+  // Final: Resultado Neto (from 0)
+  bars.push({ name: "Resultado Neto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  return bars;
 }
 
 function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
@@ -396,19 +459,43 @@ export default function EstadoResultadosPage() {
   // Default to current year (or last available)
   const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
 
+  // YTD: find the last month with data in the most recent year
+  const ytdLastMonth = useMemo(() => {
+    if (data.length === 0) return 0;
+    const lastYear = availableYears[availableYears.length - 1];
+    if (!lastYear) return 0;
+    let maxMonth = 0;
+    for (const r of data) {
+      if (r.periodo.startsWith(lastYear)) {
+        const m = parseInt(r.periodo.split("-")[1], 10);
+        if (m > maxMonth) maxMonth = m;
+      }
+    }
+    return maxMonth;
+  }, [data, availableYears]);
+
   // Aggregate by selected granularity, then filter by year
   const tablePeriods = useMemo(() => {
-    const aggregated = aggregateResultado(data, granularity);
-    if (granularity === "anual") return aggregated;
+    const aggregated = aggregateResultado(data, granularity, ytdLastMonth);
+    if (granularity === "anual" || granularity === "ytd") return aggregated;
     return aggregated.filter((r) => r.periodo.startsWith(activeYear));
-  }, [data, granularity, activeYear]);
+  }, [data, granularity, activeYear, ytdLastMonth]);
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
   const waterfall = lastRow ? buildWaterfall(lastRow) : [];
 
-  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual
+  // Annual waterfall: aggregate by year, select one year
+  const [waterfallYear, setWaterfallYear] = useState<string | null>(null);
+  const annualAggregated = useMemo(() => aggregateResultado(data, "anual"), [data]);
+  const activeWaterfallYear = waterfallYear ?? availableYears[availableYears.length - 1] ?? "";
+  const annualWaterfall = useMemo(() => {
+    const row = annualAggregated.find((r) => r.periodo === activeWaterfallYear);
+    return row ? buildAnnualWaterfall(row) : [];
+  }, [annualAggregated, activeWaterfallYear]);
+
+  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual/ytd
   const marginData = useMemo(() => {
-    const source = granularity === "anual" ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
+    const source = (granularity === "anual" || granularity === "ytd") ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
     return source.map((r) => ({
       label: shortLabel(r.periodo),
       margen: r.margenPct,
@@ -466,7 +553,7 @@ export default function EstadoResultadosPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Estado de Resultados</CardTitle>
           <div className="flex items-center gap-2">
-            {granularity !== "anual" && (
+            {granularity !== "anual" && granularity !== "ytd" && (
               <div className="flex items-center rounded-lg border text-xs font-medium">
                 {availableYears.map((y) => (
                   <button
@@ -484,17 +571,17 @@ export default function EstadoResultadosPage() {
               </div>
             )}
             <div className="flex items-center rounded-lg border text-xs font-medium">
-              {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              {(["mensual", "trimestral", "anual", "ytd"] as Granularity[]).map((g) => (
                 <button
                   key={g}
                   onClick={() => setGranularity(g)}
-                  className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
                     granularity === g
                       ? "bg-primary text-primary-foreground"
                       : "hover:bg-accent"
                   }`}
                 >
-                  {g}
+                  {g === "ytd" ? "YTD" : g.charAt(0).toUpperCase() + g.slice(1)}
                 </button>
               ))}
             </div>
@@ -507,7 +594,7 @@ export default function EstadoResultadosPage() {
                 <TableHead className="w-[220px]">Concepto</TableHead>
                 {tablePeriods.map((r) => (
                   <TableHead key={r.periodo} className="text-right">
-                    {granularityLabel(r.periodo, granularity)}
+                    {granularityLabel(r.periodo, granularity, ytdLastMonth)}
                   </TableHead>
                 ))}
               </TableRow>
@@ -548,12 +635,34 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen bruto %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.margenBruto / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="EBITDA"
                 values={tablePeriods.map((r) => r.ebitda)}
                 bold
                 infoTip={`EBITDA = Margen Bruto + Amortizaciones (~${formatARS(AMORT_MENSUAL_BASE)}/mes base 2024). Datos de estados contables auditados para 2021-2024.`}
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">EBITDA %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.ebitda / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="Costos Comerciales"
                 values={tablePeriods.map((r) => r.costosComercialesAdmin)}
@@ -585,6 +694,17 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Resultado antes de Gan. %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.resultadoAntesGanancias / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="Imp. a las Ganancias"
                 values={tablePeriods.map((r) => r.ganancias)}
@@ -599,13 +719,13 @@ export default function EstadoResultadosPage() {
                 border
               />
               {/* Margin % row */}
-              <TableRow className="border-t">
-                <TableCell className="italic text-muted-foreground">Margen neto %</TableCell>
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen neto %</TableCell>
                 {tablePeriods.map((r) => (
                   <TableCell
                     key={r.periodo}
-                    className={`text-right italic ${
-                      r.margenPct >= 0 ? "text-green-600" : "text-red-600"
+                    className={`text-right text-xs italic ${
+                      r.margenPct >= 0 ? "text-blue-600" : "text-red-600"
                     }`}
                   >
                     {r.margenPct.toFixed(1)}%
@@ -628,7 +748,7 @@ export default function EstadoResultadosPage() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
                   ingresos: r.ingresos,
                   egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + Math.max(0, r.recpam) + r.ganancias,
                 }))}
@@ -648,14 +768,14 @@ export default function EstadoResultadosPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              {granularity === "mensual" ? "Resultado Neto Mensual" : granularity === "trimestral" ? "Resultado Neto Trimestral" : "Resultado Neto Anual"}
+              {granularity === "mensual" ? "Resultado Neto Mensual" : granularity === "trimestral" ? "Resultado Neto Trimestral" : granularity === "ytd" ? "Resultado Neto YTD" : "Resultado Neto Anual"}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
                   resultado: r.resultadoNeto,
                 }))}
               >
@@ -733,6 +853,72 @@ export default function EstadoResultadosPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Annual Waterfall */}
+      {annualWaterfall.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Cascada Anual — {activeWaterfallYear}</CardTitle>
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {availableYears.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setWaterfallYear(y)}
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    activeWaterfallYear === y
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={420}>
+              <BarChart data={annualWaterfall} margin={{ top: 30, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="name" fontSize={11} interval={0} angle={-25} textAnchor="end" height={60} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(0)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" />
+                {/* Invisible base */}
+                <Bar dataKey="base" stackId="w" fill="transparent" isAnimationActive={false} />
+                {/* Visible value with labels */}
+                <Bar dataKey="value" stackId="w" radius={[4, 4, 0, 0]} label={<WaterfallLabel data={annualWaterfall} />}>
+                  {annualWaterfall.map((entry, index) => (
+                    <Cell key={index} fill={entry.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Custom label for waterfall bars — shows formatted ARS value above each bar
+// ---------------------------------------------------------------------------
+function WaterfallLabel({ data, x, y, width, index }: {
+  data: WaterfallBar[];
+  x?: number;
+  y?: number;
+  width?: number;
+  index?: number;
+}) {
+  if (x == null || y == null || width == null || index == null) return null;
+  const entry = data[index];
+  if (!entry) return null;
+  // For subtotals/totals show the actual value; for deductions show the deducted amount
+  const displayValue = entry.total ? entry.value : entry.value;
+  const label = formatARS(displayValue);
+  return (
+    <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={10} fill="currentColor" className="fill-foreground">
+      {label}
+    </text>
   );
 }
