@@ -35,7 +35,9 @@ import {
   type ProveedoresData,
   type ProveedorDetalle,
   type RpcProveedorRow,
+  type RpcProveedorMensualRow,
   fetchProveedoresRaw,
+  fetchProveedoresMensual,
   processProveedoresRows,
   fetchProveedorDetalle,
   formatARS,
@@ -115,9 +117,11 @@ export default function ProveedoresPage() {
   const [selectedMonth, setSelectedMonth] = useState("all");
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [provMensualRows, setProvMensualRows] = useState<RpcProveedorMensualRow[]>([]);
 
   // Fetch raw rows once
   useEffect(() => {
+    fetchProveedoresMensual().then(setProvMensualRows).catch(() => {});
     fetchProveedoresRaw()
       .then((rows) => {
         setRawRows(rows);
@@ -219,30 +223,33 @@ export default function ProveedoresPage() {
       .slice(0, 50);
   }, [data, searchQuery]);
 
-  // KPI: Compras label & delta
+  // KPI: Compras label & delta (from lightweight monthly RPC — never truncated)
   const comprasLabel = selectedMonth !== "all"
     ? `Compras ${MONTH_NAMES[selectedMonth] ?? ""} ${selectedYear}`
     : `Compras ${selectedYear}`;
-  const totalCompras = mensual.reduce((s, m) => s + m.monto, 0);
+
+  const totalCompras = useMemo(() => {
+    return provMensualRows
+      .filter((r) => {
+        if (!r.periodo.startsWith(selectedYear)) return false;
+        if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+        return true;
+      })
+      .reduce((s, r) => s + adjust(Number(r.total_neto) || 0, r.periodo), 0);
+  }, [provMensualRows, selectedYear, selectedMonth, adjust]);
 
   // Delta: compare against same period of previous year
   const prevYear = String(Number(selectedYear) - 1);
-  const prevRows = useMemo(() => {
-    if (!rawRows) return [];
-    return rawRows.filter((r) => {
-      if (!r.periodo.startsWith(prevYear)) return false;
-      if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
-      if (selectedCategory !== "all" && r.categoria_egreso !== selectedCategory) return false;
-      return true;
-    });
-  }, [rawRows, prevYear, selectedMonth, selectedCategory]);
 
-  const prevData = useMemo(() => {
-    if (prevRows.length === 0) return null;
-    return processProveedoresRows(prevRows, adjust);
-  }, [prevRows, adjust]);
-
-  const totalPrev = (prevData?.mensual ?? []).reduce((s, m) => s + m.monto, 0);
+  const totalPrev = useMemo(() => {
+    return provMensualRows
+      .filter((r) => {
+        if (!r.periodo.startsWith(prevYear)) return false;
+        if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+        return true;
+      })
+      .reduce((s, r) => s + adjust(Number(r.total_neto) || 0, r.periodo), 0);
+  }, [provMensualRows, prevYear, selectedMonth, adjust]);
 
   // Loading / error / empty states
   if (loading) {
