@@ -303,7 +303,7 @@ export interface ProveedoresData {
 }
 
 // RPC row type for get_comercial_proveedores
-type RpcProveedorRow = {
+export type RpcProveedorRow = {
   periodo: string;
   cuit: string;
   denominacion: string;
@@ -314,15 +314,16 @@ type RpcProveedorRow = {
   categoria_egreso: string;
 };
 
-export async function fetchProveedores(): Promise<ProveedoresData> {
+export async function fetchProveedoresRaw(): Promise<RpcProveedorRow[]> {
   const data = await fetchWithRetry(async () => {
     const res = await supabase.rpc("get_comercial_proveedores");
     if (res.error) throw res.error;
     return res.data;
   });
+  return (data ?? []) as RpcProveedorRow[];
+}
 
-  const rows = (data ?? []) as RpcProveedorRow[];
-
+export function processProveedoresRows(rows: RpcProveedorRow[]): ProveedoresData {
   // Aggregate by proveedor
   const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string }>();
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
@@ -414,6 +415,11 @@ export async function fetchProveedores(): Promise<ProveedoresData> {
     });
 
   return { ranking, mensual, concentracionTop10, porTipoCosto, porCategoriaEgreso, concentracionDonut };
+}
+
+export async function fetchProveedores(): Promise<ProveedoresData> {
+  const rows = await fetchProveedoresRaw();
+  return processProveedoresRows(rows);
 }
 
 export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDetalle | null> {
