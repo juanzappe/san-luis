@@ -16,7 +16,7 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle, CalendarDays, TrendingUp, TrendingDown } from "lucide-react";
+import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -362,66 +362,52 @@ function formatCompact(n: number): string {
   return formatARS(n);
 }
 
-function YtdBanner({ data }: { data: IngresoRow[] }) {
+function YtdTable({ data }: { data: IngresoRow[] }) {
   const ytd = useYtdComparison(data);
-  if (!ytd) return null;
+  if (!ytd || !ytd.hasPrevData) return null;
 
   const monthRange = `${MONTH_NAMES[parseInt(ytd.firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(ytd.lastMonth, 10) - 1]}`;
-  const totalDelta = ytd.hasPrevData ? pctDelta(ytd.current.total, ytd.previous.total) : null;
+  const curLabel = `${monthRange} ${ytd.currentYear}`;
+  const prevLabel = `${monthRange} ${ytd.prevYear}`;
 
-  const unitBreakdown = (
-    [
-      { label: "Mostrador", cur: ytd.current.mostrador, prev: ytd.previous.mostrador },
-      { label: "Restobar", cur: ytd.current.restobar, prev: ytd.previous.restobar },
-      { label: "Servicios", cur: ytd.current.servicios, prev: ytd.previous.servicios },
-    ] as const
-  ).map((u) => ({
-    ...u,
-    delta: ytd.hasPrevData ? pctDelta(u.cur, u.prev) : null,
-  }));
+  const rows = [
+    { label: "Mostrador", cur: ytd.current.mostrador, prev: ytd.previous.mostrador, bold: false },
+    { label: "Restobar", cur: ytd.current.restobar, prev: ytd.previous.restobar, bold: false },
+    { label: "Servicios", cur: ytd.current.servicios, prev: ytd.previous.servicios, bold: false },
+    { label: "Total", cur: ytd.current.total, prev: ytd.previous.total, bold: true },
+  ];
 
   return (
-    <Card className="bg-muted/40">
-      <CardContent className="py-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <CalendarDays className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="text-sm font-medium">
-            Acumulado {monthRange} {ytd.currentYear}:
-          </span>
-          <span className="text-sm font-bold">{formatARS(ytd.current.total)}</span>
-          {ytd.hasPrevData ? (
-            <>
-              <span className="text-sm text-muted-foreground">vs</span>
-              <span className="text-sm text-muted-foreground">
-                {monthRange} {ytd.prevYear}: {formatARS(ytd.previous.total)}
-              </span>
-              {totalDelta !== null && (
-                <span className={`inline-flex items-center gap-0.5 text-sm font-semibold ${totalDelta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  {totalDelta >= 0 ? (
-                    <TrendingUp className="h-3.5 w-3.5" />
-                  ) : (
-                    <TrendingDown className="h-3.5 w-3.5" />
-                  )}
-                  {formatPct(totalDelta)}
-                </span>
-              )}
-            </>
-          ) : (
-            <span className="text-sm text-muted-foreground">Sin datos comparables</span>
-          )}
-        </div>
-        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          {unitBreakdown.map((u) => (
-            <span key={u.label}>
-              {u.label}: <span className="font-medium text-foreground">{formatCompact(u.cur)}</span>
-              {u.delta !== null ? (
-                <span className={`ml-1 ${u.delta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                  ({formatPct(u.delta)})
-                </span>
-              ) : null}
-            </span>
-          ))}
-        </div>
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Comparación YTD ({monthRange})</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead />
+              <TableHead className="text-right">{curLabel}</TableHead>
+              <TableHead className="text-right">{prevLabel}</TableHead>
+              <TableHead className="text-right">Δ %</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => {
+              const delta = r.prev > 0 ? pctDelta(r.cur, r.prev) : null;
+              return (
+                <TableRow key={r.label}>
+                  <TableCell className={r.bold ? "font-bold" : ""}>{r.label}</TableCell>
+                  <TableCell className={`text-right ${r.bold ? "font-bold" : ""}`}>{formatARS(r.cur)}</TableCell>
+                  <TableCell className="text-right text-muted-foreground">{formatARS(r.prev)}</TableCell>
+                  <TableCell className={`text-right font-medium ${delta !== null && delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                    {delta !== null ? formatPct(delta) : "—"}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   );
@@ -436,22 +422,33 @@ const DONUT_DATA_KEYS = [
   { key: "servicios", name: "Servicios", color: COLORS.servicios },
 ] as const;
 
-function ParticipationDonut({ selected }: { selected: IngresoRow }) {
-  const periodoLabel = `${MONTH_NAMES[parseInt(selected.periodo.slice(5, 7), 10) - 1]} ${selected.periodo.slice(0, 4)}`;
+function ParticipationDonut({ data, year }: { data: IngresoRow[]; year: string }) {
+  const annual = useMemo(() => {
+    const acc = { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+    for (const r of data) {
+      if (r.periodo.startsWith(year)) {
+        acc.mostrador += r.mostrador;
+        acc.restobar += r.restobar;
+        acc.servicios += r.servicios;
+        acc.total += r.total;
+      }
+    }
+    return acc;
+  }, [data, year]);
 
   const donutData = useMemo(() => {
     return DONUT_DATA_KEYS.map((d) => ({
       name: d.name,
-      value: selected[d.key as keyof IngresoRow] as number,
+      value: annual[d.key as keyof typeof annual] as number,
       color: d.color,
     })).filter((d) => d.value > 0);
-  }, [selected]);
+  }, [annual]);
 
-  const total = selected.total;
+  const total = annual.total;
 
   return (
     <div>
-      <p className="text-sm font-medium mb-2">Participación — {periodoLabel}</p>
+      <p className="text-sm font-medium mb-2">Participación — {year}</p>
       <ResponsiveContainer width="100%" height={260}>
         <PieChart>
           <Pie
@@ -486,13 +483,13 @@ function ParticipationDonut({ selected }: { selected: IngresoRow }) {
             dominantBaseline="central"
             className="fill-muted-foreground text-[10px]"
           >
-            Total
+            Total {year}
           </text>
         </PieChart>
       </ResponsiveContainer>
       <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs mt-1">
         {DONUT_DATA_KEYS.map((d) => {
-          const val = selected[d.key as keyof IngresoRow] as number;
+          const val = annual[d.key as keyof typeof annual] as number;
           const pct = total > 0 ? ((val / total) * 100).toFixed(1) : "0.0";
           return (
             <span key={d.key} className="flex items-center gap-1.5">
@@ -621,8 +618,8 @@ export default function IngresosPage() {
         />
       </div>
 
-      {/* YTD Comparative Banner */}
-      <YtdBanner data={allData} />
+      {/* YTD Comparison Table */}
+      <YtdTable data={allData} />
 
       {/* Monthly average by year */}
       <MonthlyAverageByYear data={allData} />
@@ -646,7 +643,7 @@ export default function IngresosPage() {
                 <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
-            <ParticipationDonut selected={last} />
+            <ParticipationDonut data={allData} year={activePeriodo.slice(0, 4) || allData[allData.length - 1]?.periodo.slice(0, 4) || ""} />
           </div>
         </CardContent>
       </Card>
