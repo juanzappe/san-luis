@@ -195,6 +195,20 @@ export default function ServiciosPage() {
     return { data: byMonth, years };
   }, [adjMonthly]);
 
+  // Year-over-year tx count data (Section 3b)
+  const yoyTxData = useMemo(() => {
+    const years = Array.from(new Set(adjMonthly.map((m) => m.periodo.slice(0, 4)))).sort();
+    const byMonth = Array.from({ length: 12 }, (_, i) => {
+      const row: Record<string, number | string> = { month: SHORT_MONTHS[i] };
+      for (const y of years) {
+        const match = adjMonthly.find((m) => m.periodo === `${y}-${String(i + 1).padStart(2, "0")}`);
+        if (match) row[y] = match.txCount;
+      }
+      return row;
+    });
+    return { data: byMonth, years };
+  }, [adjMonthly]);
+
   // Client evolution data (Section 4)
   const clientEvolution = useMemo(() => {
     if (!selectedClient || !data) return [];
@@ -387,6 +401,36 @@ export default function ServiciosPage() {
               <Tooltip formatter={arsTooltip} />
               <Legend />
               {yoyData.years.map((year, i) => (
+                <Line
+                  key={year}
+                  type="monotone"
+                  dataKey={year}
+                  name={year}
+                  stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* ====== SECTION 3b: Year-over-Year Tx Count ====== */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Cantidad de Servicios por Mes</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={350}>
+            <LineChart data={yoyTxData.data}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="month" fontSize={12} />
+              <YAxis fontSize={12} />
+              <Tooltip />
+              <Legend />
+              {yoyTxData.years.map((year, i) => (
                 <Line
                   key={year}
                   type="monotone"
