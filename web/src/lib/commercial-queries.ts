@@ -201,7 +201,7 @@ type RpcDetalleRow = {
   periodo: string;
   total_neto: number;
   cantidad: number;
-  tipo_comprobante: number;
+  tipo_comprobante?: number; // only returned by get_detalle_cliente
   primera_fecha: string;
   ultima_fecha: string;
   cant_fechas_distintas: number;
@@ -309,7 +309,6 @@ export type RpcProveedorRow = {
   denominacion: string;
   total_neto: number;
   cantidad: number;
-  tipo_comprobante: number;
   tipo_costo: string;
   categoria_egreso: string;
 };
@@ -333,9 +332,7 @@ export function processProveedoresRows(
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
   for (const r of rows) {
-    const raw = Number(r.total_neto) || 0;
-    const signed = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
-    const monto = adj(signed, r.periodo);
+    const monto = adj(Number(r.total_neto) || 0, r.periodo);
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
     const categoriaEgreso = r.categoria_egreso;
@@ -451,8 +448,7 @@ export async function fetchProveedorDetalle(cuit: string): Promise<ProveedorDeta
   let maxDate: string | null = null;
 
   for (const r of rows) {
-    const raw = Number(r.total_neto) || 0;
-    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
+    const monto = Number(r.total_neto) || 0; // already signed from SQL
     const cnt = Number(r.cantidad) || 0;
     const p = r.periodo;
 
