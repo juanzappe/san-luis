@@ -582,12 +582,34 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen bruto %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.margenBruto / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="EBITDA"
                 values={tablePeriods.map((r) => r.ebitda)}
                 bold
                 infoTip={`EBITDA = Margen Bruto + Amortizaciones (~${formatARS(AMORT_MENSUAL_BASE)}/mes base 2024). Datos de estados contables auditados para 2021-2024.`}
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">EBITDA %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.ebitda / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="Costos Comerciales"
                 values={tablePeriods.map((r) => r.costosComercialesAdmin)}
@@ -619,6 +641,17 @@ export default function EstadoResultadosPage() {
                 bold
                 border
               />
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Resultado antes de Gan. %</TableCell>
+                {tablePeriods.map((r) => {
+                  const pct = r.ingresos > 0 ? (r.resultadoAntesGanancias / r.ingresos) * 100 : 0;
+                  return (
+                    <TableCell key={r.periodo} className={`text-right text-xs italic ${pct >= 0 ? "text-blue-600" : "text-red-600"}`}>
+                      {pct.toFixed(1)}%
+                    </TableCell>
+                  );
+                })}
+              </TableRow>
               <PnlLine
                 label="Imp. a las Ganancias"
                 values={tablePeriods.map((r) => r.ganancias)}
@@ -633,13 +666,13 @@ export default function EstadoResultadosPage() {
                 border
               />
               {/* Margin % row */}
-              <TableRow className="border-t">
-                <TableCell className="italic text-muted-foreground">Margen neto %</TableCell>
+              <TableRow>
+                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen neto %</TableCell>
                 {tablePeriods.map((r) => (
                   <TableCell
                     key={r.periodo}
-                    className={`text-right italic ${
-                      r.margenPct >= 0 ? "text-green-600" : "text-red-600"
+                    className={`text-right text-xs italic ${
+                      r.margenPct >= 0 ? "text-blue-600" : "text-red-600"
                     }`}
                   >
                     {r.margenPct.toFixed(1)}%
