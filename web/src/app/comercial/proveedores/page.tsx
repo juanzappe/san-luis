@@ -113,6 +113,7 @@ export default function ProveedoresPage() {
   // Filter state
   const [selectedYear, setSelectedYear] = useState("");
   const [selectedMonth, setSelectedMonth] = useState("all");
+  const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
 
   // Fetch raw rows once
@@ -151,6 +152,12 @@ export default function ProveedoresPage() {
     ).sort().reverse();
   }, [rawRows, selectedYear]);
 
+  // Available categories across all rows (stable, not year-dependent)
+  const availableCategories = useMemo(() => {
+    if (!rawRows) return [];
+    return Array.from(new Set(rawRows.map((r) => r.categoria_egreso))).sort();
+  }, [rawRows]);
+
   // Reset month when year changes
   const handleYearChange = (year: string) => {
     setSelectedYear(year);
@@ -163,9 +170,10 @@ export default function ProveedoresPage() {
     return rawRows.filter((r) => {
       if (!r.periodo.startsWith(selectedYear)) return false;
       if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+      if (selectedCategory !== "all" && r.categoria_egreso !== selectedCategory) return false;
       return true;
     });
-  }, [rawRows, selectedYear, selectedMonth]);
+  }, [rawRows, selectedYear, selectedMonth, selectedCategory]);
 
   const data: ProveedoresData | null = useMemo(() => {
     if (filteredRows.length === 0) return null;
@@ -233,9 +241,10 @@ export default function ProveedoresPage() {
     return rawRows.filter((r) => {
       if (!r.periodo.startsWith(prevYear)) return false;
       if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+      if (selectedCategory !== "all" && r.categoria_egreso !== selectedCategory) return false;
       return true;
     });
-  }, [rawRows, prevYear, selectedMonth]);
+  }, [rawRows, prevYear, selectedMonth, selectedCategory]);
 
   const prevData = useMemo(() => {
     if (prevRows.length === 0) return null;
@@ -357,10 +366,13 @@ export default function ProveedoresPage() {
         <PageHeader
           availableYears={availableYears}
           availableMonths={availableMonths}
+          availableCategories={availableCategories}
           selectedYear={selectedYear}
           selectedMonth={selectedMonth}
+          selectedCategory={selectedCategory}
           onYearChange={handleYearChange}
           onMonthChange={setSelectedMonth}
+          onCategoryChange={setSelectedCategory}
         />
         <Card><CardContent className="py-8 text-center">
           <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
@@ -378,10 +390,13 @@ export default function ProveedoresPage() {
       <PageHeader
         availableYears={availableYears}
         availableMonths={availableMonths}
+        availableCategories={availableCategories}
         selectedYear={selectedYear}
         selectedMonth={selectedMonth}
+        selectedCategory={selectedCategory}
         onYearChange={handleYearChange}
         onMonthChange={setSelectedMonth}
+        onCategoryChange={setSelectedCategory}
       />
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -559,17 +574,23 @@ export default function ProveedoresPage() {
 function PageHeader({
   availableYears,
   availableMonths,
+  availableCategories,
   selectedYear,
   selectedMonth,
+  selectedCategory,
   onYearChange,
   onMonthChange,
+  onCategoryChange,
 }: {
   availableYears: string[];
   availableMonths: string[];
+  availableCategories: string[];
   selectedYear: string;
   selectedMonth: string;
+  selectedCategory: string;
   onYearChange: (y: string) => void;
   onMonthChange: (m: string) => void;
+  onCategoryChange: (c: string) => void;
 }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-4">
@@ -587,6 +608,12 @@ function PageHeader({
           <option value="all">Todo el año</option>
           {availableMonths.map((m) => (
             <option key={m} value={m}>{MONTH_NAMES[m] ?? m}</option>
+          ))}
+        </FilterSelect>
+        <FilterSelect value={selectedCategory} onChange={onCategoryChange}>
+          <option value="all">Todas las categorías</option>
+          {availableCategories.map((c) => (
+            <option key={c} value={c}>{c}</option>
           ))}
         </FilterSelect>
         <InflationToggle />
