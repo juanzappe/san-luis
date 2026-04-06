@@ -91,7 +91,6 @@ export function processClientesRows(rows: RpcClienteRow[]): ClientesData {
   for (const r of rows) {
     const raw = Number(r.total_neto) || 0;
     const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
-    if (monto <= 0) continue;
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
     const tipoEntidad = r.tipo_entidad;
@@ -128,10 +127,11 @@ export function processClientesRows(rows: RpcClienteRow[]): ClientesData {
   }
 
   // Build ranking
-  const grandTotal = Array.from(clientTotals.values()).reduce((s, c) => s + c.monto, 0);
   const sorted = Array.from(clientTotals.entries())
     .map(([cuit, c]) => ({ cuit, ...c }))
+    .filter((c) => c.monto > 0)
     .sort((a, b) => b.monto - a.monto);
+  const grandTotal = sorted.reduce((s, c) => s + c.monto, 0);
 
   let acum = 0;
   const ranking: ClienteRanking[] = sorted.map((c) => {

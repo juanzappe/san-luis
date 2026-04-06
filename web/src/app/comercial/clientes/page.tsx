@@ -45,6 +45,7 @@ import {
   periodoLabel,
   shortLabel,
 } from "@/lib/commercial-queries";
+import { fetchIngresos, type IngresoRow } from "@/lib/economic-queries";
 import { InflationToggle, useInflation } from "@/lib/inflation";
 import type {
   Formatter, ValueType, NameType,
@@ -66,7 +67,7 @@ function isCF(r: RpcClienteRow): boolean {
   return r.cuit === CF_CUIT || r.denominacion.toLowerCase().includes("consumidor final");
 }
 
-function KpiCard({ title, value, delta, icon: Icon }: { title: string; value: string; delta?: string | null; icon: React.ElementType }) {
+function KpiCard({ title, value, delta, subtitle, icon: Icon }: { title: string; value: string; delta?: string | null; subtitle?: string; icon: React.ElementType }) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -79,6 +80,9 @@ function KpiCard({ title, value, delta, icon: Icon }: { title: string; value: st
           <p className={`text-xs ${delta.startsWith("-") ? "text-red-600" : "text-green-600"}`}>
             {delta} vs período anterior
           </p>
+        )}
+        {subtitle && (
+          <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>
         )}
       </CardContent>
     </Card>
@@ -121,9 +125,11 @@ export default function ClientesPage() {
   const [selectedMonth, setSelectedMonth] = useState("all");
   const [incluirCF, setIncluirCF] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [ingresosRows, setIngresosRows] = useState<IngresoRow[]>([]);
 
   // Fetch raw rows once
   useEffect(() => {
+    fetchIngresos().then(setIngresosRows).catch(() => {});
     fetchClientesRaw()
       .then((rows) => {
         setRawRows(rows);
@@ -215,10 +221,10 @@ export default function ClientesPage() {
       .slice(0, 50);
   }, [data, searchQuery]);
 
-  // KPI: Facturación label & delta
+  // KPI: Clientes Identificados label & delta
   const factLabel = selectedMonth !== "all"
-    ? `Facturación ${MONTH_NAMES[selectedMonth] ?? ""} ${selectedYear}`
-    : `Facturación ${selectedYear}`;
+    ? `Clientes Identificados ${MONTH_NAMES[selectedMonth] ?? ""} ${selectedYear}`
+    : `Clientes Identificados ${selectedYear}`;
   const totalFact = mensual.reduce((s, m) => s + m.monto, 0);
 
   // Delta: compare against same period of previous year
@@ -247,6 +253,31 @@ export default function ClientesPage() {
   }, [prevData, adjust]);
 
   const totalPrev = prevMensual.reduce((s, m) => s + m.monto, 0);
+
+  // KPI: Total Ingresos Netos (from get_ingresos_mensual)
+  const ingresosLabel = selectedMonth !== "all"
+    ? `Total Ingresos Netos ${MONTH_NAMES[selectedMonth] ?? ""} ${selectedYear}`
+    : `Total Ingresos Netos ${selectedYear}`;
+
+  const totalIngresos = useMemo(() => {
+    return ingresosRows
+      .filter((r) => {
+        if (!r.periodo.startsWith(selectedYear)) return false;
+        if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+        return true;
+      })
+      .reduce((s, r) => s + adjust(r.total, r.periodo), 0);
+  }, [ingresosRows, selectedYear, selectedMonth, adjust]);
+
+  const totalIngresosPrev = useMemo(() => {
+    return ingresosRows
+      .filter((r) => {
+        if (!r.periodo.startsWith(prevYear)) return false;
+        if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+        return true;
+      })
+      .reduce((s, r) => s + adjust(r.total, r.periodo), 0);
+  }, [ingresosRows, prevYear, selectedMonth, adjust]);
 
   // Loading / error / empty states
   if (loading) {
@@ -393,12 +424,20 @@ export default function ClientesPage() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard title="Clientes Activos" value={String(cantClientes)} icon={Users} />
         <KpiCard
           title={factLabel}
           value={formatARS(totalFact)}
           delta={totalPrev > 0 ? formatPct(pctDelta(totalFact, totalPrev)) : null}
+          subtitle="Solo clientes con CUIT (Servicios + Mostrador fiscal)"
+          icon={DollarSign}
+        />
+        <KpiCard
+          title={ingresosLabel}
+          value={formatARS(totalIngresos)}
+          delta={totalIngresosPrev > 0 ? formatPct(pctDelta(totalIngresos, totalIngresosPrev)) : null}
+          subtitle="Incluye Mostrador (Posberry)"
           icon={DollarSign}
         />
         <KpiCard title="Concentración Top 10" value={`${data.concentracionTop10.toFixed(1)}%`} icon={Target} />
