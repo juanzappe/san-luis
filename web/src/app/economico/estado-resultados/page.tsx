@@ -211,6 +211,50 @@ interface WaterfallBar {
   color: string;
 }
 
+function buildAnnualWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
+  const bars: WaterfallBar[] = [];
+  let running = 0;
+
+  bars.push({ name: "Ingresos Netos", base: 0, value: row.ingresos, color: "#22c55e" });
+  running = row.ingresos;
+
+  bars.push({ name: "C. Operativos", base: running - row.costosOperativos, value: row.costosOperativos, color: "#ef4444" });
+  running -= row.costosOperativos;
+
+  const sueldosCS = row.sueldos + row.cargasSociales;
+  bars.push({ name: "Sueldos y CS", base: running - sueldosCS, value: sueldosCS, color: "#ef4444" });
+  running -= sueldosCS;
+
+  // Subtotal: Margen Bruto (from 0)
+  bars.push({ name: "Margen Bruto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  bars.push({ name: "C. Comerciales", base: running - row.costosComercialesAdmin, value: row.costosComercialesAdmin, color: "#ef4444" });
+  running -= row.costosComercialesAdmin;
+
+  bars.push({ name: "C. Financieros", base: running - row.costosFinancieros, value: row.costosFinancieros, color: "#ef4444" });
+  running -= row.costosFinancieros;
+
+  if (row.recpam !== 0) {
+    if (row.recpam > 0) {
+      bars.push({ name: "RECPAM", base: running - row.recpam, value: row.recpam, color: "#ef4444" });
+    } else {
+      bars.push({ name: "RECPAM", base: running, value: Math.abs(row.recpam), color: "#22c55e" });
+    }
+    running -= row.recpam;
+  }
+
+  // Subtotal: Resultado antes de Ganancias (from 0)
+  bars.push({ name: "Res. antes Gan.", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  bars.push({ name: "Imp. Ganancias", base: running - row.ganancias, value: row.ganancias, color: "#ef4444" });
+  running -= row.ganancias;
+
+  // Final: Resultado Neto (from 0)
+  bars.push({ name: "Resultado Neto", base: 0, value: running, total: true, color: running >= 0 ? "#22c55e" : "#ef4444" });
+
+  return bars;
+}
+
 function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
   const bars: WaterfallBar[] = [];
   let running = 0;
@@ -439,6 +483,15 @@ export default function EstadoResultadosPage() {
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
   const waterfall = lastRow ? buildWaterfall(lastRow) : [];
+
+  // Annual waterfall: aggregate by year, select one year
+  const [waterfallYear, setWaterfallYear] = useState<string | null>(null);
+  const annualAggregated = useMemo(() => aggregateResultado(data, "anual"), [data]);
+  const activeWaterfallYear = waterfallYear ?? availableYears[availableYears.length - 1] ?? "";
+  const annualWaterfall = useMemo(() => {
+    const row = annualAggregated.find((r) => r.periodo === activeWaterfallYear);
+    return row ? buildAnnualWaterfall(row) : [];
+  }, [annualAggregated, activeWaterfallYear]);
 
   // Margin evolution — same year filter for mensual/trimestral, last 12 for anual/ytd
   const marginData = useMemo(() => {
@@ -800,6 +853,72 @@ export default function EstadoResultadosPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Annual Waterfall */}
+      {annualWaterfall.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
+            <CardTitle className="text-base">Cascada Anual — {activeWaterfallYear}</CardTitle>
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {availableYears.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setWaterfallYear(y)}
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    activeWaterfallYear === y
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={420}>
+              <BarChart data={annualWaterfall} margin={{ top: 30, right: 10, left: 10, bottom: 5 }}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="name" fontSize={11} interval={0} angle={-25} textAnchor="end" height={60} />
+                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(0)}M`} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" />
+                {/* Invisible base */}
+                <Bar dataKey="base" stackId="w" fill="transparent" isAnimationActive={false} />
+                {/* Visible value with labels */}
+                <Bar dataKey="value" stackId="w" radius={[4, 4, 0, 0]} label={<WaterfallLabel data={annualWaterfall} />}>
+                  {annualWaterfall.map((entry, index) => (
+                    <Cell key={index} fill={entry.color} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
+      )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Custom label for waterfall bars — shows formatted ARS value above each bar
+// ---------------------------------------------------------------------------
+function WaterfallLabel({ data, x, y, width, index }: {
+  data: WaterfallBar[];
+  x?: number;
+  y?: number;
+  width?: number;
+  index?: number;
+}) {
+  if (x == null || y == null || width == null || index == null) return null;
+  const entry = data[index];
+  if (!entry) return null;
+  // For subtotals/totals show the actual value; for deductions show the deducted amount
+  const displayValue = entry.total ? entry.value : entry.value;
+  const label = formatARS(displayValue);
+  return (
+    <text x={x + width / 2} y={y - 6} textAnchor="middle" fontSize={10} fill="currentColor" className="fill-foreground">
+      {label}
+    </text>
   );
 }
