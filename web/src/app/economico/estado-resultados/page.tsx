@@ -67,7 +67,7 @@ interface ExtendedResultadoRow extends ResultadoRow {
 // ---------------------------------------------------------------------------
 // Period aggregation
 // ---------------------------------------------------------------------------
-type Granularity = "mensual" | "trimestral" | "anual";
+type Granularity = "mensual" | "trimestral" | "anual" | "ytd";
 
 const QUARTER_MAP: Record<string, string> = {
   "01": "Q1", "02": "Q1", "03": "Q1",
@@ -76,14 +76,30 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
+const MONTH_SHORT: Record<string, string> = {
+  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+};
+
 function aggregateResultado(
   data: ExtendedResultadoRow[],
   granularity: Granularity,
+  ytdLastMonth?: number,
 ): ExtendedResultadoRow[] {
   if (granularity === "mensual") return data;
 
+  // For YTD: filter to months 1..N before aggregating by year
+  let source = data;
+  if (granularity === "ytd" && ytdLastMonth) {
+    source = data.filter((r) => {
+      const m = parseInt(r.periodo.split("-")[1], 10);
+      return m >= 1 && m <= ytdLastMonth;
+    });
+  }
+
   const buckets = new Map<string, ExtendedResultadoRow>();
-  for (const r of data) {
+  for (const r of source) {
     const [y, m] = r.periodo.split("-");
     const key = granularity === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
     const cur = buckets.get(key);
@@ -121,8 +137,11 @@ function aggregateResultado(
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
   if (g === "anual") return p;
+  if (g === "ytd" && ytdLastMonth) {
+    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+  }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
     return `${q} ${y}`;
@@ -396,19 +415,34 @@ export default function EstadoResultadosPage() {
   // Default to current year (or last available)
   const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
 
+  // YTD: find the last month with data in the most recent year
+  const ytdLastMonth = useMemo(() => {
+    if (data.length === 0) return 0;
+    const lastYear = availableYears[availableYears.length - 1];
+    if (!lastYear) return 0;
+    let maxMonth = 0;
+    for (const r of data) {
+      if (r.periodo.startsWith(lastYear)) {
+        const m = parseInt(r.periodo.split("-")[1], 10);
+        if (m > maxMonth) maxMonth = m;
+      }
+    }
+    return maxMonth;
+  }, [data, availableYears]);
+
   // Aggregate by selected granularity, then filter by year
   const tablePeriods = useMemo(() => {
-    const aggregated = aggregateResultado(data, granularity);
-    if (granularity === "anual") return aggregated;
+    const aggregated = aggregateResultado(data, granularity, ytdLastMonth);
+    if (granularity === "anual" || granularity === "ytd") return aggregated;
     return aggregated.filter((r) => r.periodo.startsWith(activeYear));
-  }, [data, granularity, activeYear]);
+  }, [data, granularity, activeYear, ytdLastMonth]);
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
   const waterfall = lastRow ? buildWaterfall(lastRow) : [];
 
-  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual
+  // Margin evolution — same year filter for mensual/trimestral, last 12 for anual/ytd
   const marginData = useMemo(() => {
-    const source = granularity === "anual" ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
+    const source = (granularity === "anual" || granularity === "ytd") ? data.slice(-12) : data.filter((r) => r.periodo.startsWith(activeYear));
     return source.map((r) => ({
       label: shortLabel(r.periodo),
       margen: r.margenPct,
@@ -466,7 +500,7 @@ export default function EstadoResultadosPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Estado de Resultados</CardTitle>
           <div className="flex items-center gap-2">
-            {granularity !== "anual" && (
+            {granularity !== "anual" && granularity !== "ytd" && (
               <div className="flex items-center rounded-lg border text-xs font-medium">
                 {availableYears.map((y) => (
                   <button
@@ -484,17 +518,17 @@ export default function EstadoResultadosPage() {
               </div>
             )}
             <div className="flex items-center rounded-lg border text-xs font-medium">
-              {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+              {(["mensual", "trimestral", "anual", "ytd"] as Granularity[]).map((g) => (
                 <button
                   key={g}
                   onClick={() => setGranularity(g)}
-                  className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
                     granularity === g
                       ? "bg-primary text-primary-foreground"
                       : "hover:bg-accent"
                   }`}
                 >
-                  {g}
+                  {g === "ytd" ? "YTD" : g.charAt(0).toUpperCase() + g.slice(1)}
                 </button>
               ))}
             </div>
@@ -507,7 +541,7 @@ export default function EstadoResultadosPage() {
                 <TableHead className="w-[220px]">Concepto</TableHead>
                 {tablePeriods.map((r) => (
                   <TableHead key={r.periodo} className="text-right">
-                    {granularityLabel(r.periodo, granularity)}
+                    {granularityLabel(r.periodo, granularity, ytdLastMonth)}
                   </TableHead>
                 ))}
               </TableRow>
@@ -628,7 +662,7 @@ export default function EstadoResultadosPage() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
                   ingresos: r.ingresos,
                   egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + Math.max(0, r.recpam) + r.ganancias,
                 }))}
@@ -648,14 +682,14 @@ export default function EstadoResultadosPage() {
         <Card>
           <CardHeader>
             <CardTitle className="text-base">
-              {granularity === "mensual" ? "Resultado Neto Mensual" : granularity === "trimestral" ? "Resultado Neto Trimestral" : "Resultado Neto Anual"}
+              {granularity === "mensual" ? "Resultado Neto Mensual" : granularity === "trimestral" ? "Resultado Neto Trimestral" : granularity === "ytd" ? "Resultado Neto YTD" : "Resultado Neto Anual"}
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
                   resultado: r.resultadoNeto,
                 }))}
               >
