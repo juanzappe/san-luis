@@ -41,7 +41,7 @@ const PIE_COLORS = ["#3b82f6", "#22c55e"];
 // ---------------------------------------------------------------------------
 // Period aggregation
 // ---------------------------------------------------------------------------
-type Granularity = "mensual" | "trimestral" | "anual";
+type Granularity = "mensual" | "trimestral" | "anual" | "ytd";
 
 const QUARTER_MAP: Record<string, string> = {
   "01": "Q1", "02": "Q1", "03": "Q1",
@@ -50,16 +50,29 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
+const MONTH_SHORT: Record<string, string> = {
+  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+};
+
 interface AggRow {
   periodo: string;
   total: number;
   txCount: number;
 }
 
-function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
+function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number): AggRow[] {
   if (g === "mensual") return data;
+  let source = data;
+  if (g === "ytd" && ytdLastMonth) {
+    source = data.filter((r) => {
+      const m = parseInt(r.periodo.split("-")[1], 10);
+      return m >= 1 && m <= ytdLastMonth;
+    });
+  }
   const buckets = new Map<string, AggRow>();
-  for (const r of data) {
+  for (const r of source) {
     const [y, m] = r.periodo.split("-");
     const key = g === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
     const cur = buckets.get(key);
@@ -73,8 +86,11 @@ function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
   if (g === "anual") return p;
+  if (g === "ytd" && ytdLastMonth) {
+    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+  }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
     return `${q} ${y}`;
@@ -167,8 +183,23 @@ export default function ServiciosPage() {
     [data, adjust],
   );
 
+  // YTD: last month with data in the most recent year
+  const ytdLastMonth = useMemo(() => {
+    if (adjMonthly.length === 0) return 0;
+    const years = Array.from(new Set(adjMonthly.map((r) => r.periodo.slice(0, 4)))).sort();
+    const lastYear = years[years.length - 1];
+    let max = 0;
+    for (const r of adjMonthly) {
+      if (r.periodo.startsWith(lastYear)) {
+        const m = parseInt(r.periodo.split("-")[1], 10);
+        if (m > max) max = m;
+      }
+    }
+    return max;
+  }, [adjMonthly]);
+
   // Aggregated for table (Section 2)
-  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity), [adjMonthly, granularity]);
+  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity, ytdLastMonth), [adjMonthly, granularity, ytdLastMonth]);
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
@@ -189,6 +220,20 @@ export default function ServiciosPage() {
       for (const y of years) {
         const match = adjMonthly.find((m) => m.periodo === `${y}-${String(i + 1).padStart(2, "0")}`);
         if (match) row[y] = match.total;
+      }
+      return row;
+    });
+    return { data: byMonth, years };
+  }, [adjMonthly]);
+
+  // Year-over-year tx count data (Section 3b)
+  const yoyTxData = useMemo(() => {
+    const years = Array.from(new Set(adjMonthly.map((m) => m.periodo.slice(0, 4)))).sort();
+    const byMonth = Array.from({ length: 12 }, (_, i) => {
+      const row: Record<string, number | string> = { month: SHORT_MONTHS[i] };
+      for (const y of years) {
+        const match = adjMonthly.find((m) => m.periodo === `${y}-${String(i + 1).padStart(2, "0")}`);
+        if (match) row[y] = match.txCount;
       }
       return row;
     });
@@ -314,15 +359,15 @@ export default function ServiciosPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Detalle por Período</CardTitle>
           <div className="flex items-center rounded-lg border text-xs font-medium">
-            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+            {(["mensual", "trimestral", "anual", "ytd"] as Granularity[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGranularity(g)}
-                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
                   granularity === g ? "bg-primary text-primary-foreground" : "hover:bg-accent"
                 }`}
               >
-                {g}
+                {g === "ytd" ? "YTD" : g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
           </div>
@@ -351,7 +396,7 @@ export default function ServiciosPage() {
                   const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
                   return (
                     <TableRow key={row.periodo}>
-                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity)}</TableCell>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth)}</TableCell>
                       <TableCell className="text-right">{formatARS(row.total)}</TableCell>
                       <TableCell className={`text-right text-xs ${dFact !== null ? (dFact >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
                         {formatPct(dFact)}
@@ -387,6 +432,36 @@ export default function ServiciosPage() {
               <Tooltip formatter={arsTooltip} />
               <Legend />
               {yoyData.years.map((year, i) => (
+                <Line
+                  key={year}
+                  type="monotone"
+                  dataKey={year}
+                  name={year}
+                  stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
+                  strokeWidth={2}
+                  dot={{ r: 3 }}
+                  connectNulls
+                />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* ====== SECTION 3b: Year-over-Year Tx Count ====== */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Cantidad de Servicios por Mes</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={350}>
+            <LineChart data={yoyTxData.data}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="month" fontSize={12} />
+              <YAxis fontSize={12} />
+              <Tooltip />
+              <Legend />
+              {yoyTxData.years.map((year, i) => (
                 <Line
                   key={year}
                   type="monotone"
@@ -515,14 +590,14 @@ export default function ServiciosPage() {
         </CardContent>
       </Card>
 
-      {/* ====== SECTION 5: % Sector Público (conditional) ====== */}
-      {hasClassification ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Distribución Público vs Privado</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-6 lg:grid-cols-2 items-center">
+      {/* ====== SECTION 5: Público/Privado + Clasificación side by side ====== */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {hasClassification ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Distribución Público vs Privado</CardTitle>
+            </CardHeader>
+            <CardContent>
               <ResponsiveContainer width="100%" height={280}>
                 <PieChart>
                   <Pie
@@ -545,31 +620,89 @@ export default function ServiciosPage() {
                   <Tooltip formatter={arsTooltip} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="space-y-3">
-                <div>
-                  <span className="text-sm text-muted-foreground">Sector Público</span>
-                  <p className="text-xl font-bold">{data.kpis.pctPublico.toFixed(1)}%</p>
-                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.publico, 0))}</p>
+              <div className="flex justify-center gap-6 mt-2 text-sm">
+                <div className="text-center">
+                  <span className="text-muted-foreground">Público</span>
+                  <p className="font-bold">{data.kpis.pctPublico.toFixed(1)}%</p>
                 </div>
-                <div>
-                  <span className="text-sm text-muted-foreground">Sector Privado</span>
-                  <p className="text-xl font-bold">{(100 - data.kpis.pctPublico).toFixed(1)}%</p>
-                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.privado, 0))}</p>
+                <div className="text-center">
+                  <span className="text-muted-foreground">Privado</span>
+                  <p className="font-bold">{(100 - data.kpis.pctPublico).toFixed(1)}%</p>
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <p className="text-sm text-muted-foreground">
+                Clasificación de clientes pendiente de configurar.
+                Agregá el campo <code>tipo_entidad</code> a los clientes para ver la distribución público/privado.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Por Clasificación */}
         <Card>
-          <CardContent className="py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              Clasificación de clientes pendiente de configurar.
-              Agregá el campo <code>tipo_entidad</code> a los clientes para ver la distribución público/privado.
-            </p>
+          <CardHeader>
+            <CardTitle className="text-base">Por Clasificación</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const CLASIF_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#ef4444", "#ec4899", "#06b6d4", "#84cc16"];
+              const byClasif = new Map<string, number>();
+              for (const c of data.clients) {
+                const key = c.clasificacion || "Sin clasificar";
+                byClasif.set(key, (byClasif.get(key) ?? 0) + c.monto);
+              }
+              const clasifData = Array.from(byClasif.entries())
+                .map(([name, value]) => ({ name, value }))
+                .sort((a, b) => b.value - a.value)
+                .slice(0, 8);
+              const clasifTotal = clasifData.reduce((s, d) => s + d.value, 0);
+
+              if (clasifData.length === 0) {
+                return <p className="text-sm text-muted-foreground text-center py-8">Sin datos de clasificación</p>;
+              }
+
+              return (
+                <>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <PieChart>
+                      <Pie
+                        data={clasifData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={100}
+                        label={({ name, percent }) => `${String(name).slice(0, 12)} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                        labelLine={false}
+                        fontSize={10}
+                      >
+                        {clasifData.map((_, i) => (
+                          <Cell key={i} fill={CLASIF_COLORS[i % CLASIF_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={arsTooltip} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-2 text-xs">
+                    {clasifData.map((d, i) => (
+                      <span key={d.name} className="flex items-center gap-1">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: CLASIF_COLORS[i % CLASIF_COLORS.length] }} />
+                        {d.name} {clasifTotal > 0 ? ((d.value / clasifTotal) * 100).toFixed(0) : 0}%
+                      </span>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
           </CardContent>
         </Card>
-      )}
+      </div>
     </div>
   );
 }
