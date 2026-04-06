@@ -9,9 +9,10 @@ import {
   fetchResultado,
   computeIpcFallback,
   computeGananciasNominal,
-  computeGananciasBaseNominal,
+  RECPAM_HISTORICO,
+  RATIO_PMN,
 } from "@/lib/economic-queries";
-import { fetchResumenFiscal, type ResumenMensualRow } from "@/lib/tax-queries";
+import { fetchResumenFiscal, computeGastosComerciales, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
 
 export interface UseEgresosDataResult {
@@ -67,20 +68,46 @@ export function useEgresosData(): UseEgresosDataResult {
       const gananciasNom = resultadoRow
         ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
         : 0;
-      const gananciasBaseNom = resultadoRow
-        ? computeGananciasBaseNominal(resultadoRow, ipcMap, ipcFallback)
-        : 0;
       // Add Imp. al Cheque from Resumen Fiscal to Financieros
       const cheque = taxMap.get(r.periodo)?.cheque ?? 0;
       const financierosConCheque = r.financieros + cheque;
       const totalConCheque = r.total + cheque;
+
+      // Compute gananciasBase mirroring EERR logic exactly:
+      // resultadoAntesGanancias = margenBruto - costCom(computeGastosComerciales) - costFin(+cheque) - recpam
+      let gananciasBaseAdj = 0;
+      if (resultadoRow) {
+        const year = r.periodo.split("-")[0];
+        const ing = adjust(resultadoRow.ingresos, r.periodo);
+        const costOp = adjust(resultadoRow.costosOperativos, r.periodo);
+        const sueldos = adjust(resultadoRow.sueldos, r.periodo);
+        const cargasSoc = adjust(resultadoRow.cargasSociales, r.periodo);
+        const margenBruto = ing - costOp - sueldos - cargasSoc;
+
+        const costComNominal = computeGastosComerciales(resultadoRow.ingresos, r.periodo);
+        const costCom = adjust(costComNominal, r.periodo);
+        const costFin = adjust(resultadoRow.costosFinancieros + cheque, r.periodo);
+
+        // RECPAM — same as EERR
+        let recpamNominal: number;
+        if (year in RECPAM_HISTORICO) {
+          recpamNominal = RECPAM_HISTORICO[year] / 12;
+        } else {
+          recpamNominal = resultadoRow.ingresos * RATIO_PMN * (ipcMap.get(r.periodo) ?? ipcFallback);
+        }
+        const recpamBase = (year in RECPAM_HISTORICO) ? `${year}-12` : r.periodo;
+        const recpam = adjust(recpamNominal, recpamBase);
+
+        gananciasBaseAdj = margenBruto - costCom - costFin - recpam;
+      }
+
       return {
         ...r,
         operativos: adjust(r.operativos, r.periodo),
         comerciales: adjust(r.comerciales, r.periodo),
         financieros: adjust(financierosConCheque, r.periodo),
         ganancias: adjust(gananciasNom, r.periodo),
-        gananciasBase: adjust(gananciasBaseNom, r.periodo),
+        gananciasBase: gananciasBaseAdj,
         total: adjust(totalConCheque, r.periodo),
         categorias: adjCats,
         sueldos: adjust(r.sueldos, r.periodo),
