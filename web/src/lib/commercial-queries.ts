@@ -323,15 +323,20 @@ export async function fetchProveedoresRaw(): Promise<RpcProveedorRow[]> {
   return (data ?? []) as RpcProveedorRow[];
 }
 
-export function processProveedoresRows(rows: RpcProveedorRow[]): ProveedoresData {
+export function processProveedoresRows(
+  rows: RpcProveedorRow[],
+  adjustFn?: (value: number, periodo: string) => number,
+): ProveedoresData {
+  const adj = adjustFn ?? ((v: number) => v);
   // Aggregate by proveedor
   const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string }>();
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
   for (const r of rows) {
     const raw = Number(r.total_neto) || 0;
-    const monto = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
-    if (monto <= 0) continue;
+    const signed = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
+    if (signed <= 0) continue;
+    const monto = adj(signed, r.periodo);
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
     const categoriaEgreso = r.categoria_egreso;

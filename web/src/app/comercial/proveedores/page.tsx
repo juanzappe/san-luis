@@ -177,20 +177,11 @@ export default function ProveedoresPage() {
 
   const data: ProveedoresData | null = useMemo(() => {
     if (filteredRows.length === 0) return null;
-    return processProveedoresRows(filteredRows);
-  }, [filteredRows]);
+    return processProveedoresRows(filteredRows, adjust);
+  }, [filteredRows, adjust]);
 
-  // Inflation-adjusted monthly
-  const mensual = useMemo(() => {
-    if (!data) return [];
-    return data.mensual.map((m) => {
-      const adjCat: Record<string, number> = {};
-      for (const [k, v] of Object.entries(m.porCategoria)) {
-        adjCat[k] = adjust(v, m.periodo);
-      }
-      return { ...m, monto: adjust(m.monto, m.periodo), porCategoria: adjCat };
-    });
-  }, [data, adjust]);
+  // mensual already inflation-adjusted via processProveedoresRows
+  const mensual = useMemo(() => data?.mensual ?? [], [data]);
 
   // All categories for stacked chart
   const allCats = useMemo(() => {
@@ -248,18 +239,10 @@ export default function ProveedoresPage() {
 
   const prevData = useMemo(() => {
     if (prevRows.length === 0) return null;
-    return processProveedoresRows(prevRows);
-  }, [prevRows]);
+    return processProveedoresRows(prevRows, adjust);
+  }, [prevRows, adjust]);
 
-  const prevMensual = useMemo(() => {
-    if (!prevData) return [];
-    return prevData.mensual.map((m) => ({
-      ...m,
-      monto: adjust(m.monto, m.periodo),
-    }));
-  }, [prevData, adjust]);
-
-  const totalPrev = prevMensual.reduce((s, m) => s + m.monto, 0);
+  const totalPrev = (prevData?.mensual ?? []).reduce((s, m) => s + m.monto, 0);
 
   // Loading / error / empty states
   if (loading) {
