@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Bar,
   LineChart,
@@ -232,20 +232,6 @@ function MonthlyAverageByYear({ data }: { data: IngresoRow[] }) {
 
   if (rows.length === 0) return null;
 
-  const getDelta = (idx: number, field: keyof Pick<YearAvg, "mostrador" | "restobar" | "servicios" | "total">) => {
-    if (idx >= rows.length - 1) return null;
-    return pctDelta(rows[idx][field], rows[idx + 1][field]);
-  };
-
-  const deltaCell = (delta: number | null) => {
-    if (delta === null) return null;
-    return (
-      <span className={`ml-1.5 text-xs font-normal ${delta >= 0 ? "text-green-600" : "text-red-600"}`}>
-        {formatPct(delta)}
-      </span>
-    );
-  };
-
   const monthsNote = rows.map((r) => `${r.year}: ${r.months} ${r.months === 1 ? "mes" : "meses"}`).join(" · ");
 
   return (
@@ -265,21 +251,13 @@ function MonthlyAverageByYear({ data }: { data: IngresoRow[] }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((r, i) => (
+            {rows.map((r) => (
               <TableRow key={r.year}>
                 <TableCell className="font-medium">{r.year}</TableCell>
-                <TableCell className="text-right">
-                  {formatARS(r.mostrador)}{deltaCell(getDelta(i, "mostrador"))}
-                </TableCell>
-                <TableCell className="text-right">
-                  {formatARS(r.restobar)}{deltaCell(getDelta(i, "restobar"))}
-                </TableCell>
-                <TableCell className="text-right">
-                  {formatARS(r.servicios)}{deltaCell(getDelta(i, "servicios"))}
-                </TableCell>
-                <TableCell className="text-right font-bold">
-                  {formatARS(r.total)}{deltaCell(getDelta(i, "total"))}
-                </TableCell>
+                <TableCell className="text-right">{formatARS(r.mostrador)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.restobar)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.servicios)}</TableCell>
+                <TableCell className="text-right font-bold">{formatARS(r.total)}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -293,29 +271,26 @@ function MonthlyAverageByYear({ data }: { data: IngresoRow[] }) {
 }
 
 // ---------------------------------------------------------------------------
-// YTD Comparative Banner
+// YTD Comparison — multi-year
 // ---------------------------------------------------------------------------
-interface YtdData {
-  currentYear: string;
-  prevYear: string;
-  firstMonth: string;
-  lastMonth: string;
-  current: { mostrador: number; restobar: number; servicios: number; total: number };
-  previous: { mostrador: number; restobar: number; servicios: number; total: number };
-  hasPrevData: boolean;
+interface YtdYearData {
+  year: string;
+  mostrador: number;
+  restobar: number;
+  servicios: number;
+  total: number;
 }
 
-function useYtdComparison(data: IngresoRow[]): YtdData | null {
+function useYtdData(data: IngresoRow[]): { monthRange: string; years: YtdYearData[] } | null {
   return useMemo(() => {
     if (data.length === 0) return null;
 
-    // Find the most recent year that has data
-    const years = new Set(data.map((r) => r.periodo.slice(0, 4)));
-    const sortedYears = Array.from(years).sort();
-    const currentYear = sortedYears[sortedYears.length - 1];
-    const prevYear = String(Number(currentYear) - 1);
+    const allYears = Array.from(new Set(data.map((r) => r.periodo.slice(0, 4)))).sort();
+    if (allYears.length === 0) return null;
 
-    // Get months with data in current year
+    const currentYear = allYears[allYears.length - 1];
+
+    // Months with data in the most recent year — defines the YTD range
     const currentMonths = data
       .filter((r) => r.periodo.startsWith(currentYear))
       .map((r) => r.periodo.slice(5, 7))
@@ -325,56 +300,41 @@ function useYtdComparison(data: IngresoRow[]): YtdData | null {
 
     const firstMonth = currentMonths[0];
     const lastMonth = currentMonths[currentMonths.length - 1];
+    const monthRange = `${MONTH_NAMES[parseInt(firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(lastMonth, 10) - 1]}`;
 
-    // Sum current year
-    const current = { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
-    for (const r of data) {
-      if (r.periodo.startsWith(currentYear)) {
-        current.mostrador += r.mostrador;
-        current.restobar += r.restobar;
-        current.servicios += r.servicios;
-        current.total += r.total;
+    // Accumulate same months for every year
+    const years: YtdYearData[] = [];
+    for (const y of [...allYears].reverse()) {
+      const acc = { year: y, mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+      let hasData = false;
+      for (const m of currentMonths) {
+        const match = data.find((r) => r.periodo === `${y}-${m}`);
+        if (match) {
+          hasData = true;
+          acc.mostrador += match.mostrador;
+          acc.restobar += match.restobar;
+          acc.servicios += match.servicios;
+          acc.total += match.total;
+        }
       }
+      if (hasData) years.push(acc);
     }
 
-    // Sum same months from previous year
-    const previous = { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
-    let hasPrevData = false;
-    for (const m of currentMonths) {
-      const match = data.find((r) => r.periodo === `${prevYear}-${m}`);
-      if (match) {
-        hasPrevData = true;
-        previous.mostrador += match.mostrador;
-        previous.restobar += match.restobar;
-        previous.servicios += match.servicios;
-        previous.total += match.total;
-      }
-    }
-
-    return { currentYear, prevYear, firstMonth, lastMonth, current, previous, hasPrevData };
+    return years.length >= 2 ? { monthRange, years } : null;
   }, [data]);
 }
 
-function formatCompact(n: number): string {
-  if (Math.abs(n) >= 1e9) return `$ ${(n / 1e9).toFixed(1)}B`;
-  if (Math.abs(n) >= 1e6) return `$ ${(n / 1e6).toFixed(1)}M`;
-  if (Math.abs(n) >= 1e3) return `$ ${(n / 1e3).toFixed(0)}K`;
-  return formatARS(n);
-}
-
 function YtdTable({ data }: { data: IngresoRow[] }) {
-  const ytd = useYtdComparison(data);
-  if (!ytd || !ytd.hasPrevData) return null;
+  const ytd = useYtdData(data);
+  if (!ytd) return null;
 
-  const monthRange = `${MONTH_NAMES[parseInt(ytd.firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(ytd.lastMonth, 10) - 1]}`;
-  const curLabel = `${monthRange} ${ytd.currentYear}`;
-  const prevLabel = `${monthRange} ${ytd.prevYear}`;
+  const { monthRange, years } = ytd;
 
-  const rows = [
-    { label: "Mostrador", cur: ytd.current.mostrador, prev: ytd.previous.mostrador, bold: false },
-    { label: "Restobar", cur: ytd.current.restobar, prev: ytd.previous.restobar, bold: false },
-    { label: "Servicios", cur: ytd.current.servicios, prev: ytd.previous.servicios, bold: false },
-    { label: "Total", cur: ytd.current.total, prev: ytd.previous.total, bold: true },
+  const units = [
+    { label: "Mostrador", key: "mostrador" as const, bold: false },
+    { label: "Restobar", key: "restobar" as const, bold: false },
+    { label: "Servicios", key: "servicios" as const, bold: false },
+    { label: "Total", key: "total" as const, bold: true },
   ];
 
   return (
@@ -383,34 +343,57 @@ function YtdTable({ data }: { data: IngresoRow[] }) {
         <CardTitle className="text-base">Comparación YTD ({monthRange})</CardTitle>
       </CardHeader>
       <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead />
-              <TableHead className="text-right">{curLabel}</TableHead>
-              <TableHead className="text-right">{prevLabel}</TableHead>
-              <TableHead className="text-right">Δ %</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((r) => {
-              const delta = r.prev > 0 ? pctDelta(r.cur, r.prev) : null;
-              return (
-                <TableRow key={r.label}>
-                  <TableCell className={r.bold ? "font-bold" : ""}>{r.label}</TableCell>
-                  <TableCell className={`text-right ${r.bold ? "font-bold" : ""}`}>{formatARS(r.cur)}</TableCell>
-                  <TableCell className="text-right text-muted-foreground">{formatARS(r.prev)}</TableCell>
-                  <TableCell className={`text-right font-medium ${delta !== null && delta >= 0 ? "text-green-600" : "text-red-600"}`}>
-                    {delta !== null ? formatPct(delta) : "—"}
-                  </TableCell>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead />
+                {years.map((y, i) => (
+                  <React.Fragment key={y.year}>
+                    <TableHead className="text-right">{monthRange} {y.year}</TableHead>
+                    {i < years.length - 1 && (
+                      <TableHead className="text-right text-xs">Δ %</TableHead>
+                    )}
+                  </React.Fragment>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {units.map((u) => (
+                <TableRow key={u.key}>
+                  <TableCell className={u.bold ? "font-bold" : ""}>{u.label}</TableCell>
+                  {years.map((y, i) => {
+                    const val = y[u.key];
+                    const next = i < years.length - 1 ? years[i + 1] : null;
+                    const delta = next && next[u.key] > 0 ? pctDelta(val, next[u.key]) : null;
+                    return (
+                      <React.Fragment key={y.year}>
+                        <TableCell className={`text-right ${u.bold ? "font-bold" : ""} ${i > 0 ? "text-muted-foreground" : ""}`}>
+                          {formatARS(val)}
+                        </TableCell>
+                        {i < years.length - 1 && (
+                          <TableCell className={`text-right font-medium ${delta !== null && delta >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {delta !== null ? formatPct(delta) : "—"}
+                          </TableCell>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
                 </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   );
+}
+
+function formatCompact(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$ ${(n / 1e9).toFixed(1)}B`;
+  if (Math.abs(n) >= 1e6) return `$ ${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$ ${(n / 1e3).toFixed(0)}K`;
+  return formatARS(n);
 }
 
 // ---------------------------------------------------------------------------
