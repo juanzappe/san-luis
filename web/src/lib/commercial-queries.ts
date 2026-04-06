@@ -327,12 +327,30 @@ export function processProveedoresRows(
   adjustFn?: (value: number, periodo: string) => number,
 ): ProveedoresData {
   const adj = adjustFn ?? ((v: number) => v);
+
+  // === DEBUG: trace where money is lost ===
+  const rawSum = rows.reduce((s, r) => s + (Number(r.total_neto) || 0), 0);
+  console.log(`[PROV DEBUG] Input: ${rows.length} rows, raw sum = ${(rawSum / 1e6).toFixed(1)}M`);
+  console.log(`[PROV DEBUG] adjustFn provided = ${!!adjustFn}`);
+  // Sample: log first 5 rows to see actual values
+  rows.slice(0, 5).forEach((r, i) => {
+    console.log(`[PROV DEBUG]   row[${i}]: periodo=${r.periodo} cuit=${r.cuit} total_neto=${r.total_neto} denom=${r.denominacion?.slice(0, 30)}`);
+  });
+
   // Aggregate by proveedor
   const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string }>();
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
+  let loopRawSum = 0;
+  let loopAdjSum = 0;
+  let skippedZero = 0;
+
   for (const r of rows) {
-    const monto = adj(Number(r.total_neto) || 0, r.periodo);
+    const rawVal = Number(r.total_neto) || 0;
+    const monto = adj(rawVal, r.periodo);
+    if (rawVal === 0) skippedZero++;
+    loopRawSum += rawVal;
+    loopAdjSum += monto;
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
     const categoriaEgreso = r.categoria_egreso;
@@ -361,12 +379,26 @@ export function processProveedoresRows(
     addToMap(mm.porCat, categoriaEgreso, monto);
   }
 
+  console.log(`[PROV DEBUG] After loop: rawSum=${(loopRawSum / 1e6).toFixed(1)}M, adjSum=${(loopAdjSum / 1e6).toFixed(1)}M, skippedZero=${skippedZero}`);
+  console.log(`[PROV DEBUG] provTotals: ${provTotals.size} suppliers`);
+  const provTotalSum = Array.from(provTotals.values()).reduce((s, p) => s + p.monto, 0);
+  console.log(`[PROV DEBUG] provTotals sum = ${(provTotalSum / 1e6).toFixed(1)}M`);
+
   // Ranking (exclude suppliers with net negative after credit notes)
   const sorted = Array.from(provTotals.entries())
     .map(([cuit, p]) => ({ cuit, ...p }))
     .filter((p) => p.monto > 0)
     .sort((a, b) => b.monto - a.monto);
   const grandTotal = sorted.reduce((s, p) => s + p.monto, 0);
+
+  const droppedByFilter = provTotals.size - sorted.length;
+  const droppedSum = provTotalSum - grandTotal;
+  console.log(`[PROV DEBUG] After filter(>0): ${sorted.length} suppliers, grandTotal=${(grandTotal / 1e6).toFixed(1)}M (dropped ${droppedByFilter} suppliers = ${(droppedSum / 1e6).toFixed(1)}M)`);
+
+  // Monthly total for KPI
+  const mensualTotalDebug = Array.from(monthlyMap.values()).reduce((s, m) => s + m.monto, 0);
+  console.log(`[PROV DEBUG] monthlyMap sum (used for KPI) = ${(mensualTotalDebug / 1e6).toFixed(1)}M`);
+  console.log(`[PROV DEBUG] === END ===`);
 
   let acum = 0;
   const ranking: ProveedorRanking[] = sorted.map((p) => {
