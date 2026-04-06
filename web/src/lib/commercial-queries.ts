@@ -315,11 +315,27 @@ export type RpcProveedorRow = {
 
 export async function fetchProveedoresRaw(): Promise<RpcProveedorRow[]> {
   const data = await fetchWithRetry(async () => {
-    const res = await supabase.rpc("get_comercial_proveedores");
+    const res = await supabase.rpc("get_comercial_proveedores").limit(5000);
     if (res.error) throw res.error;
     return res.data;
   });
   return (data ?? []) as RpcProveedorRow[];
+}
+
+// Monthly totals from lightweight RPC (never truncated by Supabase row limit)
+export type RpcProveedorMensualRow = {
+  periodo: string;
+  total_neto: number;
+  cantidad: number;
+};
+
+export async function fetchProveedoresMensual(): Promise<RpcProveedorMensualRow[]> {
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_proveedores_mensual");
+    if (res.error) throw res.error;
+    return res.data;
+  });
+  return (data ?? []) as RpcProveedorMensualRow[];
 }
 
 export function processProveedoresRows(
