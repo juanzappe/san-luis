@@ -335,7 +335,6 @@ export function processProveedoresRows(
   for (const r of rows) {
     const raw = Number(r.total_neto) || 0;
     const signed = [3, 8, 203].includes(Number(r.tipo_comprobante)) ? -raw : raw;
-    if (signed <= 0) continue;
     const monto = adj(signed, r.periodo);
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
@@ -365,11 +364,12 @@ export function processProveedoresRows(
     addToMap(mm.porCat, categoriaEgreso, monto);
   }
 
-  // Ranking
-  const grandTotal = Array.from(provTotals.values()).reduce((s, p) => s + p.monto, 0);
+  // Ranking (exclude suppliers with net negative after credit notes)
   const sorted = Array.from(provTotals.entries())
     .map(([cuit, p]) => ({ cuit, ...p }))
+    .filter((p) => p.monto > 0)
     .sort((a, b) => b.monto - a.monto);
+  const grandTotal = sorted.reduce((s, p) => s + p.monto, 0);
 
   let acum = 0;
   const ranking: ProveedorRanking[] = sorted.map((p) => {
