@@ -41,7 +41,7 @@ const PIE_COLORS = ["#3b82f6", "#22c55e"];
 // ---------------------------------------------------------------------------
 // Period aggregation
 // ---------------------------------------------------------------------------
-type Granularity = "mensual" | "trimestral" | "anual";
+type Granularity = "mensual" | "trimestral" | "anual" | "ytd";
 
 const QUARTER_MAP: Record<string, string> = {
   "01": "Q1", "02": "Q1", "03": "Q1",
@@ -50,16 +50,29 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
+const MONTH_SHORT: Record<string, string> = {
+  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
+  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
+  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
+};
+
 interface AggRow {
   periodo: string;
   total: number;
   txCount: number;
 }
 
-function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
+function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number): AggRow[] {
   if (g === "mensual") return data;
+  let source = data;
+  if (g === "ytd" && ytdLastMonth) {
+    source = data.filter((r) => {
+      const m = parseInt(r.periodo.split("-")[1], 10);
+      return m >= 1 && m <= ytdLastMonth;
+    });
+  }
   const buckets = new Map<string, AggRow>();
-  for (const r of data) {
+  for (const r of source) {
     const [y, m] = r.periodo.split("-");
     const key = g === "trimestral" ? `${y}-${QUARTER_MAP[m]}` : y;
     const cur = buckets.get(key);
@@ -73,8 +86,11 @@ function aggregateMonthly(data: AggRow[], g: Granularity): AggRow[] {
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
   if (g === "anual") return p;
+  if (g === "ytd" && ytdLastMonth) {
+    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+  }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
     return `${q} ${y}`;
@@ -167,8 +183,23 @@ export default function ServiciosPage() {
     [data, adjust],
   );
 
+  // YTD: last month with data in the most recent year
+  const ytdLastMonth = useMemo(() => {
+    if (adjMonthly.length === 0) return 0;
+    const years = Array.from(new Set(adjMonthly.map((r) => r.periodo.slice(0, 4)))).sort();
+    const lastYear = years[years.length - 1];
+    let max = 0;
+    for (const r of adjMonthly) {
+      if (r.periodo.startsWith(lastYear)) {
+        const m = parseInt(r.periodo.split("-")[1], 10);
+        if (m > max) max = m;
+      }
+    }
+    return max;
+  }, [adjMonthly]);
+
   // Aggregated for table (Section 2)
-  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity), [adjMonthly, granularity]);
+  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity, ytdLastMonth), [adjMonthly, granularity, ytdLastMonth]);
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
@@ -328,15 +359,15 @@ export default function ServiciosPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Detalle por Período</CardTitle>
           <div className="flex items-center rounded-lg border text-xs font-medium">
-            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+            {(["mensual", "trimestral", "anual", "ytd"] as Granularity[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGranularity(g)}
-                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
                   granularity === g ? "bg-primary text-primary-foreground" : "hover:bg-accent"
                 }`}
               >
-                {g}
+                {g === "ytd" ? "YTD" : g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
           </div>
@@ -365,7 +396,7 @@ export default function ServiciosPage() {
                   const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
                   return (
                     <TableRow key={row.periodo}>
-                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity)}</TableCell>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth)}</TableCell>
                       <TableCell className="text-right">{formatARS(row.total)}</TableCell>
                       <TableCell className={`text-right text-xs ${dFact !== null ? (dFact >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
                         {formatPct(dFact)}
