@@ -2,10 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  BarChart,
   Bar,
   LineChart,
   Line,
+  ComposedChart,
   PieChart,
   Pie,
   Cell,
@@ -504,6 +504,208 @@ function ParticipationDonut({ data, year }: { data: IngresoRow[]; year: string }
 }
 
 // ---------------------------------------------------------------------------
+// Composition table — % by UN per year with delta vs previous year
+// ---------------------------------------------------------------------------
+function CompositionTable({ data }: { data: IngresoRow[] }) {
+  const rows = useMemo(() => {
+    const byYear = new Map<string, { mostrador: number; restobar: number; servicios: number; total: number }>();
+    for (const r of data) {
+      const y = r.periodo.slice(0, 4);
+      const cur = byYear.get(y) ?? { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
+      cur.mostrador += r.mostrador;
+      cur.restobar += r.restobar;
+      cur.servicios += r.servicios;
+      cur.total += r.total;
+      byYear.set(y, cur);
+    }
+    return Array.from(byYear.entries())
+      .map(([year, v]) => ({ year, ...v }))
+      .sort((a, b) => b.year.localeCompare(a.year));
+  }, [data]);
+
+  if (rows.length === 0) return null;
+
+  const pct = (val: number, total: number) => total > 0 ? (val / total) * 100 : 0;
+
+  const fields = ["mostrador", "restobar", "servicios"] as const;
+  const labels: Record<string, string> = { mostrador: "Mostrador", restobar: "Restobar", servicios: "Servicios" };
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Composición por Unidad de Negocio</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Año</TableHead>
+              {fields.map((f) => (
+                <TableHead key={f} className="text-right">{labels[f]}</TableHead>
+              ))}
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r, i) => {
+              const prev = i < rows.length - 1 ? rows[i + 1] : null;
+              return (
+                <TableRow key={r.year}>
+                  <TableCell className="font-medium">{r.year}</TableCell>
+                  {fields.map((f) => {
+                    const cur = pct(r[f], r.total);
+                    const prevPct = prev ? pct(prev[f], prev.total) : null;
+                    const diff = prevPct !== null ? cur - prevPct : null;
+                    return (
+                      <TableCell key={f} className="text-right">
+                        <span className="font-medium">{cur.toFixed(1)}%</span>
+                        {diff !== null && (
+                          <span className={`ml-1.5 text-xs ${diff >= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {diff >= 0 ? "↑" : "↓"} {Math.abs(diff).toFixed(1)}pp
+                          </span>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Seasonality heatmap
+// ---------------------------------------------------------------------------
+type HeatmapView = "year" | "un";
+
+function SeasonalityHeatmap({ data }: { data: IngresoRow[] }) {
+  const [view, setView] = useState<HeatmapView>("year");
+
+  // Build grid: year view → rows=years, cells=months (total)
+  // UN view → rows=UN names, cells=months (last year)
+  const years = useMemo(() => {
+    const s = new Set(data.map((r) => r.periodo.slice(0, 4)));
+    return Array.from(s).sort();
+  }, [data]);
+
+  const lastYear = years[years.length - 1] ?? "";
+
+  // By-year grid: { [year]: { [month01..12]: total } }
+  const yearGrid = useMemo(() => {
+    const grid: { label: string; cells: (number | null)[] }[] = [];
+    for (const y of [...years].reverse()) {
+      const cells: (number | null)[] = [];
+      for (let m = 1; m <= 12; m++) {
+        const periodo = `${y}-${String(m).padStart(2, "0")}`;
+        const row = data.find((r) => r.periodo === periodo);
+        cells.push(row ? row.total : null);
+      }
+      grid.push({ label: y, cells });
+    }
+    return grid;
+  }, [data, years]);
+
+  // By-UN grid: rows = Mostrador/Restobar/Servicios, last 12 months of last year
+  const unGrid = useMemo(() => {
+    const fields = [
+      { key: "mostrador" as const, label: "Mostrador" },
+      { key: "restobar" as const, label: "Restobar" },
+      { key: "servicios" as const, label: "Servicios" },
+    ];
+    return fields.map((f) => {
+      const cells: (number | null)[] = [];
+      for (let m = 1; m <= 12; m++) {
+        const periodo = `${lastYear}-${String(m).padStart(2, "0")}`;
+        const row = data.find((r) => r.periodo === periodo);
+        cells.push(row ? row[f.key] : null);
+      }
+      return { label: f.label, cells };
+    });
+  }, [data, lastYear]);
+
+  const grid = view === "year" ? yearGrid : unGrid;
+
+  // Compute min/max for color scale across all non-null cells
+  const { minVal, maxVal } = useMemo(() => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const row of grid) {
+      for (const c of row.cells) {
+        if (c !== null) {
+          if (c < min) min = c;
+          if (c > max) max = c;
+        }
+      }
+    }
+    return { minVal: min === Infinity ? 0 : min, maxVal: max === -Infinity ? 0 : max };
+  }, [grid]);
+
+  const cellBg = (val: number | null) => {
+    if (val === null) return "bg-muted/30";
+    const range = maxVal - minVal;
+    if (range === 0) return "bg-green-200";
+    const t = (val - minVal) / range; // 0..1
+    // 5-step green scale
+    if (t < 0.2) return "bg-green-100 text-green-900";
+    if (t < 0.4) return "bg-green-200 text-green-900";
+    if (t < 0.6) return "bg-green-300 text-green-900";
+    if (t < 0.8) return "bg-green-500 text-white";
+    return "bg-green-700 text-white";
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-base">Estacionalidad{view === "un" ? ` — ${lastYear}` : ""}</CardTitle>
+        <div className="flex items-center rounded-lg border text-xs font-medium">
+          <button
+            onClick={() => setView("year")}
+            className={`px-3 py-1.5 transition-colors rounded-l-lg ${view === "year" ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
+          >
+            Por año
+          </button>
+          <button
+            onClick={() => setView("un")}
+            className={`px-3 py-1.5 transition-colors rounded-r-lg ${view === "un" ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
+          >
+            Por UN
+          </button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr>
+                <th className="text-left font-medium py-1.5 pr-3 whitespace-nowrap" />
+                {SHORT_MONTHS.map((m) => (
+                  <th key={m} className="text-center font-medium py-1.5 px-1 min-w-[60px]">{m}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {grid.map((row) => (
+                <tr key={row.label}>
+                  <td className="font-medium py-1 pr-3 whitespace-nowrap">{row.label}</td>
+                  {row.cells.map((val, i) => (
+                    <td key={i} className={`text-center py-1.5 px-1 rounded ${cellBg(val)}`}>
+                      {val !== null ? formatCompact(val) : "—"}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function IngresosPage() {
@@ -530,6 +732,25 @@ export default function IngresosPage() {
       total: adjust(r.total, r.periodo),
     })),
   [raw, adjust]);
+
+  // Last 12 months for stacked bar chart + 3-month moving average
+  const chartData = useMemo(() => {
+    const slice = allData.slice(-12);
+    return slice.map((r) => {
+      const idxInAll = allData.indexOf(r);
+      let sum = 0;
+      let count = 0;
+      for (let j = 0; j < 3; j++) {
+        const src = allData[idxInAll - j];
+        if (src) { sum += src.total; count++; }
+      }
+      return {
+        ...r,
+        label: shortLabel(r.periodo),
+        mm3: count > 0 ? sum / count : undefined,
+      };
+    });
+  }, [allData]);
 
   if (loading) {
     return (
@@ -570,12 +791,6 @@ export default function IngresosPage() {
   const selectedIdx = allData.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? allData[selectedIdx] : allData[allData.length - 1];
   const prev = selectedIdx >= 1 ? allData[selectedIdx - 1] : null;
-
-  // Last 12 months for stacked bar chart
-  const chartData = allData.slice(-12).map((r) => ({
-    ...r,
-    label: shortLabel(r.periodo),
-  }));
 
   return (
     <div className="space-y-6">
@@ -632,7 +847,7 @@ export default function IngresosPage() {
         <CardContent>
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6">
             <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={chartData}>
+              <ComposedChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                 <XAxis dataKey="label" fontSize={12} />
                 <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
@@ -641,7 +856,8 @@ export default function IngresosPage() {
                 <Bar dataKey="mostrador" name="Mostrador" stackId="a" fill={COLORS.mostrador} />
                 <Bar dataKey="restobar" name="Restobar" stackId="a" fill={COLORS.restobar} />
                 <Bar dataKey="servicios" name="Servicios" stackId="a" fill={COLORS.servicios} radius={[4, 4, 0, 0]} />
-              </BarChart>
+                <Line type="monotone" dataKey="mm3" name="Media móvil 3m" stroke="#374151" strokeWidth={2} strokeDasharray="6 3" dot={false} />
+              </ComposedChart>
             </ResponsiveContainer>
             <ParticipationDonut data={allData} year={activePeriodo.slice(0, 4) || allData[allData.length - 1]?.periodo.slice(0, 4) || ""} />
           </div>
@@ -700,6 +916,12 @@ export default function IngresosPage() {
           </Table>
         </CardContent>
       </Card>
+
+      {/* Composition by UN per year */}
+      <CompositionTable data={allData} />
+
+      {/* Seasonality heatmap */}
+      <SeasonalityHeatmap data={allData} />
     </div>
   );
 }
