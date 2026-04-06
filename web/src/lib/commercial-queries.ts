@@ -63,7 +63,7 @@ export interface ClientesData {
 }
 
 // RPC row type for get_comercial_clientes
-type RpcClienteRow = {
+export type RpcClienteRow = {
   periodo: string;
   cuit: string;
   denominacion: string;
@@ -74,15 +74,16 @@ type RpcClienteRow = {
   clasificacion: string;
 };
 
-export async function fetchClientes(): Promise<ClientesData> {
+export async function fetchClientesRaw(): Promise<RpcClienteRow[]> {
   const data = await fetchWithRetry(async () => {
     const res = await supabase.rpc("get_comercial_clientes");
     if (res.error) throw res.error;
     return res.data;
   });
+  return (data ?? []) as RpcClienteRow[];
+}
 
-  const rows = (data ?? []) as RpcClienteRow[];
-
+export function processClientesRows(rows: RpcClienteRow[]): ClientesData {
   // Aggregate by client (CUIT), applying credit note sign reversal
   const clientTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoEntidad: string; clasificacion: string }>();
   const monthlyMap = new Map<string, { monto: number; clientes: Set<string>; publico: number; privado: number }>();
@@ -188,6 +189,11 @@ export async function fetchClientes(): Promise<ClientesData> {
     }));
 
   return { ranking, mensual, concentracionTop10, pctPublico, porTipoEntidad, porClasificacion, concentracionDonut };
+}
+
+export async function fetchClientes(): Promise<ClientesData> {
+  const rows = await fetchClientesRaw();
+  return processClientesRows(rows);
 }
 
 // RPC row type for get_detalle_cliente / get_detalle_proveedor
