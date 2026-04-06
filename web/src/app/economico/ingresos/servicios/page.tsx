@@ -515,14 +515,14 @@ export default function ServiciosPage() {
         </CardContent>
       </Card>
 
-      {/* ====== SECTION 5: % Sector Público (conditional) ====== */}
-      {hasClassification ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Distribución Público vs Privado</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-6 lg:grid-cols-2 items-center">
+      {/* ====== SECTION 5: Público/Privado + Clasificación side by side ====== */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        {hasClassification ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Distribución Público vs Privado</CardTitle>
+            </CardHeader>
+            <CardContent>
               <ResponsiveContainer width="100%" height={280}>
                 <PieChart>
                   <Pie
@@ -545,31 +545,89 @@ export default function ServiciosPage() {
                   <Tooltip formatter={arsTooltip} />
                 </PieChart>
               </ResponsiveContainer>
-              <div className="space-y-3">
-                <div>
-                  <span className="text-sm text-muted-foreground">Sector Público</span>
-                  <p className="text-xl font-bold">{data.kpis.pctPublico.toFixed(1)}%</p>
-                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.publico, 0))}</p>
+              <div className="flex justify-center gap-6 mt-2 text-sm">
+                <div className="text-center">
+                  <span className="text-muted-foreground">Público</span>
+                  <p className="font-bold">{data.kpis.pctPublico.toFixed(1)}%</p>
                 </div>
-                <div>
-                  <span className="text-sm text-muted-foreground">Sector Privado</span>
-                  <p className="text-xl font-bold">{(100 - data.kpis.pctPublico).toFixed(1)}%</p>
-                  <p className="text-sm text-muted-foreground">{formatARS(adjMonthly.reduce((s, r) => s + r.privado, 0))}</p>
+                <div className="text-center">
+                  <span className="text-muted-foreground">Privado</span>
+                  <p className="font-bold">{(100 - data.kpis.pctPublico).toFixed(1)}%</p>
                 </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
-      ) : (
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <p className="text-sm text-muted-foreground">
+                Clasificación de clientes pendiente de configurar.
+                Agregá el campo <code>tipo_entidad</code> a los clientes para ver la distribución público/privado.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Por Clasificación */}
         <Card>
-          <CardContent className="py-8 text-center">
-            <p className="text-sm text-muted-foreground">
-              Clasificación de clientes pendiente de configurar.
-              Agregá el campo <code>tipo_entidad</code> a los clientes para ver la distribución público/privado.
-            </p>
+          <CardHeader>
+            <CardTitle className="text-base">Por Clasificación</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {(() => {
+              const CLASIF_COLORS = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#ef4444", "#ec4899", "#06b6d4", "#84cc16"];
+              const byClasif = new Map<string, number>();
+              for (const c of data.clients) {
+                const key = c.clasificacion || "Sin clasificar";
+                byClasif.set(key, (byClasif.get(key) ?? 0) + c.monto);
+              }
+              const clasifData = Array.from(byClasif.entries())
+                .map(([name, value]) => ({ name, value }))
+                .sort((a, b) => b.value - a.value)
+                .slice(0, 8);
+              const clasifTotal = clasifData.reduce((s, d) => s + d.value, 0);
+
+              if (clasifData.length === 0) {
+                return <p className="text-sm text-muted-foreground text-center py-8">Sin datos de clasificación</p>;
+              }
+
+              return (
+                <>
+                  <ResponsiveContainer width="100%" height={280}>
+                    <PieChart>
+                      <Pie
+                        data={clasifData}
+                        dataKey="value"
+                        nameKey="name"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={100}
+                        label={({ name, percent }) => `${String(name).slice(0, 12)} ${((percent ?? 0) * 100).toFixed(0)}%`}
+                        labelLine={false}
+                        fontSize={10}
+                      >
+                        {clasifData.map((_, i) => (
+                          <Cell key={i} fill={CLASIF_COLORS[i % CLASIF_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip formatter={arsTooltip} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-2 text-xs">
+                    {clasifData.map((d, i) => (
+                      <span key={d.name} className="flex items-center gap-1">
+                        <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: CLASIF_COLORS[i % CLASIF_COLORS.length] }} />
+                        {d.name} {clasifTotal > 0 ? ((d.value / clasifTotal) * 100).toFixed(0) : 0}%
+                      </span>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
           </CardContent>
         </Card>
-      )}
+      </div>
     </div>
   );
 }
