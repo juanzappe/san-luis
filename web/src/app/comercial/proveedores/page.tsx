@@ -23,16 +23,20 @@ import {
   ArrowLeft,
   Loader2,
   AlertCircle,
+  Search,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
   type ProveedoresData,
   type ProveedorDetalle,
-  fetchProveedores,
+  type RpcProveedorRow,
+  fetchProveedoresRaw,
+  processProveedoresRows,
   fetchProveedorDetalle,
   formatARS,
   formatPct,
@@ -49,6 +53,12 @@ const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 
 
 const PIE_COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1"];
 const CAT_COLORS = ["#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#6366f1", "#14b8a6", "#e11d48", "#a855f7", "#0ea5e9"];
+
+const MONTH_NAMES: Record<string, string> = {
+  "01": "Enero", "02": "Febrero", "03": "Marzo", "04": "Abril",
+  "05": "Mayo", "06": "Junio", "07": "Julio", "08": "Agosto",
+  "09": "Septiembre", "10": "Octubre", "11": "Noviembre", "12": "Diciembre",
+};
 
 function KpiCard({ title, value, delta, icon: Icon }: { title: string; value: string; delta?: string | null; icon: React.ElementType }) {
   return (
@@ -69,8 +79,30 @@ function KpiCard({ title, value, delta, icon: Icon }: { title: string; value: st
   );
 }
 
+// ---------------------------------------------------------------------------
+// Styled select (matches MonthSelector / InflationToggle look)
+// ---------------------------------------------------------------------------
+function FilterSelect({ value, onChange, children }: {
+  value: string;
+  onChange: (v: string) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+    >
+      {children}
+    </select>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 export default function ProveedoresPage() {
-  const [raw, setRaw] = useState<ProveedoresData | null>(null);
+  const [rawRows, setRawRows] = useState<RpcProveedorRow[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCuit, setSelectedCuit] = useState<string | null>(null);
@@ -78,13 +110,25 @@ export default function ProveedoresPage() {
   const [detalleLoading, setDetalleLoading] = useState(false);
   const { adjust } = useInflation();
 
+  // Filter state
+  const [selectedYear, setSelectedYear] = useState("");
+  const [selectedMonth, setSelectedMonth] = useState("all");
+  const [searchQuery, setSearchQuery] = useState("");
+
+  // Fetch raw rows once
   useEffect(() => {
-    fetchProveedores()
-      .then(setRaw)
+    fetchProveedoresRaw()
+      .then((rows) => {
+        setRawRows(rows);
+        const years = Array.from(new Set(rows.map((r) => r.periodo.slice(0, 4)))).sort().reverse();
+        if (years.length > 0 && !selectedYear) setSelectedYear(years[0]);
+      })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Fetch supplier detail
   useEffect(() => {
     if (!selectedCuit) { setDetalle(null); return; }
     setDetalleLoading(true);
@@ -94,16 +138,51 @@ export default function ProveedoresPage() {
       .finally(() => setDetalleLoading(false));
   }, [selectedCuit]);
 
+  // Derived: available years and months
+  const availableYears = useMemo(() => {
+    if (!rawRows) return [];
+    return Array.from(new Set(rawRows.map((r) => r.periodo.slice(0, 4)))).sort().reverse();
+  }, [rawRows]);
+
+  const availableMonths = useMemo(() => {
+    if (!rawRows || !selectedYear) return [];
+    return Array.from(
+      new Set(rawRows.filter((r) => r.periodo.startsWith(selectedYear)).map((r) => r.periodo.slice(5, 7)))
+    ).sort().reverse();
+  }, [rawRows, selectedYear]);
+
+  // Reset month when year changes
+  const handleYearChange = (year: string) => {
+    setSelectedYear(year);
+    setSelectedMonth("all");
+  };
+
+  // Filtered rows → processed data
+  const filteredRows = useMemo(() => {
+    if (!rawRows || !selectedYear) return [];
+    return rawRows.filter((r) => {
+      if (!r.periodo.startsWith(selectedYear)) return false;
+      if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+      return true;
+    });
+  }, [rawRows, selectedYear, selectedMonth]);
+
+  const data: ProveedoresData | null = useMemo(() => {
+    if (filteredRows.length === 0) return null;
+    return processProveedoresRows(filteredRows);
+  }, [filteredRows]);
+
+  // Inflation-adjusted monthly
   const mensual = useMemo(() => {
-    if (!raw) return [];
-    return raw.mensual.map((m) => {
+    if (!data) return [];
+    return data.mensual.map((m) => {
       const adjCat: Record<string, number> = {};
       for (const [k, v] of Object.entries(m.porCategoria)) {
         adjCat[k] = adjust(v, m.periodo);
       }
       return { ...m, monto: adjust(m.monto, m.periodo), porCategoria: adjCat };
     });
-  }, [raw, adjust]);
+  }, [data, adjust]);
 
   // All categories for stacked chart
   const allCats = useMemo(() => {
@@ -125,13 +204,55 @@ export default function ProveedoresPage() {
   }, [mensual, allCats]);
 
   const top20 = useMemo(() => {
-    if (!raw) return [];
-    return raw.ranking.slice(0, 20).map((p) => ({
+    if (!data) return [];
+    return data.ranking.slice(0, 20).map((p) => ({
       nombre: p.nombre.length > 30 ? p.nombre.slice(0, 28) + "…" : p.nombre,
       monto: p.montoTotal,
     }));
-  }, [raw]);
+  }, [data]);
 
+  // Search-filtered ranking for table display
+  const displayedRanking = useMemo(() => {
+    if (!data) return [];
+    const q = searchQuery.trim().toLowerCase();
+    return data.ranking
+      .filter((p) => !q || p.nombre.toLowerCase().includes(q) || p.cuit.includes(q))
+      .slice(0, 50);
+  }, [data, searchQuery]);
+
+  // KPI: Compras label & delta
+  const comprasLabel = selectedMonth !== "all"
+    ? `Compras ${MONTH_NAMES[selectedMonth] ?? ""} ${selectedYear}`
+    : `Compras ${selectedYear}`;
+  const totalCompras = mensual.reduce((s, m) => s + m.monto, 0);
+
+  // Delta: compare against same period of previous year
+  const prevYear = String(Number(selectedYear) - 1);
+  const prevRows = useMemo(() => {
+    if (!rawRows) return [];
+    return rawRows.filter((r) => {
+      if (!r.periodo.startsWith(prevYear)) return false;
+      if (selectedMonth !== "all" && r.periodo.slice(5, 7) !== selectedMonth) return false;
+      return true;
+    });
+  }, [rawRows, prevYear, selectedMonth]);
+
+  const prevData = useMemo(() => {
+    if (prevRows.length === 0) return null;
+    return processProveedoresRows(prevRows);
+  }, [prevRows]);
+
+  const prevMensual = useMemo(() => {
+    if (!prevData) return [];
+    return prevData.mensual.map((m) => ({
+      ...m,
+      monto: adjust(m.monto, m.periodo),
+    }));
+  }, [prevData, adjust]);
+
+  const totalPrev = prevMensual.reduce((s, m) => s + m.monto, 0);
+
+  // Loading / error / empty states
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -140,14 +261,14 @@ export default function ProveedoresPage() {
       </div>
     );
   }
-  if (error || !raw) {
+  if (error) {
     return (
       <Card><CardContent className="flex items-center gap-3 py-8">
-        <AlertCircle className="h-5 w-5 text-red-500" /><p className="text-sm">{error ?? "Error"}</p>
+        <AlertCircle className="h-5 w-5 text-red-500" /><p className="text-sm">{error}</p>
       </CardContent></Card>
     );
   }
-  if (raw.ranking.length === 0) {
+  if (!rawRows || rawRows.length === 0) {
     return (
       <Card><CardContent className="py-8 text-center">
         <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
@@ -229,30 +350,49 @@ export default function ProveedoresPage() {
     );
   }
 
-  // Main view KPIs
-  const totalCompras = raw.ranking.reduce((s, p) => s + p.montoTotal, 0);
-  const cantProv = raw.ranking.length;
-  const compraProm = cantProv > 0 ? totalCompras / cantProv : 0;
-  const last12 = mensual.slice(-12);
-  const prev12 = mensual.slice(-24, -12);
-  const total12 = last12.reduce((s, m) => s + m.monto, 0);
-  const totalPrev12 = prev12.reduce((s, m) => s + m.monto, 0);
+  // Empty filtered result
+  if (!data) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          availableYears={availableYears}
+          availableMonths={availableMonths}
+          selectedYear={selectedYear}
+          selectedMonth={selectedMonth}
+          onYearChange={handleYearChange}
+          onMonthChange={setSelectedMonth}
+        />
+        <Card><CardContent className="py-8 text-center">
+          <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
+          <p className="mt-3 font-medium">Sin datos para el período seleccionado</p>
+        </CardContent></Card>
+      </div>
+    );
+  }
+
+  // Main view
+  const cantProv = data.ranking.length;
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Proveedores</h1>
-          <p className="text-muted-foreground">Análisis de proveedores, concentración y categorización</p>
-        </div>
-        <InflationToggle />
-      </div>
+      <PageHeader
+        availableYears={availableYears}
+        availableMonths={availableMonths}
+        selectedYear={selectedYear}
+        selectedMonth={selectedMonth}
+        onYearChange={handleYearChange}
+        onMonthChange={setSelectedMonth}
+      />
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <KpiCard title="Proveedores Activos" value={String(cantProv)} icon={Users} />
-        <KpiCard title="Total Compras 12m" value={formatARS(total12)} delta={totalPrev12 > 0 ? formatPct(pctDelta(total12, totalPrev12)) : null} icon={DollarSign} />
-        <KpiCard title="Compra Prom." value={formatARS(compraProm)} icon={DollarSign} />
-        <KpiCard title="Concentración Top 10" value={`${raw.concentracionTop10.toFixed(1)}%`} icon={Target} />
+        <KpiCard
+          title={comprasLabel}
+          value={formatARS(totalCompras)}
+          delta={totalPrev > 0 ? formatPct(pctDelta(totalCompras, totalPrev)) : null}
+          icon={DollarSign}
+        />
+        <KpiCard title="Concentración Top 10" value={`${data.concentracionTop10.toFixed(1)}%`} icon={Target} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -276,9 +416,9 @@ export default function ProveedoresPage() {
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={raw.porTipoCosto} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
+                <Pie data={data.porTipoCosto} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
                   label={({ name, percent }) => `${String(name).slice(0, 18)} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={10}>
-                  {raw.porTipoCosto.map((_, i) => (<Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />))}
+                  {data.porTipoCosto.map((_, i) => (<Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />))}
                 </Pie>
                 <Tooltip formatter={arsTooltip} />
               </PieChart>
@@ -291,9 +431,9 @@ export default function ProveedoresPage() {
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={raw.porCategoriaEgreso.slice(0, 10)} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
+                <Pie data={data.porCategoriaEgreso.slice(0, 10)} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
                   label={({ name, percent }) => `${String(name).slice(0, 12)} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={10}>
-                  {raw.porCategoriaEgreso.slice(0, 10).map((_, i) => (<Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />))}
+                  {data.porCategoriaEgreso.slice(0, 10).map((_, i) => (<Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />))}
                 </Pie>
                 <Tooltip formatter={arsTooltip} />
               </PieChart>
@@ -326,9 +466,9 @@ export default function ProveedoresPage() {
           <CardContent>
             <ResponsiveContainer width="100%" height={280}>
               <PieChart>
-                <Pie data={raw.concentracionDonut} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
+                <Pie data={data.concentracionDonut} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
                   label={({ name, percent }) => `${name} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
-                  {raw.concentracionDonut.map((_, i) => (<Cell key={i} fill={PIE_COLORS[i]} />))}
+                  {data.concentracionDonut.map((_, i) => (<Cell key={i} fill={PIE_COLORS[i]} />))}
                 </Pie>
                 <Tooltip formatter={arsTooltip} />
               </PieChart>
@@ -355,6 +495,16 @@ export default function ProveedoresPage() {
       <Card>
         <CardHeader><CardTitle className="text-base">Ranking de Proveedores</CardTitle></CardHeader>
         <CardContent>
+          <div className="relative mb-4">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="text"
+              placeholder="Buscar proveedor..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 max-w-sm"
+            />
+          </div>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -372,7 +522,7 @@ export default function ProveedoresPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {raw.ranking.slice(0, 50).map((p, i) => (
+                {displayedRanking.map((p, i) => (
                   <TableRow key={p.cuit} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedCuit(p.cuit)}>
                     <TableCell className="text-muted-foreground">{i + 1}</TableCell>
                     <TableCell className="font-medium max-w-[200px] truncate">{p.nombre}</TableCell>
@@ -388,12 +538,59 @@ export default function ProveedoresPage() {
                 ))}
               </TableBody>
             </Table>
-            {raw.ranking.length > 50 && (
-              <p className="mt-2 text-center text-xs text-muted-foreground">Mostrando los primeros 50 de {raw.ranking.length} proveedores</p>
-            )}
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              {searchQuery.trim()
+                ? `${displayedRanking.length} de ${data.ranking.length} proveedores`
+                : data.ranking.length > 50
+                  ? `Mostrando los primeros 50 de ${data.ranking.length} proveedores`
+                  : `${data.ranking.length} proveedores`
+              }
+            </p>
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page header with filters (extracted to avoid duplication between main & empty)
+// ---------------------------------------------------------------------------
+function PageHeader({
+  availableYears,
+  availableMonths,
+  selectedYear,
+  selectedMonth,
+  onYearChange,
+  onMonthChange,
+}: {
+  availableYears: string[];
+  availableMonths: string[];
+  selectedYear: string;
+  selectedMonth: string;
+  onYearChange: (y: string) => void;
+  onMonthChange: (m: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Proveedores</h1>
+        <p className="text-muted-foreground">Análisis de proveedores, concentración y categorización</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <FilterSelect value={selectedYear} onChange={onYearChange}>
+          {availableYears.map((y) => (
+            <option key={y} value={y}>{y}</option>
+          ))}
+        </FilterSelect>
+        <FilterSelect value={selectedMonth} onChange={onMonthChange}>
+          <option value="all">Todo el año</option>
+          {availableMonths.map((m) => (
+            <option key={m} value={m}>{MONTH_NAMES[m] ?? m}</option>
+          ))}
+        </FilterSelect>
+        <InflationToggle />
+      </div>
     </div>
   );
 }
