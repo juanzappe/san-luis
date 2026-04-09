@@ -1,6 +1,6 @@
-"""Loader: BANCO SANTANDER PDF → movimiento_bancario.
+"""Loader: BANCO SANTANDER PDF/CSV → movimiento_bancario.
 
-Fuente: data_raw/MOVIMIENTOS BANCARIOS/BANCO SANTANDER/**/*.pdf
+Fuente: data_raw/MOVIMIENTOS BANCARIOS/BANCO SANTANDER/**/*.pdf | *.csv
 PDF:    Resumen de cuenta mensual — texto posicionado (sin tablas reales).
         Columnas identificadas por coordenada X:
           Fecha         x ≈ 23    (DD/MM/YY)
@@ -10,14 +10,18 @@ PDF:    Resumen de cuenta mensual — texto posicionado (sin tablas reales).
           Crédito       430 ≤ x < 510
           Saldo         x ≥ 510
         Zona de montos: x ≥ 380 (palabras "pesos" + monto)
+CSV:    Latin-1, separador ';'. Fila 6 = headers, fila 7+ = datos.
+        Montos en formato argentino con paréntesis para negativos: (13.220,36) = -13220.36
 Fijos:  banco='santander', cuenta='019-006261/3',
         cbu='0720019920000000626136', moneda='ARS'
 """
 
+import re
 from datetime import datetime
 from pathlib import Path
 
 import fitz  # PyMuPDF
+import pandas as pd
 
 from utils import (
     get_data_raw_path,
@@ -244,16 +248,107 @@ def _parse_santander_pdf(path: Path) -> tuple[list[dict], int]:
     return records, skipped
 
 
+# ---------------------------------------------------------------------------
+# CSV parser
+# ---------------------------------------------------------------------------
+
+def _parse_monto_santander(val) -> float | None:
+    """Parse monto argentino con paréntesis para negativos: (13.220,36) → -13220.36."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    val = str(val).strip()
+    if not val:
+        return None
+    negativo = val.startswith('(') and val.endswith(')')
+    if negativo:
+        val = val[1:-1]
+    val = val.replace('.', '').replace(',', '.')
+    try:
+        monto = float(val)
+    except ValueError:
+        return None
+    return -monto if negativo else monto
+
+
+def _parse_santander_csv(path: Path) -> tuple[list[dict], int]:
+    """Parsea un CSV de movimientos bancarios Santander. Returns (records, skipped_count)."""
+    # Extraer cuenta de la metadata (línea con "Nro.")
+    cuenta = CUENTA
+    with open(str(path), 'r', encoding='latin-1') as f:
+        for line in f:
+            m = re.search(r'Nro\.\s+(\S+)', line)
+            if m:
+                cuenta = m.group(1)
+                break
+
+    df = pd.read_csv(str(path), sep=';', encoding='latin-1', skiprows=6)
+
+    records = []
+    skipped = 0
+
+    for _, row in df.iterrows():
+        fecha_str = row.get('Fecha')
+        if pd.isna(fecha_str):
+            continue
+        fecha_str = str(fecha_str).strip()
+        if not re.match(r'\d{2}/\d{2}/\d{4}$', fecha_str):
+            continue
+
+        parts = fecha_str.split('/')
+        fecha = f"{parts[2]}-{parts[1]}-{parts[0]}"
+
+        importe = _parse_monto_santander(row.get('Importe'))
+        if importe is None:
+            skipped += 1
+            continue
+        saldo = _parse_monto_santander(row.get('Saldo'))
+
+        concepto = safe_str(row.get('Concepto'))
+        ref_raw = row.get('Referencia')
+        # pandas reads numeric-looking refs (e.g. 000025818) as float → strip .0
+        if isinstance(ref_raw, float) and not pd.isna(ref_raw):
+            comprobante = str(int(ref_raw))
+        else:
+            comprobante = safe_str(ref_raw)
+
+        credito = importe if importe >= 0 else None
+        debito = abs(importe) if importe < 0 else None
+
+        records.append({
+            "fecha": fecha,
+            "banco": BANCO,
+            "cuenta": cuenta,
+            "cbu": CBU,
+            "moneda": MONEDA,
+            "comprobante": comprobante,
+            "concepto": concepto,
+            "debito": debito,
+            "credito": credito,
+            "importe": importe,
+            "fecha_valor": None,
+            "saldo": saldo,
+        })
+
+    return records, skipped
+
+
 def run(conn, logger, full: bool = False) -> int:
     data_dir = get_data_raw_path() / "MOVIMIENTOS BANCARIOS" / "BANCO SANTANDER"
     pdf_files = sorted(data_dir.rglob("*.pdf"))
-    logger.info(f"  {len(pdf_files)} PDFs encontrados")
+    csv_files = sorted(data_dir.rglob("*.csv"))
+    logger.info(f"  {len(pdf_files)} PDFs + {len(csv_files)} CSVs encontrados")
 
     all_records: list[dict] = []
     total_skipped = 0
     for pdf_path in pdf_files:
         logger.info(f"  Procesando {pdf_path.name}")
         records, skipped = _parse_santander_pdf(pdf_path)
+        logger.info(f"    {len(records)} movimientos, {skipped} filas sin importe")
+        all_records.extend(records)
+        total_skipped += skipped
+    for csv_path in csv_files:
+        logger.info(f"  Procesando {csv_path.name}")
+        records, skipped = _parse_santander_csv(csv_path)
         logger.info(f"    {len(records)} movimientos, {skipped} filas sin importe")
         all_records.extend(records)
         total_skipped += skipped
