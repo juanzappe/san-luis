@@ -361,3 +361,51 @@ export async function fetchEstadoResultadosContable(): Promise<EstadoResultadosC
       }));
   });
 }
+
+// ---------------------------------------------------------------------------
+// Gastos Financieros — desglose por categoría
+// ---------------------------------------------------------------------------
+
+export interface FinancierosDesglose {
+  periodo: string;
+  comisionesBancarias: number;
+  intereses: number;
+  seguros: number;
+  comisionesMp: number;
+  otros: number;
+  total: number;
+}
+
+export async function fetchFinancierosDesglose(): Promise<FinancierosDesglose[]> {
+  const data = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_financieros_desglosado");
+    if (res.error) throw res.error;
+    return res.data;
+  });
+  type Row = {
+    periodo: string;
+    comisiones_bancarias: number;
+    intereses: number;
+    seguros: number;
+    comisiones_mp: number;
+    otros: number;
+  };
+  return ((data ?? []) as Row[])
+    .map((r) => {
+      const comisionesBancarias = Number(r.comisiones_bancarias) || 0;
+      const intereses = Number(r.intereses) || 0;
+      const seguros = Number(r.seguros) || 0;
+      const comisionesMp = Number(r.comisiones_mp) || 0;
+      const otros = Number(r.otros) || 0;
+      return {
+        periodo: r.periodo,
+        comisionesBancarias,
+        intereses,
+        seguros,
+        comisionesMp,
+        otros,
+        total: comisionesBancarias + intereses + seguros + comisionesMp + otros,
+      };
+    })
+    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+}
