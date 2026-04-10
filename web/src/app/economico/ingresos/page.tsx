@@ -32,6 +32,13 @@ import {
   pctDelta,
   shortLabel,
 } from "@/lib/economic-queries";
+import {
+  type YtdCutoff,
+  type IngresoParcial,
+  fetchFechaCorteYtd,
+  fetchIngresosMesParcial,
+  ytdMonthRangeLabel,
+} from "@/lib/ytd-cutoff";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -281,7 +288,11 @@ interface YtdYearData {
   total: number;
 }
 
-function useYtdData(data: IngresoRow[]): { monthRange: string; years: YtdYearData[] } | null {
+function useYtdData(
+  data: IngresoRow[],
+  cutoff: YtdCutoff | null,
+  partialMap: Map<string, IngresoParcial>,
+): { monthRange: string; years: YtdYearData[] } | null {
   return useMemo(() => {
     if (data.length === 0) return null;
 
@@ -300,7 +311,8 @@ function useYtdData(data: IngresoRow[]): { monthRange: string; years: YtdYearDat
 
     const firstMonth = currentMonths[0];
     const lastMonth = currentMonths[currentMonths.length - 1];
-    const monthRange = `${MONTH_NAMES[parseInt(firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(lastMonth, 10) - 1]}`;
+    const needsCutoff = cutoff && !cutoff.esFindeMes && partialMap.size > 0;
+    const monthRange = ytdMonthRangeLabel(firstMonth, lastMonth, cutoff);
 
     // Accumulate same months for every year
     const years: YtdYearData[] = [];
@@ -308,24 +320,43 @@ function useYtdData(data: IngresoRow[]): { monthRange: string; years: YtdYearDat
       const acc = { year: y, mostrador: 0, restobar: 0, servicios: 0, total: 0 };
       let hasData = false;
       for (const m of currentMonths) {
-        const match = data.find((r) => r.periodo === `${y}-${m}`);
-        if (match) {
-          hasData = true;
-          acc.mostrador += match.mostrador;
-          acc.restobar += match.restobar;
-          acc.servicios += match.servicios;
-          acc.total += match.total;
+        const periodo = `${y}-${m}`;
+        const isCutoffMonth = needsCutoff && m === lastMonth;
+
+        if (isCutoffMonth) {
+          // Use partial-month data for the cutoff month
+          const partial = partialMap.get(periodo);
+          if (partial) {
+            hasData = true;
+            acc.mostrador += partial.mostrador;
+            acc.restobar += partial.restobar;
+            acc.servicios += partial.servicios;
+            acc.total += partial.mostrador + partial.restobar + partial.servicios;
+          }
+        } else {
+          const match = data.find((r) => r.periodo === periodo);
+          if (match) {
+            hasData = true;
+            acc.mostrador += match.mostrador;
+            acc.restobar += match.restobar;
+            acc.servicios += match.servicios;
+            acc.total += match.total;
+          }
         }
       }
       if (hasData) years.push(acc);
     }
 
     return years.length >= 2 ? { monthRange, years } : null;
-  }, [data]);
+  }, [data, cutoff, partialMap]);
 }
 
-function YtdTable({ data }: { data: IngresoRow[] }) {
-  const ytd = useYtdData(data);
+function YtdTable({ data, cutoff, partialMap }: {
+  data: IngresoRow[];
+  cutoff: YtdCutoff | null;
+  partialMap: Map<string, IngresoParcial>;
+}) {
+  const ytd = useYtdData(data, cutoff, partialMap);
   if (!ytd) return null;
 
   const { monthRange, years } = ytd;
@@ -698,11 +729,21 @@ export default function IngresosPage() {
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
+  const [ytdPartialRaw, setYtdPartialRaw] = useState<Map<string, IngresoParcial>>(new Map());
   useEffect(() => {
     fetchIngresos()
       .then(setRaw)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
+    // Fetch YTD cutoff and partial-month data
+    fetchFechaCorteYtd().then((c) => {
+      if (!c) return;
+      setYtdCutoff(c);
+      if (!c.esFindeMes) {
+        fetchIngresosMesParcial(c.mes, c.dia).then(setYtdPartialRaw);
+      }
+    });
   }, []);
 
   // Apply inflation adjustment
@@ -715,6 +756,20 @@ export default function IngresosPage() {
       total: adjust(r.total, r.periodo),
     })),
   [raw, adjust]);
+
+  // Inflation-adjusted partial month data for YTD cutoff
+  const ytdPartialMap = useMemo(() => {
+    const map = new Map<string, IngresoParcial>();
+    ytdPartialRaw.forEach((v, k) => {
+      map.set(k, {
+        periodo: v.periodo,
+        mostrador: adjust(v.mostrador, v.periodo),
+        restobar: adjust(v.restobar, v.periodo),
+        servicios: adjust(v.servicios, v.periodo),
+      });
+    });
+    return map;
+  }, [ytdPartialRaw, adjust]);
 
   // Last 12 months for stacked bar chart + 3-month moving average
   const chartData = useMemo(() => {
@@ -817,7 +872,7 @@ export default function IngresosPage() {
       </div>
 
       {/* YTD Comparison Table */}
-      <YtdTable data={allData} />
+      <YtdTable data={allData} cutoff={ytdCutoff} partialMap={ytdPartialMap} />
 
       {/* Monthly average by year */}
       <MonthlyAverageByYear data={allData} />

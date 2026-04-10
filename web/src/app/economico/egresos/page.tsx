@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -33,6 +33,15 @@ import {
 } from "@/lib/economic-queries";
 import { useEgresosData } from "@/lib/use-egresos-data";
 import { computeGastosComerciales } from "@/lib/tax-queries";
+import {
+  type YtdCutoff,
+  type IngresoParcial,
+  type EgresoParcial,
+  fetchFechaCorteYtd,
+  fetchIngresosMesParcial,
+  fetchEgresosMesParcial,
+  ytdMonthRangeLabel,
+} from "@/lib/ytd-cutoff";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -130,7 +139,11 @@ interface EgresosYtdYearData {
   total: number;
 }
 
-function useEgresosYtdData(rows: AggregatedEgreso[]): { monthRange: string; years: EgresosYtdYearData[] } | null {
+function useEgresosYtdData(
+  rows: AggregatedEgreso[],
+  cutoff: YtdCutoff | null,
+  egresoPartial: Map<string, EgresoParcial>,
+): { monthRange: string; years: EgresosYtdYearData[]; hasPartialCutoff: boolean } | null {
   return useMemo(() => {
     if (rows.length === 0) return null;
 
@@ -149,7 +162,8 @@ function useEgresosYtdData(rows: AggregatedEgreso[]): { monthRange: string; year
 
     const firstMonth = currentMonths[0];
     const lastMonth = currentMonths[currentMonths.length - 1];
-    const monthRange = `${MONTH_NAMES[parseInt(firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(lastMonth, 10) - 1]}`;
+    const needsCutoff = cutoff && !cutoff.esFindeMes && egresoPartial.size > 0;
+    const monthRange = ytdMonthRangeLabel(firstMonth, lastMonth, cutoff);
 
     // Accumulate same months for every year
     const years: EgresosYtdYearData[] = [];
@@ -157,29 +171,45 @@ function useEgresosYtdData(rows: AggregatedEgreso[]): { monthRange: string; year
       const acc: EgresosYtdYearData = { year: y, costosOperativos: 0, sueldos: 0, comerciales: 0, ganancias: 0, financieros: 0, total: 0 };
       let hasData = false;
       for (const m of currentMonths) {
-        const match = rows.find((r) => r.key === `${y}-${m}`);
+        const periodo = `${y}-${m}`;
+        const isCutoffMonth = needsCutoff && m === lastMonth;
+        const match = rows.find((r) => r.key === periodo);
+
         if (match) {
           hasData = true;
-          acc.costosOperativos += Object.values(match.categorias).reduce((a, b) => a + b, 0);
+          if (isCutoffMonth) {
+            // Day cutoff: proveedores + financieros use partial data
+            // Sueldos, comerciales, ganancias: full month (monthly concepts)
+            const ep = egresoPartial.get(periodo);
+            acc.costosOperativos += ep ? ep.proveedores : Object.values(match.categorias).reduce((a, b) => a + b, 0);
+            acc.financieros += ep ? ep.financieros : match.financieros;
+          } else {
+            acc.costosOperativos += Object.values(match.categorias).reduce((a, b) => a + b, 0);
+            acc.financieros += match.financieros;
+          }
+          // These are always full month (monthly concepts or derived)
           acc.sueldos += match.sueldos;
           acc.comerciales += match.comerciales;
           acc.ganancias += match.ganancias;
-          acc.financieros += match.financieros;
-          acc.total += match.total;
         }
       }
+      acc.total = acc.costosOperativos + acc.sueldos + acc.comerciales + acc.ganancias + acc.financieros;
       if (hasData) years.push(acc);
     }
 
-    return years.length >= 2 ? { monthRange, years } : null;
-  }, [rows]);
+    return years.length >= 2 ? { monthRange, years, hasPartialCutoff: !!needsCutoff } : null;
+  }, [rows, cutoff, egresoPartial]);
 }
 
-function EgresosYtdTable({ rows }: { rows: AggregatedEgreso[] }) {
-  const ytd = useEgresosYtdData(rows);
+function EgresosYtdTable({ rows, cutoff, egresoPartial }: {
+  rows: AggregatedEgreso[];
+  cutoff: YtdCutoff | null;
+  egresoPartial: Map<string, EgresoParcial>;
+}) {
+  const ytd = useEgresosYtdData(rows, cutoff, egresoPartial);
   if (!ytd) return null;
 
-  const { monthRange, years } = ytd;
+  const { monthRange, years, hasPartialCutoff } = ytd;
 
   const cats: { label: string; key: keyof Omit<EgresosYtdYearData, "year">; bold: boolean }[] = [
     { label: "Costos Operativos", key: "costosOperativos", bold: false },
@@ -237,6 +267,11 @@ function EgresosYtdTable({ rows }: { rows: AggregatedEgreso[] }) {
             </TableBody>
           </Table>
         </div>
+        {hasPartialCutoff && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            * Sueldos, cargas sociales, gastos comerciales e impuestos se comparan por mes completo.
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -377,6 +412,31 @@ export default function EgresosPage() {
   const { data, resultadoData, loading, error, periodos } = useEgresosData();
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
+  const [ytdEgresoPartialRaw, setYtdEgresoPartialRaw] = useState<Map<string, EgresoParcial>>(new Map());
+
+  useEffect(() => {
+    fetchFechaCorteYtd().then((c) => {
+      if (!c) return;
+      setYtdCutoff(c);
+      if (!c.esFindeMes) {
+        fetchEgresosMesParcial(c.mes, c.dia).then(setYtdEgresoPartialRaw);
+      }
+    });
+  }, []);
+
+  // Inflation-adjusted partial egresos data for YTD cutoff
+  const ytdEgresoPartial = useMemo(() => {
+    const map = new Map<string, EgresoParcial>();
+    ytdEgresoPartialRaw.forEach((v, k) => {
+      map.set(k, {
+        periodo: v.periodo,
+        proveedores: adjust(v.proveedores, v.periodo),
+        financieros: adjust(v.financieros, v.periodo),
+      });
+    });
+    return map;
+  }, [ytdEgresoPartialRaw, adjust]);
 
   // Discover all category names sorted by total descending
   const allCategories = useMemo(() => {
@@ -526,7 +586,7 @@ export default function EgresosPage() {
       </div>
 
       {/* YTD Comparison Table */}
-      <EgresosYtdTable rows={rowsForAgg} />
+      <EgresosYtdTable rows={rowsForAgg} cutoff={ytdCutoff} egresoPartial={ytdEgresoPartial} />
 
       {/* Monthly average by year */}
       <EgresosMonthlyAverageByYear rows={rowsForAgg} />

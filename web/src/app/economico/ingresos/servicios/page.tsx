@@ -23,6 +23,13 @@ import {
   formatARS, periodoLabel,
 } from "@/lib/units-queries";
 import { pctDelta, formatPct } from "@/lib/economic-queries";
+import {
+  type YtdCutoff,
+  type ServicioParcial,
+  fetchFechaCorteYtd,
+  fetchServiciosMesParcial,
+  ytdMonthRangeLabel,
+} from "@/lib/ytd-cutoff";
 import { cn } from "@/lib/utils";
 import type {
   Formatter, ValueType, NameType,
@@ -86,10 +93,13 @@ function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number)
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number, cutoff?: YtdCutoff | null): string {
   if (g === "anual") return p;
   if (g === "ytd" && ytdLastMonth) {
-    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+    const firstMonth = "01";
+    const lastMonth = String(ytdLastMonth).padStart(2, "0");
+    const range = ytdMonthRangeLabel(firstMonth, lastMonth, cutoff);
+    return `${range} ${p}`;
   }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
@@ -165,11 +175,23 @@ export default function ServiciosPage() {
   const [selectedClient, setSelectedClient] = useState("");
   const [showAllClients, setShowAllClients] = useState(false);
 
+  // YTD day-level cutoff
+  const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
+  const [ytdPartialRaw, setYtdPartialRaw] = useState<Map<string, ServicioParcial>>(new Map());
+
   useEffect(() => {
     fetchServicios()
       .then(setData)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
+    // Fetch YTD cutoff and partial-month data
+    fetchFechaCorteYtd().then((c) => {
+      if (!c) return;
+      setYtdCutoff(c);
+      if (!c.esFindeMes) {
+        fetchServiciosMesParcial(c.mes, c.dia).then(setYtdPartialRaw);
+      }
+    });
   }, []);
 
   // Inflation-adjusted monthly data
@@ -182,6 +204,21 @@ export default function ServiciosPage() {
     })),
     [data, adjust],
   );
+
+  // Inflation-adjusted partial data for YTD cutoff
+  const ytdPartialMap = useMemo(() => {
+    const map = new Map<string, ServicioParcial>();
+    ytdPartialRaw.forEach((v, k) => {
+      map.set(k, {
+        periodo: v.periodo,
+        publico: adjust(v.publico, v.periodo),
+        privado: adjust(v.privado, v.periodo),
+        total: adjust(v.total, v.periodo),
+        txCount: v.txCount,
+      });
+    });
+    return map;
+  }, [ytdPartialRaw, adjust]);
 
   // YTD: last month with data in the most recent year
   const ytdLastMonth = useMemo(() => {
@@ -198,8 +235,22 @@ export default function ServiciosPage() {
     return max;
   }, [adjMonthly]);
 
+  // YTD-adjusted data: replace cutoff month with partial data when in YTD mode
+  const ytdAdjusted = useMemo(() => {
+    if (!ytdCutoff || ytdCutoff.esFindeMes || ytdPartialMap.size === 0) return adjMonthly;
+    const cutoffMonth = String(ytdCutoff.mes).padStart(2, "0");
+    return adjMonthly.map((r) => {
+      const m = r.periodo.split("-")[1];
+      if (m !== cutoffMonth) return r;
+      const partial = ytdPartialMap.get(r.periodo);
+      if (!partial) return r;
+      return { ...r, total: partial.total, publico: partial.publico, privado: partial.privado, txCount: partial.txCount };
+    });
+  }, [adjMonthly, ytdCutoff, ytdPartialMap]);
+
   // Aggregated for table (Section 2)
-  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity, ytdLastMonth), [adjMonthly, granularity, ytdLastMonth]);
+  const dataForAgg = granularity === "ytd" ? ytdAdjusted : adjMonthly;
+  const aggregated = useMemo(() => aggregateMonthly(dataForAgg, granularity, ytdLastMonth), [dataForAgg, granularity, ytdLastMonth]);
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
@@ -396,7 +447,7 @@ export default function ServiciosPage() {
                   const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
                   return (
                     <TableRow key={row.periodo}>
-                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth)}</TableCell>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth, ytdCutoff)}</TableCell>
                       <TableCell className="text-right">{formatARS(row.total)}</TableCell>
                       <TableCell className={`text-right text-xs ${dFact !== null ? (dFact >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
                         {formatPct(dFact)}
