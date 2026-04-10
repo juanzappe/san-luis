@@ -276,7 +276,8 @@ AS $$
     GROUP BY 1
   ),
 
-  -- MP: tax payments (AFIP/ARBA via MP)
+  -- MP: tax payments (Imp. al Cheque / Créditos y Débitos via MP)
+  -- movimiento_mp only has tipo_operacion as text descriptor (no concepto column)
   mp_impuestos AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
@@ -286,12 +287,7 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND (
-        COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%afip%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%arba%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%iibb%'
-      )
+      AND COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
     GROUP BY 1
   ),
 
@@ -307,10 +303,6 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Créditos y Débitos%'
-      -- Exclude any remaining tax patterns in MP
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%afip%'
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%arba%'
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%iibb%'
     GROUP BY 1
   ),
 
