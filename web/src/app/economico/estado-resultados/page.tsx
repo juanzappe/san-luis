@@ -912,7 +912,162 @@ export default function EstadoResultadosPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Cost Structure (% of Revenue) */}
+      <CostStructureTable data={data} availableYears={availableYears} />
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cost Structure (% of Revenue)
+// ---------------------------------------------------------------------------
+type CostGranularity = "mensual" | "trimestral" | "anual";
+
+const COST_GRAN_LABELS: Record<CostGranularity, string> = {
+  mensual: "Mensual",
+  trimestral: "Trimestral",
+  anual: "Anual",
+};
+
+function CostStructureTable({ data, availableYears }: { data: ExtendedResultadoRow[]; availableYears: string[] }) {
+  const [gran, setGran] = useState<CostGranularity>("anual");
+  const [yearFilter, setYearFilter] = useState<string | null>(null);
+
+  const activeFilterYear = yearFilter ?? availableYears[availableYears.length - 1] ?? "";
+
+  const columns = useMemo(() => {
+    const aggregated = aggregateResultado(data, gran === "mensual" ? "mensual" : gran === "trimestral" ? "trimestral" : "anual");
+    if (gran === "mensual") {
+      return aggregated.filter((r) => r.periodo.startsWith(activeFilterYear));
+    }
+    if (gran === "trimestral") {
+      return aggregated.filter((r) => r.periodo.startsWith(activeFilterYear));
+    }
+    return aggregated; // anual: show all years
+  }, [data, gran, activeFilterYear]);
+
+  if (columns.length === 0) return null;
+
+  const fmtPct = (v: number) => `${v.toFixed(1)}%`;
+
+  const lines: { label: string; getValue: (r: ExtendedResultadoRow) => number; bold: boolean; isResult: boolean }[] = [
+    { label: "Ingresos Netos", getValue: (r) => r.ingresos, bold: false, isResult: false },
+    { label: "C. Operativos", getValue: (r) => -r.costosOperativos, bold: false, isResult: false },
+    { label: "Sueldos y CS", getValue: (r) => -(r.sueldos + r.cargasSociales), bold: false, isResult: false },
+    { label: "Margen Bruto", getValue: (r) => r.margenBruto, bold: true, isResult: false },
+    { label: "C. Comerciales", getValue: (r) => -r.costosComercialesAdmin, bold: false, isResult: false },
+    { label: "C. Financieros", getValue: (r) => -r.costosFinancieros, bold: false, isResult: false },
+    { label: "RECPAM", getValue: (r) => -r.recpam, bold: false, isResult: false },
+    { label: "Res. antes Gan.", getValue: (r) => r.resultadoAntesGanancias, bold: true, isResult: false },
+    { label: "Imp. Ganancias", getValue: (r) => -r.ganancias, bold: false, isResult: false },
+    { label: "Resultado Neto", getValue: (r) => r.resultadoNeto, bold: true, isResult: true },
+  ];
+
+  const colLabel = (r: ExtendedResultadoRow) => {
+    if (gran === "anual") return r.periodo;
+    if (gran === "trimestral") {
+      const [y, q] = r.periodo.split("-");
+      return `${q} ${y}`;
+    }
+    return periodoLabel(r.periodo);
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardTitle className="text-base">Estructura de Costos (% sobre Ingresos)</CardTitle>
+        <div className="flex items-center gap-3">
+          {gran === "mensual" && (
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {availableYears.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setYearFilter(y)}
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    activeFilterYear === y
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+          {gran === "trimestral" && (
+            <div className="flex items-center rounded-lg border text-xs font-medium">
+              {availableYears.map((y) => (
+                <button
+                  key={y}
+                  onClick={() => setYearFilter(y)}
+                  className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                    activeFilterYear === y
+                      ? "bg-primary text-primary-foreground"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["mensual", "trimestral", "anual"] as CostGranularity[]).map((g) => (
+              <button
+                key={g}
+                onClick={() => setGran(g)}
+                className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  gran === g
+                    ? "bg-primary text-primary-foreground"
+                    : "hover:bg-accent"
+                }`}
+              >
+                {COST_GRAN_LABELS[g]}
+              </button>
+            ))}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Concepto</TableHead>
+                {columns.map((c) => (
+                  <TableHead key={c.periodo} className="text-right">{colLabel(c)}</TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {lines.map((line) => (
+                <TableRow key={line.label}>
+                  <TableCell className={line.bold ? "font-bold" : ""}>{line.label}</TableCell>
+                  {columns.map((c) => {
+                    const pct = c.ingresos > 0 ? (line.getValue(c) / c.ingresos) * 100 : 0;
+                    let colorClass = "";
+                    if (line.isResult) {
+                      colorClass = pct >= 0 ? "text-green-600" : "text-red-600";
+                    }
+                    return (
+                      <TableCell
+                        key={c.periodo}
+                        className={`text-right ${line.bold ? "font-bold" : ""} ${colorClass}`}
+                      >
+                        {line.label === "Ingresos Netos"
+                          ? "100%"
+                          : fmtPct(pct)}
+                      </TableCell>
+                    );
+                  })}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
