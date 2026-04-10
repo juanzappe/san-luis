@@ -53,7 +53,7 @@ const COLORS = {
   proveedores: "#ef4444",
   sueldos: "#f97316",
   impuestos: "#06b6d4",
-  comisiones: "#64748b",
+  financieros: "#64748b",
   retirosSocios: "#d946ef",
   neto: "#3b82f6",
 };
@@ -81,10 +81,9 @@ interface AggregatedFlujo {
   cobrosMP: number;
   totalCobros: number;
   pagosProveedores: number;
-  sueldos: number;
-  impuestos: number;
-  comisionesBancarias: number;
-  egresosMP: number;
+  pagosSueldos: number;
+  pagosImpuestos: number;
+  pagosGastosFinancieros: number;
   totalPagos: number;
   flujoNeto: number;
   acumulado: number;
@@ -107,8 +106,8 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
       key: bucketKey,
       label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
       cobrosEfectivo: 0, cobrosBanco: 0, cobrosMP: 0, totalCobros: 0,
-      pagosProveedores: 0, sueldos: 0, impuestos: 0, comisionesBancarias: 0,
-      egresosMP: 0, totalPagos: 0, flujoNeto: 0,
+      pagosProveedores: 0, pagosSueldos: 0, pagosImpuestos: 0, pagosGastosFinancieros: 0,
+      totalPagos: 0, flujoNeto: 0,
       acumulado: 0, retirosSocios: 0,
     };
     cur.cobrosEfectivo += r.cobrosEfectivo;
@@ -116,10 +115,9 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     cur.cobrosMP += r.cobrosMP;
     cur.totalCobros += r.totalCobros;
     cur.pagosProveedores += r.pagosProveedores;
-    cur.sueldos += r.sueldos;
-    cur.impuestos += r.impuestos;
-    cur.comisionesBancarias += r.comisionesBancarias;
-    cur.egresosMP += r.egresosMP;
+    cur.pagosSueldos += r.pagosSueldos;
+    cur.pagosImpuestos += r.pagosImpuestos;
+    cur.pagosGastosFinancieros += r.pagosGastosFinancieros;
     cur.retirosSocios += r.retirosSocios;
     cur.totalPagos += r.totalPagos;
     cur.flujoNeto += r.flujoNeto;
@@ -205,18 +203,17 @@ export default function FlujoDeFondosPage() {
     const cm = adjust(r.cobrosMP, r.periodo);
     const tc = ce + cb + cm;
     const pp = adjust(r.pagosProveedores, r.periodo);
-    const su = adjust(r.sueldos, r.periodo);
-    const im = adjust(r.impuestos, r.periodo);
-    const co = adjust(r.comisionesBancarias, r.periodo);
-    const em = adjust(r.egresosMP, r.periodo);
-    const tp = pp + su + im + co + em;
+    const su = adjust(r.pagosSueldos, r.periodo);
+    const im = adjust(r.pagosImpuestos, r.periodo);
+    const gf = adjust(r.pagosGastosFinancieros, r.periodo);
+    const tp = pp + su + im + gf;
     const rs = adjust(r.retirosSocios, r.periodo);
     const fn = tc - tp;
     acum += fn;
     return {
       periodo: r.periodo,
       cobrosEfectivo: ce, cobrosBanco: cb, cobrosMP: cm, totalCobros: tc,
-      pagosProveedores: pp, sueldos: su, impuestos: im, comisionesBancarias: co, egresosMP: em, totalPagos: tp,
+      pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf, totalPagos: tp,
       flujoNeto: fn, acumulado: acum, retirosSocios: rs,
     };
   });
@@ -318,10 +315,9 @@ export default function FlujoDeFondosPage() {
                 <Tooltip formatter={arsTooltip} />
                 <Legend />
                 <Bar dataKey="pagosProveedores" name="Proveedores" stackId="p" fill={COLORS.proveedores} />
-                <Bar dataKey="sueldos" name="Sueldos" stackId="p" fill={COLORS.sueldos} />
-                <Bar dataKey="impuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
-                <Bar dataKey="comisionesBancarias" name="Comisiones" stackId="p" fill={COLORS.comisiones} />
-                <Bar dataKey="egresosMP" name="Egresos MP" stackId="p" fill={COLORS.mp} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="pagosSueldos" name="Sueldos" stackId="p" fill={COLORS.sueldos} />
+                <Bar dataKey="pagosImpuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
+                <Bar dataKey="pagosGastosFinancieros" name="Gastos Financieros" stackId="p" fill={COLORS.financieros} radius={[4, 4, 0, 0]} />
                 <Bar dataKey="retirosSocios" name="Retiros socios" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -362,8 +358,7 @@ export default function FlujoDeFondosPage() {
                   <TableHead className="text-right">Proveedores</TableHead>
                   <TableHead className="text-right">Sueldos</TableHead>
                   <TableHead className="text-right">Impuestos</TableHead>
-                  <TableHead className="text-right">Comisiones</TableHead>
-                  <TableHead className="text-right">Egresos MP</TableHead>
+                  <TableHead className="text-right">Gtos. Fin.</TableHead>
                   <TableHead className="text-right">Retiros</TableHead>
                   <TableHead className="text-right font-bold">Pagos</TableHead>
                   <TableHead className="text-right font-bold">Neto</TableHead>
@@ -379,10 +374,9 @@ export default function FlujoDeFondosPage() {
                     <TableCell className="text-right">{formatARS(r.cobrosMP)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalCobros)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.pagosProveedores)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.sueldos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.impuestos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.comisionesBancarias)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.egresosMP)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.pagosSueldos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.pagosImpuestos)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.pagosGastosFinancieros)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.retirosSocios)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalPagos)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.flujoNeto >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.flujoNeto)}</TableCell>

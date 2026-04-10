@@ -20,10 +20,9 @@ export interface FlujoDeFondosRow {
   cobrosMP: number;
   totalCobros: number;
   pagosProveedores: number;
-  sueldos: number;
-  impuestos: number;
-  comisionesBancarias: number;
-  egresosMP: number;
+  pagosSueldos: number;
+  pagosImpuestos: number;
+  pagosGastosFinancieros: number;
   totalPagos: number;
   flujoNeto: number;
   acumulado: number;
@@ -37,10 +36,9 @@ type RpcFlujoRow = {
   cobros_banco: number;
   cobros_mp: number;
   pagos_proveedores: number;
-  sueldos: number;
-  impuestos: number;
-  comisiones_bancarias: number;
-  egresos_mp: number;
+  pagos_sueldos: number;
+  pagos_impuestos: number;
+  pagos_gastos_financieros: number;
   retiros_socios: number;
 };
 
@@ -60,11 +58,10 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     const totalCobros = cobrosEfectivo + cobrosBanco + cobrosMP;
 
     const pagosProveedores = Number(r.pagos_proveedores) || 0;
-    const sueldos = Number(r.sueldos) || 0;
-    const impuestos = Number(r.impuestos) || 0;
-    const comisionesBancarias = Number(r.comisiones_bancarias) || 0;
-    const egresosMP = Number(r.egresos_mp) || 0;
-    const totalPagos = pagosProveedores + sueldos + impuestos + comisionesBancarias + egresosMP;
+    const pagosSueldos = Number(r.pagos_sueldos) || 0;
+    const pagosImpuestos = Number(r.pagos_impuestos) || 0;
+    const pagosGastosFinancieros = Number(r.pagos_gastos_financieros) || 0;
+    const totalPagos = pagosProveedores + pagosSueldos + pagosImpuestos + pagosGastosFinancieros;
     const retirosSocios = Number(r.retiros_socios) || 0;
 
     const flujoNeto = totalCobros - totalPagos;
@@ -73,7 +70,7 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     return {
       periodo: r.periodo,
       cobrosEfectivo, cobrosBanco, cobrosMP, totalCobros,
-      pagosProveedores, sueldos, impuestos, comisionesBancarias, egresosMP, totalPagos,
+      pagosProveedores, pagosSueldos, pagosImpuestos, pagosGastosFinancieros, totalPagos,
       flujoNeto,
       acumulado: acum,
       retirosSocios,
