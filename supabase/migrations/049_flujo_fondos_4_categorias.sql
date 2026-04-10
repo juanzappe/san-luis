@@ -2,12 +2,15 @@
 -- Rewrite get_flujo_fondos() with 4 egreso categories classified from actual
 -- cash movements (movimiento_bancario + movimiento_mp), NOT from auxiliary tables.
 --
--- Egreso categories:
+-- Egreso categories (operativos):
 --   pagos_sueldos            — bank debits matching salary concepts
 --   pagos_impuestos          — bank debits matching tax agency concepts + MP tax payments
 --   pagos_gastos_financieros — bank fees/commissions/interest/insurance + MP platform costs
 --   pagos_proveedores        — everything else (residual after above classifications)
---   retiros_socios           — partner withdrawals (separate, not in total)
+--
+-- No operativos (fuera de totalPagos):
+--   retiros_socios           — partner withdrawals
+--   resultado_inversiones    — net of Inviu broker movements (credits - debits)
 --
 -- Inter-account transfers are excluded from both cobros and pagos:
 --   Provincia ↔ Santander, bank ↔ MP, ATM transfers, internal movements.
@@ -26,7 +29,8 @@ RETURNS TABLE(
   pagos_sueldos numeric,
   pagos_impuestos numeric,
   pagos_gastos_financieros numeric,
-  retiros_socios numeric
+  retiros_socios numeric,
+  resultado_inversiones numeric
 )
 LANGUAGE sql STABLE
 SET statement_timeout TO '30s'
@@ -52,7 +56,7 @@ AS $$
     GROUP BY 1
   ),
 
-  -- Cobros banco: credits EXCLUDING inter-account transfers
+  -- Cobros banco: credits EXCLUDING inter-account transfers and Inviu
   banco_cred AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(credito, 0)) AS cobros
@@ -68,6 +72,8 @@ AS $$
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
       -- Exclude transfers from own company accounts
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL Y ZACCAR%'
+      -- Exclude Inviu broker movements (tracked separately in inviu CTE)
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%inviu%'
     GROUP BY 1
   ),
 
@@ -309,8 +315,10 @@ AS $$
   ),
 
   -- =========================================================================
-  -- RETIROS SOCIOS
+  -- NO OPERATIVOS
   -- =========================================================================
+
+  -- Retiros socios
   retiros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(debito, 0)) AS total
@@ -322,6 +330,17 @@ AS $$
         OR LOWER(COALESCE(concepto, '')) LIKE '%nadal%andrea%'
         OR LOWER(COALESCE(concepto, '')) LIKE '%zaccaro%fabian%'
       )
+    GROUP BY 1
+  ),
+
+  -- Resultado inversiones (Inviu broker): net = credits - debits
+  -- Positive = net return to the company, Negative = net investment outflow
+  inviu AS (
+    SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
+      SUM(COALESCE(credito, 0)) - SUM(COALESCE(debito, 0)) AS neto
+    FROM movimiento_bancario
+    WHERE LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+      AND (COALESCE(credito, 0) > 0 OR COALESCE(debito, 0) > 0)
     GROUP BY 1
   )
 
@@ -341,8 +360,9 @@ AS $$
     COALESCE(bd.impuestos, 0) + COALESCE(mpi.monto, 0),
     -- Gastos financieros: bank fees + MP platform costs
     COALESCE(bd.financieros, 0) + COALESCE(mpf.monto, 0),
-    -- Retiros socios
-    COALESCE(ret.total, 0)
+    -- No operativos
+    COALESCE(ret.total, 0),
+    COALESCE(inv.neto, 0)
   FROM meses m
   LEFT JOIN caja c ON c.p = m.p
   LEFT JOIN banco_cred bc ON bc.p = m.p
@@ -352,5 +372,6 @@ AS $$
   LEFT JOIN mp_impuestos mpi ON mpi.p = m.p
   LEFT JOIN mp_financieros mpf ON mpf.p = m.p
   LEFT JOIN retiros ret ON ret.p = m.p
+  LEFT JOIN inviu inv ON inv.p = m.p
   ORDER BY m.p;
 $$;
