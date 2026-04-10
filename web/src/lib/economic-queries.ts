@@ -8,6 +8,9 @@ import { fetchWithRetry } from "./fetchWithRetry";
 // Helpers
 // ---------------------------------------------------------------------------
 
+/** Período mínimo para la sección Económicos (excluye 2021-2023). */
+export const ECONOMICO_MIN_PERIODO = "2024-01";
+
 export const MONTH_NAMES = [
   "Enero","Febrero","Marzo","Abril","Mayo","Junio",
   "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre",
@@ -78,7 +81,8 @@ export async function fetchIngresos(): Promise<IngresoRow[]> {
       const servicios = Number(r.servicios) || 0;
       return { periodo: r.periodo, mostrador, restobar, servicios, total: mostrador + restobar + servicios };
     })
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+    .sort((a, b) => a.periodo.localeCompare(b.periodo))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +158,7 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       sueldosNeto: Number(r.sueldos_neto) || 0,
       cargasSociales: cargasSoc,
     };
-  });
+  }).filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 }
 
 // ---------------------------------------------------------------------------
@@ -407,5 +411,6 @@ export async function fetchFinancierosDesglose(): Promise<FinancierosDesglose[]>
         total: comisionesBancarias + intereses + seguros + comisionesMp + otros,
       };
     })
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+    .sort((a, b) => a.periodo.localeCompare(b.periodo))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 }
