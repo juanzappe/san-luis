@@ -482,7 +482,12 @@ export default function EstadoResultadosPage() {
   }, [data, granularity, activeYear, ytdLastMonth]);
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
-  const waterfall = lastRow ? buildWaterfall(lastRow) : [];
+
+  // Monthly waterfall: selectable month
+  const [waterfallMonth, setWaterfallMonth] = useState<string | null>(null);
+  const activeWaterfallPeriodo = waterfallMonth ?? lastRow?.periodo ?? "";
+  const waterfallRow = data.find((r) => r.periodo === activeWaterfallPeriodo) ?? null;
+  const waterfall = waterfallRow ? buildWaterfall(waterfallRow) : [];
 
   // Annual waterfall: aggregate by year, select one year
   const [waterfallYear, setWaterfallYear] = useState<string | null>(null);
@@ -799,10 +804,21 @@ export default function EstadoResultadosPage() {
       <div className="grid gap-4 lg:grid-cols-2">
         {/* Waterfall */}
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0">
             <CardTitle className="text-base">
-              Cascada — {lastRow ? periodoLabel(lastRow.periodo) : ""}
+              Cascada — {waterfallRow ? periodoLabel(waterfallRow.periodo) : ""}
             </CardTitle>
+            <select
+              value={activeWaterfallPeriodo}
+              onChange={(e) => setWaterfallMonth(e.target.value)}
+              className="rounded-lg border border-input bg-background px-3 py-1.5 text-sm font-medium cursor-pointer focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+            >
+              {[...data].reverse().map((r) => (
+                <option key={r.periodo} value={r.periodo}>
+                  {periodoLabel(r.periodo)}
+                </option>
+              ))}
+            </select>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={350}>
