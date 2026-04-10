@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
@@ -61,6 +61,8 @@ const QUARTER_LABELS: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
+const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
+
 interface AggregatedEgreso {
   key: string;
   label: string;
@@ -113,6 +115,221 @@ function aggregateEgresos(data: AggregatedEgreso[], granularity: Granularity): A
   });
 
   return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
+}
+
+// ---------------------------------------------------------------------------
+// YTD Comparison — multi-year (egresos)
+// ---------------------------------------------------------------------------
+interface EgresosYtdYearData {
+  year: string;
+  costosOperativos: number;
+  sueldos: number;
+  comerciales: number;
+  ganancias: number;
+  financieros: number;
+  total: number;
+}
+
+function useEgresosYtdData(rows: AggregatedEgreso[]): { monthRange: string; years: EgresosYtdYearData[] } | null {
+  return useMemo(() => {
+    if (rows.length === 0) return null;
+
+    const allYears = Array.from(new Set(rows.map((r) => r.key.slice(0, 4)))).sort();
+    if (allYears.length === 0) return null;
+
+    const currentYear = allYears[allYears.length - 1];
+
+    // Months with data in the most recent year — defines the YTD range
+    const currentMonths = rows
+      .filter((r) => r.key.startsWith(currentYear))
+      .map((r) => r.key.slice(5, 7))
+      .sort();
+
+    if (currentMonths.length === 0) return null;
+
+    const firstMonth = currentMonths[0];
+    const lastMonth = currentMonths[currentMonths.length - 1];
+    const monthRange = `${MONTH_NAMES[parseInt(firstMonth, 10) - 1]}–${MONTH_NAMES[parseInt(lastMonth, 10) - 1]}`;
+
+    // Accumulate same months for every year
+    const years: EgresosYtdYearData[] = [];
+    for (const y of [...allYears].reverse()) {
+      const acc: EgresosYtdYearData = { year: y, costosOperativos: 0, sueldos: 0, comerciales: 0, ganancias: 0, financieros: 0, total: 0 };
+      let hasData = false;
+      for (const m of currentMonths) {
+        const match = rows.find((r) => r.key === `${y}-${m}`);
+        if (match) {
+          hasData = true;
+          acc.costosOperativos += Object.values(match.categorias).reduce((a, b) => a + b, 0);
+          acc.sueldos += match.sueldos;
+          acc.comerciales += match.comerciales;
+          acc.ganancias += match.ganancias;
+          acc.financieros += match.financieros;
+          acc.total += match.total;
+        }
+      }
+      if (hasData) years.push(acc);
+    }
+
+    return years.length >= 2 ? { monthRange, years } : null;
+  }, [rows]);
+}
+
+function EgresosYtdTable({ rows }: { rows: AggregatedEgreso[] }) {
+  const ytd = useEgresosYtdData(rows);
+  if (!ytd) return null;
+
+  const { monthRange, years } = ytd;
+
+  const cats: { label: string; key: keyof Omit<EgresosYtdYearData, "year">; bold: boolean }[] = [
+    { label: "Costos Operativos", key: "costosOperativos", bold: false },
+    { label: "Sueldos y CS", key: "sueldos", bold: false },
+    { label: "Gastos Comerciales", key: "comerciales", bold: false },
+    { label: "Imp. Ganancias", key: "ganancias", bold: false },
+    { label: "Financieros", key: "financieros", bold: false },
+    { label: "Total", key: "total", bold: true },
+  ];
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Comparación YTD ({monthRange})</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead />
+                {years.map((y, i) => (
+                  <React.Fragment key={y.year}>
+                    <TableHead className="text-right">{monthRange} {y.year}</TableHead>
+                    {i < years.length - 1 && (
+                      <TableHead className="text-right text-xs">Δ %</TableHead>
+                    )}
+                  </React.Fragment>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {cats.map((c) => (
+                <TableRow key={c.key}>
+                  <TableCell className={c.bold ? "font-bold" : ""}>{c.label}</TableCell>
+                  {years.map((y, i) => {
+                    const val = y[c.key];
+                    const next = i < years.length - 1 ? years[i + 1] : null;
+                    const delta = next && next[c.key] > 0 ? pctDelta(val, next[c.key]) : null;
+                    return (
+                      <React.Fragment key={y.year}>
+                        <TableCell className={`text-right ${c.bold ? "font-bold" : ""} ${i > 0 ? "text-muted-foreground" : ""}`}>
+                          {formatARS(val)}
+                        </TableCell>
+                        {i < years.length - 1 && (
+                          <TableCell className={`text-right font-medium ${delta !== null && delta <= 0 ? "text-green-600" : "text-red-600"}`}>
+                            {delta !== null ? formatPct(delta) : "—"}
+                          </TableCell>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Monthly average by year (egresos)
+// ---------------------------------------------------------------------------
+interface EgresoYearAvg {
+  year: string;
+  costosOperativos: number;
+  sueldos: number;
+  comerciales: number;
+  ganancias: number;
+  financieros: number;
+  total: number;
+  months: number;
+}
+
+function EgresosMonthlyAverageByYear({ rows }: { rows: AggregatedEgreso[] }) {
+  const avgRows = useMemo(() => {
+    const byYear = new Map<string, { costosOperativos: number; sueldos: number; comerciales: number; ganancias: number; financieros: number; total: number; months: number }>();
+    for (const r of rows) {
+      const y = r.key.slice(0, 4);
+      const cur = byYear.get(y) ?? { costosOperativos: 0, sueldos: 0, comerciales: 0, ganancias: 0, financieros: 0, total: 0, months: 0 };
+      cur.costosOperativos += Object.values(r.categorias).reduce((a, b) => a + b, 0);
+      cur.sueldos += r.sueldos;
+      cur.comerciales += r.comerciales;
+      cur.ganancias += r.ganancias;
+      cur.financieros += r.financieros;
+      cur.total += r.total;
+      cur.months += 1;
+      byYear.set(y, cur);
+    }
+
+    const result: EgresoYearAvg[] = Array.from(byYear.entries())
+      .map(([year, v]) => ({
+        year,
+        costosOperativos: v.costosOperativos / v.months,
+        sueldos: v.sueldos / v.months,
+        comerciales: v.comerciales / v.months,
+        ganancias: v.ganancias / v.months,
+        financieros: v.financieros / v.months,
+        total: v.total / v.months,
+        months: v.months,
+      }))
+      .sort((a, b) => b.year.localeCompare(a.year));
+
+    return result;
+  }, [rows]);
+
+  if (avgRows.length === 0) return null;
+
+  const monthsNote = avgRows.map((r) => `${r.year}: ${r.months} ${r.months === 1 ? "mes" : "meses"}`).join(" · ");
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Promedio Mensual por Año</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Año</TableHead>
+              <TableHead className="text-right">Costos Operativos</TableHead>
+              <TableHead className="text-right">Sueldos y CS</TableHead>
+              <TableHead className="text-right">Gastos Comerciales</TableHead>
+              <TableHead className="text-right">Imp. Ganancias</TableHead>
+              <TableHead className="text-right">Financieros</TableHead>
+              <TableHead className="text-right font-bold">Total</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {avgRows.map((r) => (
+              <TableRow key={r.year}>
+                <TableCell className="font-medium">{r.year}</TableCell>
+                <TableCell className="text-right">{formatARS(r.costosOperativos)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.sueldos)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.comerciales)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.ganancias)}</TableCell>
+                <TableCell className="text-right">{formatARS(r.financieros)}</TableCell>
+                <TableCell className="text-right font-bold">{formatARS(r.total)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+        <p className="mt-3 text-xs text-muted-foreground">
+          Basado en {monthsNote}
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +524,12 @@ export default function EgresosPage() {
           color={FINANCIEROS_COLOR}
         />
       </div>
+
+      {/* YTD Comparison Table */}
+      <EgresosYtdTable rows={rowsForAgg} />
+
+      {/* Monthly average by year */}
+      <EgresosMonthlyAverageByYear rows={rowsForAgg} />
 
       {/* Stacked bar chart */}
       <Card>
