@@ -3,7 +3,7 @@
  * Resumen, Mostrador, Restobar, Servicios, Decoración.
  */
 import { supabase } from "./supabase";
-import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel } from "./economic-queries";
+import { ECONOMICO_MIN_PERIODO, formatARS, formatPct, pctDelta, periodoLabel, shortLabel } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
 
@@ -58,7 +58,8 @@ export async function fetchResumen(): Promise<ResumenData> {
       const servicios = Number(r.servicios) || 0;
       return { periodo: r.periodo, mostrador, restobar, servicios, total: mostrador + restobar + servicios };
     })
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+    .sort((a, b) => a.periodo.localeCompare(b.periodo))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 
   const totalMostrador = monthly.reduce((s, r) => s + r.mostrador, 0);
   const totalRestobar = monthly.reduce((s, r) => s + r.restobar, 0);
@@ -124,7 +125,8 @@ export async function fetchMostradorMensual(): Promise<MostradorMonthly[]> {
       cantidad: Number(r.cantidad) || 0,
       txCount: Number(r.tx_count) || 0,
     }))
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+    .sort((a, b) => a.periodo.localeCompare(b.periodo))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 }
 
 export async function fetchMostradorHeatmap(): Promise<HeatmapCell[]> {
@@ -200,7 +202,8 @@ export async function fetchRestobar(): Promise<RestobarData> {
       cantidad: Number(r.cantidad) || 0,
       txCount: Number(r.tx_count) || 0,
     }))
-    .sort((a, b) => a.periodo.localeCompare(b.periodo));
+    .sort((a, b) => a.periodo.localeCompare(b.periodo))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 
   const heatmap = ((heatmapRes.data ?? []) as { day: number; hour: number; monto: number; count: number }[])
     .map((r) => ({
@@ -294,13 +297,15 @@ export async function fetchServicios(): Promise<ServiciosData> {
   const monthlyRows = (monthlyRaw ?? []) as MonthlyRow[];
   const clienteRows = (clientesRaw ?? []) as ClienteRow[];
 
-  const monthly: ServiciosMonthly[] = monthlyRows.map((r) => ({
-    periodo: String(r.periodo),
-    publico: Number(r.publico) || 0,
-    privado: Number(r.privado) || 0,
-    total: Number(r.total) || 0,
-    txCount: Number(r.tx_count) || 0,
-  }));
+  const monthly: ServiciosMonthly[] = monthlyRows
+    .map((r) => ({
+      periodo: String(r.periodo),
+      publico: Number(r.publico) || 0,
+      privado: Number(r.privado) || 0,
+      total: Number(r.total) || 0,
+      txCount: Number(r.tx_count) || 0,
+    }))
+    .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
 
   let totalMonto = 0;
   let totalFacturas = 0;
@@ -314,11 +319,13 @@ export async function fetchServicios(): Promise<ServiciosData> {
 
     // Parse monthly detail from JSONB
     const detalle = Array.isArray(r.detalle_mensual) ? r.detalle_mensual : [];
-    const monthlyRows: ClientMonthlyRow[] = detalle.map((d) => ({
-      periodo: String(d.periodo),
-      monto: Number(d.monto) || 0,
-      txCount: Number(d.txCount) || 0,
-    }));
+    const monthlyRows: ClientMonthlyRow[] = detalle
+      .map((d) => ({
+        periodo: String(d.periodo),
+        monto: Number(d.monto) || 0,
+        txCount: Number(d.txCount) || 0,
+      }))
+      .filter((d) => d.periodo >= ECONOMICO_MIN_PERIODO);
     clientMonthly.set(String(r.cuit), monthlyRows);
 
     return {
