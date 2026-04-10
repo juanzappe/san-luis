@@ -28,6 +28,13 @@ import {
   formatARS, dayName, hourLabel, periodoLabel,
 } from "@/lib/units-queries";
 import { pctDelta, formatPct } from "@/lib/economic-queries";
+import {
+  type YtdCutoff,
+  type UnitParcial,
+  fetchFechaCorteYtd,
+  fetchMostradorMesParcial,
+  ytdMonthRangeLabel,
+} from "@/lib/ytd-cutoff";
 import { cn } from "@/lib/utils";
 import type {
   Formatter, ValueType, NameType,
@@ -92,10 +99,13 @@ function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number)
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
+function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number, cutoff?: YtdCutoff | null): string {
   if (g === "anual") return p;
   if (g === "ytd" && ytdLastMonth) {
-    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+    const firstMonth = "01";
+    const lastMonth = String(ytdLastMonth).padStart(2, "0");
+    const range = ytdMonthRangeLabel(firstMonth, lastMonth, cutoff);
+    return `${range} ${p}`;
   }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
@@ -251,6 +261,10 @@ export default function MostradorPage() {
   const [rankingLoading, setRankingLoading] = useState(false);
   const [showAllRanking, setShowAllRanking] = useState(false);
 
+  // YTD day-level cutoff
+  const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
+  const [ytdPartialRaw, setYtdPartialRaw] = useState<Map<string, UnitParcial>>(new Map());
+
   // Initial load
   useEffect(() => {
     Promise.all([fetchMostradorMensual(), fetchMostradorHeatmap(), fetchProductosLista()])
@@ -262,6 +276,14 @@ export default function MostradorPage() {
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
+    // Fetch YTD cutoff and partial-month data
+    fetchFechaCorteYtd().then((c) => {
+      if (!c) return;
+      setYtdCutoff(c);
+      if (!c.esFindeMes) {
+        fetchMostradorMesParcial(c.mes, c.dia).then(setYtdPartialRaw);
+      }
+    });
   }, []);
 
   // Section 5: fetch weekly on product select
@@ -294,6 +316,20 @@ export default function MostradorPage() {
     [monthly, adjust],
   );
 
+  // Inflation-adjusted partial data for YTD cutoff
+  const ytdPartialMap = useMemo(() => {
+    const map = new Map<string, UnitParcial>();
+    ytdPartialRaw.forEach((v, k) => {
+      map.set(k, {
+        periodo: v.periodo,
+        monto: adjust(v.monto, v.periodo),
+        cantidad: v.cantidad,
+        txCount: v.txCount,
+      });
+    });
+    return map;
+  }, [ytdPartialRaw, adjust]);
+
   // YTD: last month with data in the most recent year
   const ytdLastMonth = useMemo(() => {
     if (adjMonthly.length === 0) return 0;
@@ -309,8 +345,22 @@ export default function MostradorPage() {
     return max;
   }, [adjMonthly]);
 
+  // YTD-adjusted data: replace cutoff month with partial data when in YTD mode
+  const ytdAdjusted = useMemo(() => {
+    if (!ytdCutoff || ytdCutoff.esFindeMes || ytdPartialMap.size === 0) return adjMonthly;
+    const cutoffMonth = String(ytdCutoff.mes).padStart(2, "0");
+    return adjMonthly.map((r) => {
+      const m = r.periodo.split("-")[1];
+      if (m !== cutoffMonth) return r;
+      const partial = ytdPartialMap.get(r.periodo);
+      if (!partial) return r;
+      return { ...r, monto: partial.monto, cantidad: partial.cantidad, txCount: partial.txCount };
+    });
+  }, [adjMonthly, ytdCutoff, ytdPartialMap]);
+
   // Aggregated data for table (Section 2)
-  const aggregated = useMemo(() => aggregateMonthly(adjMonthly, granularity, ytdLastMonth), [adjMonthly, granularity, ytdLastMonth]);
+  const dataForAgg = granularity === "ytd" ? ytdAdjusted : adjMonthly;
+  const aggregated = useMemo(() => aggregateMonthly(dataForAgg, granularity, ytdLastMonth), [dataForAgg, granularity, ytdLastMonth]);
   const tableRows = useMemo(() => [...aggregated].reverse(), [aggregated]);
 
   // KPI data (Section 1)
@@ -486,7 +536,7 @@ export default function MostradorPage() {
                   const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
                   return (
                     <TableRow key={row.periodo}>
-                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth)}</TableCell>
+                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth, ytdCutoff)}</TableCell>
                       <TableCell className="text-right">{formatARS(row.monto)}</TableCell>
                       <TableCell className={`text-right text-xs ${dVentas !== null ? (dVentas >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
                         {formatPct(dVentas)}
