@@ -5,15 +5,17 @@
 -- Egreso categories (operativos):
 --   pagos_sueldos            — bank debits matching salary concepts
 --   pagos_impuestos          — bank debits matching tax agency concepts + MP tax payments
---   pagos_gastos_financieros — bank fees/commissions/interest/insurance + MP platform costs
+--   pagos_gastos_financieros — bank fees/commissions/interest/insurance/loans + MP platform costs
 --   pagos_proveedores        — everything else (residual after above classifications)
 --
 -- No operativos (fuera de totalPagos):
---   retiros_socios           — partner withdrawals
---   resultado_inversiones    — net of Inviu broker movements (credits - debits)
+--   retiros_socios           — partner withdrawals (Nadal, Zaccaro)
 --
--- Inter-account transfers are excluded from both cobros and pagos:
---   Provincia ↔ Santander, bank ↔ MP, ATM transfers, internal movements.
+-- Excluded completely:
+--   Inviu (broker) — not income or expense, excluded from all categories
+--   Inter-account transfers — Provincia ↔ Santander, bank ↔ MP, ATM transfers
+--
+-- Filtered: periodo >= '2024-01' (excludes 2023 and earlier)
 
 SET search_path = public;
 
@@ -29,8 +31,7 @@ RETURNS TABLE(
   pagos_sueldos numeric,
   pagos_impuestos numeric,
   pagos_gastos_financieros numeric,
-  retiros_socios numeric,
-  resultado_inversiones numeric
+  retiros_socios numeric
 )
 LANGUAGE sql STABLE
 SET statement_timeout TO '30s'
@@ -41,6 +42,7 @@ AS $$
       UNION SELECT TO_CHAR(fecha, 'YYYY-MM') FROM movimiento_bancario
       UNION SELECT TO_CHAR(fecha, 'YYYY-MM') FROM movimiento_mp
     ) sub
+    WHERE sub.p >= '2024-01'
   ),
 
   -- =========================================================================
@@ -53,6 +55,7 @@ AS $$
       SUM(COALESCE(importe, 0)) AS efectivo
     FROM movimiento_caja
     WHERE condicion_pago = 'EFECTIVO' AND tipo = 'Venta Contado'
+      AND fecha >= '2024-01-01'
     GROUP BY 1
   ),
 
@@ -62,17 +65,18 @@ AS $$
       SUM(COALESCE(credito, 0)) AS cobros
     FROM movimiento_bancario
     WHERE COALESCE(credito, 0) > 0
+      AND fecha >= '2024-01-01'
       -- Exclude ATM cash deposits (internal move from cash register)
       AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito por caja%'
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito de efectivo%'
-      -- Exclude internal bank-to-bank transfers (Santander → Provincia and vice versa)
+      -- Exclude internal bank-to-bank transfers (Santander ↔ Provincia)
       AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRANSFERENCIA I%'
       -- Exclude MP wallet → bank transfers (already counted in cobros_mp)
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
       -- Exclude transfers from own company accounts
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL Y ZACCAR%'
-      -- Exclude Inviu broker movements (tracked separately in inviu CTE)
+      -- Exclude Inviu broker movements completely
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%inviu%'
     GROUP BY 1
   ),
@@ -83,6 +87,7 @@ AS $$
       SUM(COALESCE(importe, 0)) AS ing
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) > 0
+      AND fecha >= '2024-01-01'
       -- Exclude transfers from bank to MP wallet
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
     GROUP BY 1
@@ -93,6 +98,7 @@ AS $$
   -- =========================================================================
 
   -- All bank debits with their classification
+  -- Excludes: inter-account transfers, Inviu, partner withdrawals
   banco_deb AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS p,
@@ -101,6 +107,7 @@ AS $$
       COALESCE(concepto, '') AS concepto_raw
     FROM movimiento_bancario
     WHERE COALESCE(debito, 0) > 0
+      AND fecha >= '2024-01-01'
       -- =====================================================================
       -- EXCLUDE inter-account transfers
       -- =====================================================================
@@ -112,13 +119,16 @@ AS $$
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL Y ZACCAR%'
       -- Transfers to MP wallet
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
-      -- InvertirOnline (broker, investment activity — not an operating expense)
+      -- =====================================================================
+      -- EXCLUDE Inviu broker movements completely
+      -- =====================================================================
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%inviu%'
       -- =====================================================================
       -- EXCLUDE partner withdrawals (tracked separately in retiros CTE)
       -- =====================================================================
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL ANDREA%'
       AND COALESCE(concepto, '') NOT LIKE '%N:ZACCARO FABIAN%'
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%zaccaro%'
   ),
 
   -- Classify each bank debit into one of: sueldos, impuestos, financieros, proveedores
@@ -132,6 +142,9 @@ AS $$
           OR concepto_lower LIKE '%remuner%'
           OR concepto_lower LIKE '%aguinaldo%'
           OR concepto_lower LIKE '%vacacion%'
+          OR concepto_lower LIKE '%lote haberes%'
+          OR concepto_lower LIKE '%pago de haberes%'
+          OR concepto_lower LIKE '%pago haberes%'
           OR concepto_raw LIKE 'DEBITO POR PAGO DE HABERES%'
           OR concepto_raw LIKE 'DEB LOTE ZACCARO FABIAN%'
         THEN monto ELSE 0
@@ -145,6 +158,9 @@ AS $$
           OR concepto_lower LIKE '%remuner%'
           OR concepto_lower LIKE '%aguinaldo%'
           OR concepto_lower LIKE '%vacacion%'
+          OR concepto_lower LIKE '%lote haberes%'
+          OR concepto_lower LIKE '%pago de haberes%'
+          OR concepto_lower LIKE '%pago haberes%'
           OR concepto_raw LIKE 'DEBITO POR PAGO DE HABERES%'
           OR concepto_raw LIKE 'DEB LOTE ZACCARO FABIAN%'
         THEN 0
@@ -169,10 +185,12 @@ AS $$
           OR concepto_lower LIKE '%aporte%jubilat%'
           OR concepto_lower LIKE '%obra social%'
           OR concepto_lower LIKE '%sindicato%'
+          OR concepto_lower LIKE '%retencion arba%'
+          OR concepto_lower LIKE '%retencion iibb%'
         THEN monto ELSE 0
       END) AS impuestos,
 
-      -- GASTOS FINANCIEROS: bank fees, commissions, interest, insurance
+      -- GASTOS FINANCIEROS: bank fees, commissions, interest, insurance, loans
       SUM(CASE
         -- Already classified as sueldo → skip
         WHEN concepto_lower LIKE '%haber%'
@@ -180,6 +198,9 @@ AS $$
           OR concepto_lower LIKE '%remuner%'
           OR concepto_lower LIKE '%aguinaldo%'
           OR concepto_lower LIKE '%vacacion%'
+          OR concepto_lower LIKE '%lote haberes%'
+          OR concepto_lower LIKE '%pago de haberes%'
+          OR concepto_lower LIKE '%pago haberes%'
           OR concepto_raw LIKE 'DEBITO POR PAGO DE HABERES%'
           OR concepto_raw LIKE 'DEB LOTE ZACCARO FABIAN%'
         THEN 0
@@ -204,6 +225,8 @@ AS $$
           OR concepto_lower LIKE '%aporte%jubilat%'
           OR concepto_lower LIKE '%obra social%'
           OR concepto_lower LIKE '%sindicato%'
+          OR concepto_lower LIKE '%retencion arba%'
+          OR concepto_lower LIKE '%retencion iibb%'
         THEN 0
         -- Financial expense patterns
         WHEN concepto_lower LIKE '%comision%'
@@ -211,6 +234,8 @@ AS $$
           OR concepto_lower LIKE '%mantenimiento%'
           OR concepto_lower LIKE '%seguro%'
           OR concepto_lower LIKE '%sellado%'
+          OR concepto_lower LIKE '%amortizacion%prestamo%'
+          OR concepto_lower LIKE '%cuota prestamo%'
         THEN monto ELSE 0
       END) AS financieros,
 
@@ -222,6 +247,9 @@ AS $$
           OR concepto_lower LIKE '%remuner%'
           OR concepto_lower LIKE '%aguinaldo%'
           OR concepto_lower LIKE '%vacacion%'
+          OR concepto_lower LIKE '%lote haberes%'
+          OR concepto_lower LIKE '%pago de haberes%'
+          OR concepto_lower LIKE '%pago haberes%'
           OR concepto_raw LIKE 'DEBITO POR PAGO DE HABERES%'
           OR concepto_raw LIKE 'DEB LOTE ZACCARO FABIAN%'
         THEN 0
@@ -246,6 +274,8 @@ AS $$
           OR concepto_lower LIKE '%aporte%jubilat%'
           OR concepto_lower LIKE '%obra social%'
           OR concepto_lower LIKE '%sindicato%'
+          OR concepto_lower LIKE '%retencion arba%'
+          OR concepto_lower LIKE '%retencion iibb%'
         THEN 0
         -- Financiero → skip
         WHEN concepto_lower LIKE '%comision%'
@@ -253,6 +283,8 @@ AS $$
           OR concepto_lower LIKE '%mantenimiento%'
           OR concepto_lower LIKE '%seguro%'
           OR concepto_lower LIKE '%sellado%'
+          OR concepto_lower LIKE '%amortizacion%prestamo%'
+          OR concepto_lower LIKE '%cuota prestamo%'
         THEN 0
         -- Everything else = proveedores
         ELSE monto
@@ -272,6 +304,7 @@ AS $$
       SUM(ABS(COALESCE(importe, 0))) AS monto
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
+      AND fecha >= '2024-01-01'
       AND COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
     GROUP BY 1
   ),
@@ -283,6 +316,7 @@ AS $$
       SUM(ABS(COALESCE(importe, 0))) AS monto
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
+      AND fecha >= '2024-01-01'
       AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
@@ -298,6 +332,7 @@ AS $$
       SUM(ABS(COALESCE(importe, 0))) AS monto
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
+      AND fecha >= '2024-01-01'
       AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
@@ -307,32 +342,21 @@ AS $$
   ),
 
   -- =========================================================================
-  -- NO OPERATIVOS
+  -- RETIROS SOCIOS
   -- =========================================================================
-
-  -- Retiros socios
   retiros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(debito, 0)) AS total
     FROM movimiento_bancario
     WHERE COALESCE(debito, 0) > 0
+      AND fecha >= '2024-01-01'
       AND (
         COALESCE(concepto, '') LIKE '%N:NADAL ANDREA%'
         OR COALESCE(concepto, '') LIKE '%N:ZACCARO FABIAN%'
         OR LOWER(COALESCE(concepto, '')) LIKE '%nadal%andrea%'
         OR LOWER(COALESCE(concepto, '')) LIKE '%zaccaro%fabian%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%zaccaro%'
       )
-    GROUP BY 1
-  ),
-
-  -- Resultado inversiones (Inviu broker): net = credits - debits
-  -- Positive = net return to the company, Negative = net investment outflow
-  inviu AS (
-    SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
-      SUM(COALESCE(credito, 0)) - SUM(COALESCE(debito, 0)) AS neto
-    FROM movimiento_bancario
-    WHERE LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
-      AND (COALESCE(credito, 0) > 0 OR COALESCE(debito, 0) > 0)
     GROUP BY 1
   )
 
@@ -352,9 +376,8 @@ AS $$
     COALESCE(bd.impuestos, 0) + COALESCE(mpi.monto, 0),
     -- Gastos financieros: bank fees + MP platform costs
     COALESCE(bd.financieros, 0) + COALESCE(mpf.monto, 0),
-    -- No operativos
-    COALESCE(ret.total, 0),
-    COALESCE(inv.neto, 0)
+    -- Retiros socios
+    COALESCE(ret.total, 0)
   FROM meses m
   LEFT JOIN caja c ON c.p = m.p
   LEFT JOIN banco_cred bc ON bc.p = m.p
@@ -364,6 +387,5 @@ AS $$
   LEFT JOIN mp_impuestos mpi ON mpi.p = m.p
   LEFT JOIN mp_financieros mpf ON mpf.p = m.p
   LEFT JOIN retiros ret ON ret.p = m.p
-  LEFT JOIN inviu inv ON inv.p = m.p
   ORDER BY m.p;
 $$;

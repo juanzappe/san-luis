@@ -27,7 +27,6 @@ export interface FlujoDeFondosRow {
   flujoNeto: number;
   acumulado: number;
   retirosSocios: number;
-  resultadoInversiones: number;
 }
 
 // RPC row type for get_flujo_fondos
@@ -41,7 +40,6 @@ type RpcFlujoRow = {
   pagos_impuestos: number;
   pagos_gastos_financieros: number;
   retiros_socios: number;
-  resultado_inversiones: number;
 };
 
 export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
@@ -65,7 +63,6 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     const pagosGastosFinancieros = Number(r.pagos_gastos_financieros) || 0;
     const totalPagos = pagosProveedores + pagosSueldos + pagosImpuestos + pagosGastosFinancieros;
     const retirosSocios = Number(r.retiros_socios) || 0;
-    const resultadoInversiones = Number(r.resultado_inversiones) || 0;
 
     const flujoNeto = totalCobros - totalPagos;
     acum += flujoNeto;
@@ -77,7 +74,6 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
       flujoNeto,
       acumulado: acum,
       retirosSocios,
-      resultadoInversiones,
     };
   });
 }
