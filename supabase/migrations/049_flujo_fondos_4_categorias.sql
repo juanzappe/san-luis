@@ -13,7 +13,12 @@
 --
 -- Excluded completely:
 --   Inviu (broker) — not income or expense, excluded from all categories
---   Inter-account transfers — Provincia ↔ Santander, bank ↔ MP, ATM transfers
+--   Self-company transfers — only when concepto/tipo mentions Nadal y Zaccaro / 30657033770
+--   MP wallet ↔ bank (Retiro de dinero, Mercado Pago credits) — avoid double-count
+--
+-- Included as income:
+--   Third-party bank transfers (interbancarias, deposits, "Pago a proveedores recibido")
+--   Third-party MP transfers received ("Transferencia recibida [NOMBRE]" = client payments)
 --
 -- Filtered: periodo >= '2024-01' (excludes 2023 and earlier)
 
@@ -59,19 +64,14 @@ AS $$
     GROUP BY 1
   ),
 
-  -- Cobros banco: credits EXCLUDING inter-account transfers and Inviu
+  -- Cobros banco: credits EXCLUDING own-company transfers, MP, and Inviu
+  -- Includes: deposits (caja, efectivo, ATM), interbancarias, third-party transfers
   banco_cred AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(credito, 0)) AS cobros
     FROM movimiento_bancario
     WHERE COALESCE(credito, 0) > 0
       AND fecha >= '2024-01-01'
-      -- Exclude ATM cash deposits (internal move from cash register)
-      AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito por caja%'
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito de efectivo%'
-      -- Exclude internal bank-to-bank transfers (Santander ↔ Provincia)
-      AND COALESCE(concepto, '') NOT LIKE 'CREDITO TRANSFERENCIA I%'
       -- Exclude MP wallet → bank transfers (already counted in cobros_mp)
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
       -- Exclude transfers from own company accounts
@@ -81,15 +81,23 @@ AS $$
     GROUP BY 1
   ),
 
-  -- Cobros MP: positive inflows EXCLUDING inter-account transfers
+  -- Cobros MP: positive inflows EXCLUDING own-company transfers
+  -- Includes: cobros, third-party transfers received (client payments)
   mp_ing AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(importe, 0)) AS ing
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) > 0
       AND fecha >= '2024-01-01'
-      -- Exclude transfers from bank to MP wallet
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
+      -- Exclude only self-company transfers (bank → MP wallet)
+      -- Third-party "Transferencia recibida [NOMBRE]" = client income
+      AND NOT (
+        COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+        AND (
+          LOWER(COALESCE(tipo_operacion, '')) LIKE '%nadal y zaccaro%'
+          OR COALESCE(tipo_operacion, '') LIKE '%30657033770%'
+        )
+      )
     GROUP BY 1
   ),
 
@@ -334,14 +342,25 @@ AS $$
   -- EGRESOS MP — classified
   -- =========================================================================
 
-  -- MP: supplier payments (Pago, Movimiento General)
+  -- MP: supplier payments (Pago, Movimiento General, third-party transfers)
   mp_proveedores AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
       AND fecha >= '2024-01-01'
-      AND COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+      AND (
+        -- Direct payments
+        COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        -- Third-party transfers sent (payments to suppliers via transfer)
+        OR (
+          COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+          AND NOT (
+            LOWER(COALESCE(tipo_operacion, '')) LIKE '%nadal y zaccaro%'
+            OR COALESCE(tipo_operacion, '') LIKE '%30657033770%'
+          )
+        )
+      )
     GROUP BY 1
   ),
 
@@ -370,7 +389,7 @@ AS $$
   ),
 
   -- MP: platform costs = financial expenses (commissions, fees)
-  -- Residual after excluding: transfers, pagos, and tax-related operations
+  -- Residual after excluding: pagos, transfers, retiros, and tax-related operations
   mp_financieros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto

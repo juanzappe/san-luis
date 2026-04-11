@@ -19,9 +19,11 @@ from utils import (
 )
 
 # Mapeo de TRANSACTION_TYPE (CSV extracto) → tipo_operacion (DB)
+# Note: "Transferencia enviada/recibida [NOMBRE]" are kept as-is to preserve
+# the counterparty name, which is needed to distinguish self-company transfers
+# from third-party payments in the flujo de fondos RPCs.
 _CSV_TYPE_MAP = {
     "Liquidación de dinero": "Cobro",
-    "Transferencia enviada": "Retiro de dinero",
     "Pago": "Pago",
     "Impuesto": "Impuesto sobre los Créditos y Débitos en cobros",
     "Comisión": "Costo de Mercado Pago",

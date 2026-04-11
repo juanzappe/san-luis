@@ -1,15 +1,11 @@
 """Loader: BANCO SANTANDER PDF/CSV → movimiento_bancario.
 
 Fuente: data_raw/MOVIMIENTOS BANCARIOS/BANCO SANTANDER/**/*.pdf | *.csv
-PDF:    Resumen de cuenta mensual — texto posicionado (sin tablas reales).
-        Columnas identificadas por coordenada X:
-          Fecha         x ≈ 23    (DD/MM/YY)
-          Comprobante   x ≈ 65
-          Descripción   x ≈ 115+  (puede ocupar varias palabras / varias líneas)
-          Débito        x < 430
-          Crédito       430 ≤ x < 510
-          Saldo         x ≥ 510
-        Zona de montos: x ≥ 380 (palabras "pesos" + monto)
+PDF:    Resumen de cuenta mensual — two-pass parser:
+        Pass 1: Extract word coordinates via PyMuPDF to classify amounts
+                into Débito / Crédito / Saldo columns by X position.
+        Pass 2: Parse page text line-by-line to detect movements, descriptions,
+                and match amounts to their column classification.
 CSV:    Latin-1, separador ';'. Fila 6 = headers, fila 7+ = datos.
         Montos en formato argentino con paréntesis para negativos: (13.220,36) = -13220.36
 Fijos:  banco='santander', cuenta='019-006261/3',
@@ -36,25 +32,28 @@ CUENTA  = "019-006261/3"
 CBU     = "0720019920000000626136"
 MONEDA  = "ARS"
 
-# Palabras en el header de la tabla (para detectar la fila de headers y saltar)
-_HEADER_WORDS = {"fecha", "comprobante", "movimiento", "débito", "crédito", "saldo"}
+# Pages whose text contains ANY of these keywords are skipped entirely
+_SKIP_PAGE_KEYWORDS = (
+    "Detalle impositivo",
+    "Plazos Fijos",
+    "Legales",
+    "Cambio de comisiones",
+    "Fondos Comunes",
+    "Intercambio de información",
+)
 
-# Páginas cuyo texto contenga estas cadenas se ignoran
-_SKIP_KEYWORDS = ("Cambio de comisiones", "Legales")
+# X-coordinate thresholds for amount column classification
+# Determined empirically from PyMuPDF word positions:
+#   Débito  "pesos" x0 ≈ 357-374   number x1 ≈ 408
+#   Crédito "pesos" x0 ≈ 434-441   number x1 ≈ 492
+#   Saldo   "pesos" x0 ≈ 519-534   number x1 ≈ 578
+_X_CREDIT_MIN = 430   # x0 >= 430 → Crédito or Saldo
+_X_SALDO_MIN  = 510   # x0 >= 510 → Saldo
 
-# Umbrales X para clasificar columnas de montos
-_X_DEBIT_MAX   = 430   # x0 < 430 → Débito
-_X_CREDIT_MAX  = 510   # 430 ≤ x0 < 510 → Crédito; x0 ≥ 510 → Saldo
-_X_AMOUNT_MIN  = 380   # sólo palabras con x0 ≥ 380 son montos
-
-# Umbral X mínimo para que una palabra se considere parte de la descripción
-# (Fecha ≈ 23, Comprobante ≈ 65, Descripción empieza ≈ 115)
-_X_DESC_MIN    = 100
-_X_FECHA_MAX   = 60    # sólo la primera columna
-_X_COMP_MAX    = 110   # segunda columna (comprobante)
-
-# Tolerancia Y para agrupar palabras en la misma fila lógica
-_Y_TOLERANCE   = 3
+# Regex patterns
+_RE_DATE = re.compile(r'^(\d{2}/\d{2}/\d{2})\s*(.*)')
+_RE_PESOS_AMOUNT = re.compile(r'^pesos\s+([\d.,]+)')
+_RE_DIGITS_ONLY = re.compile(r'^\d+$')
 
 
 def _parse_fecha_santander(texto: str | None) -> str | None:
@@ -68,40 +67,139 @@ def _parse_fecha_santander(texto: str | None) -> str | None:
         return None
 
 
-def _looks_like_monto(word: str) -> bool:
-    """True si la palabra parece un monto argentino: dígitos con puntos/comas."""
-    w = word.strip()
-    if not w:
-        return False
-    # Debe contener al menos un dígito
-    if not any(c.isdigit() for c in w):
-        return False
-    # Acepta: 46.400,00 / 1.926.662,69 / 100,00
-    stripped = w.replace(".", "").replace(",", "")
-    return stripped.isdigit()
+# ---------------------------------------------------------------------------
+# PDF parser — two-pass approach
+# ---------------------------------------------------------------------------
 
+def _build_amount_index(page) -> dict[int, list[dict]]:
+    """Pass 1: Build an index of classified amounts from word coordinates.
 
-def _group_words_by_y(words: list[dict]) -> list[list[dict]]:
-    """Agrupa palabras por línea Y (tolerancia _Y_TOLERANCE px)."""
-    if not words:
-        return []
-    lines: list[list[dict]] = []
-    current_line: list[dict] = [words[0]]
-    current_y = words[0]["top"]
+    Returns dict mapping rounded Y position → list of
+    {"column": "debito"|"credito"|"saldo", "value": float, "y0": float}
+    """
+    raw_words = page.get_text("words")
+    if not raw_words:
+        return {}
 
-    for w in words[1:]:
-        if abs(w["top"] - current_y) <= _Y_TOLERANCE:
-            current_line.append(w)
+    # Sort by (y0, x0) to get reading order
+    words = sorted(raw_words, key=lambda w: (w[1], w[0]))
+
+    index: dict[int, list[dict]] = {}
+
+    for i, w in enumerate(words):
+        text = w[4].strip().lower()
+        x0 = w[0]
+
+        if text != "pesos":
+            continue
+
+        # Look at next word — should be the amount
+        if i + 1 >= len(words):
+            continue
+        next_w = words[i + 1]
+        next_text = next_w[4].strip()
+        next_y0 = next_w[1]
+
+        # The amount must be on approximately the same Y as "pesos"
+        if abs(next_y0 - w[1]) > 5:
+            continue
+
+        # Check it looks like a number
+        stripped = next_text.replace(".", "").replace(",", "")
+        if not stripped.isdigit():
+            continue
+
+        amount = parse_monto_argentino(next_text)
+        if amount is None:
+            continue
+
+        # Classify by X position of "pesos" word
+        if x0 >= _X_SALDO_MIN:
+            column = "saldo"
+        elif x0 >= _X_CREDIT_MIN:
+            column = "credito"
         else:
-            lines.append(current_line)
-            current_line = [w]
-            current_y = w["top"]
-    lines.append(current_line)
-    return lines
+            column = "debito"
+
+        y_key = round(w[1])
+        if y_key not in index:
+            index[y_key] = []
+        index[y_key].append({"column": column, "value": amount, "y0": w[1]})
+
+    return index
+
+
+def _find_amount_column(
+    amount_value: float,
+    y_hint: float | None,
+    index: dict[int, list[dict]],
+) -> str | None:
+    """Look up an amount's column classification from the coordinate index.
+
+    Matches by amount value with Y proximity tolerance.
+    """
+    if not index:
+        return None
+
+    # If we have a Y hint, search nearby Y keys first
+    if y_hint is not None:
+        y_center = round(y_hint)
+        for y_key in range(y_center - 3, y_center + 4):
+            entries = index.get(y_key)
+            if not entries:
+                continue
+            for entry in entries:
+                if abs(entry["value"] - amount_value) < 0.02:
+                    return entry["column"]
+
+    # Fallback: search all entries (slower but catches edge cases)
+    for entries in index.values():
+        for entry in entries:
+            if abs(entry["value"] - amount_value) < 0.02:
+                return entry["column"]
+
+    return None
+
+
+def _is_movement_page(page_text: str) -> bool:
+    """True if this page contains the movement table.
+
+    A page is a movement page if it has the column header row
+    (Movimiento + Débito) OR the section title "Movimientos en pesos".
+    Skip keywords are NOT checked here — mixed pages (e.g., movements above
+    "Detalle impositivo") are handled by the text parser stopping at
+    "Saldo total".
+    """
+    return ("Movimientos en pesos" in page_text
+            or ("Movimiento" in page_text and "Débito" in page_text))
+
+
+def _build_y_index_from_text(page) -> dict[str, float]:
+    """Build a mapping from 'pesos AMOUNT' text → approximate Y position.
+
+    Used to provide Y hints for amount column lookup.
+    """
+    raw_words = page.get_text("words")
+    if not raw_words:
+        return {}
+
+    words = sorted(raw_words, key=lambda w: (w[1], w[0]))
+    mapping: dict[str, float] = {}
+
+    for i, w in enumerate(words):
+        if w[4].strip().lower() == "pesos" and i + 1 < len(words):
+            next_w = words[i + 1]
+            if abs(next_w[1] - w[1]) <= 5:
+                amount_text = next_w[4].strip()
+                # Use "y0:amount" as key to handle same amount at different Y
+                key = f"{round(w[1])}:{amount_text}"
+                mapping[key] = w[1]
+
+    return mapping
 
 
 def _parse_santander_pdf(path: Path) -> tuple[list[dict], int]:
-    """Extrae movimientos de un PDF Santander usando PyMuPDF con coordenadas."""
+    """Extrae movimientos de un PDF Santander usando text + coordenadas."""
     records: list[dict] = []
     skipped = 0
 
@@ -111,44 +209,42 @@ def _parse_santander_pdf(path: Path) -> tuple[list[dict], int]:
         page = doc[page_num]
         page_text = page.get_text()
 
-        # Saltar páginas que no son de movimientos
-        if any(kw in page_text for kw in _SKIP_KEYWORDS):
+        # Skip non-movement pages
+        if not _is_movement_page(page_text):
             continue
 
-        # Extraer palabras con coordenadas: (x0, y0, x1, y1, word, ...)
-        raw_words = page.get_text("words")
-        if not raw_words:
-            continue
+        # Pass 1: Build amount column index from word coordinates
+        amount_index = _build_amount_index(page)
+        y_mapping = _build_y_index_from_text(page)
 
-        # Convertir a lista de dicts para mayor claridad
-        words = [
-            {"x0": w[0], "top": w[1], "x1": w[2], "bottom": w[3], "text": w[4]}
-            for w in raw_words
-        ]
+        # Pass 2: Parse text line by line
+        lines = page_text.split("\n")
 
-        # Ordenar por Y luego X
-        words.sort(key=lambda w: (w["top"], w["x0"]))
-
-        # Agrupar en líneas
-        lines = _group_words_by_y(words)
-
-        # Acumulador del movimiento en curso
+        # State for current movement being built
         current_fecha: str | None = None
         current_comp: str | None = None
         current_desc_parts: list[str] = []
         current_debito: float | None = None
         current_credito: float | None = None
         current_saldo: float | None = None
+        # Track pesos amounts seen for this movement (for fallback heuristic)
+        current_amounts: list[float] = []
+        current_amount_columns: list[str | None] = []
+
+        in_movements = False  # Track if we're inside the movements section
 
         def flush_record():
             nonlocal current_fecha, current_comp, current_desc_parts
             nonlocal current_debito, current_credito, current_saldo
+            nonlocal current_amounts, current_amount_columns, skipped
 
             if not current_fecha:
                 return
 
+            # Apply fallback heuristic if coordinate lookup didn't classify amounts
+            _apply_amount_fallback()
+
             if current_debito is None and current_credito is None:
-                nonlocal skipped
                 skipped += 1
             else:
                 if current_credito is not None:
@@ -156,14 +252,15 @@ def _parse_santander_pdf(path: Path) -> tuple[list[dict], int]:
                 else:
                     importe = -(current_debito or 0)
 
+                concepto = " ".join(current_desc_parts).strip()
                 records.append({
                     "fecha":       current_fecha,
                     "banco":       BANCO,
                     "cuenta":      CUENTA,
                     "cbu":         CBU,
                     "moneda":      MONEDA,
-                    "comprobante": safe_str(" ".join(current_comp)) if isinstance(current_comp, list) else safe_str(current_comp),
-                    "concepto":    safe_str(" ".join(current_desc_parts)),
+                    "comprobante": safe_str(current_comp),
+                    "concepto":    safe_str(concepto) if concepto else None,
                     "debito":      current_debito,
                     "credito":     current_credito,
                     "importe":     importe,
@@ -177,71 +274,185 @@ def _parse_santander_pdf(path: Path) -> tuple[list[dict], int]:
             current_debito = None
             current_credito = None
             current_saldo = None
+            current_amounts = []
+            current_amount_columns = []
 
-        for line_words in lines:
-            # Verificar si esta línea es la fila de headers → saltar
-            line_lower = {w["text"].lower() for w in line_words}
-            if line_lower & _HEADER_WORDS:
-                flush_record()
+        def _apply_amount_fallback():
+            """If coordinate lookup failed for some amounts, use positional heuristic.
+
+            Rules:
+            - If 2 amounts: first = débito or crédito, second = saldo
+            - If 3 amounts: débito, crédito, saldo (rare)
+            - The last amount is always saldo
+            """
+            nonlocal current_debito, current_credito, current_saldo
+
+            # Check if we have unclassified amounts
+            unclassified = [
+                (amt, col) for amt, col in zip(current_amounts, current_amount_columns)
+                if col is None
+            ]
+            if not unclassified:
+                return
+
+            # Re-process all amounts with positional heuristic
+            if len(current_amounts) >= 2:
+                # Last amount is always saldo
+                if current_saldo is None:
+                    current_saldo = current_amounts[-1]
+                # First amount(s) are débito or crédito
+                for amt in current_amounts[:-1]:
+                    if current_debito is None and current_credito is None:
+                        # Determine from saldo: if saldo > previous state, it's crédito
+                        # Simple heuristic: larger amounts tend to be créditos in this context
+                        # But safest: if we have saldo info from previous record, compare
+                        if records and records[-1].get("saldo") is not None:
+                            prev_saldo = records[-1]["saldo"]
+                            if current_saldo is not None:
+                                if current_saldo > prev_saldo:
+                                    current_credito = amt
+                                else:
+                                    current_debito = amt
+                            else:
+                                current_debito = amt
+                        else:
+                            current_debito = amt
+            elif len(current_amounts) == 1:
+                if current_saldo is None and current_debito is None and current_credito is None:
+                    current_saldo = current_amounts[0]
+
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            i += 1
+
+            if not line:
                 continue
 
-            # Buscar fecha en columna izquierda
-            fecha_word = next(
-                (w for w in line_words if w["x0"] <= _X_FECHA_MAX and _parse_fecha_santander(w["text"])),
-                None
-            )
+            # Section boundary detection — checked regardless of in_movements
+            # so that pages starting with "Saldo total" (spillover from
+            # previous page) don't accidentally re-enable via dólares headers.
+            if "Movimientos en pesos" in line:
+                in_movements = True
+                continue
 
-            if fecha_word:
-                # Nueva transacción — guardar la anterior
+            # End of pesos movements section — stop processing this page.
+            # "Saldo total" alone (not "Saldo total en cuentas…" from summary)
+            # marks the end of movements on this page.
+            if line == "Saldo total" or "Movimientos en dólares" in line:
                 flush_record()
-                current_fecha = _parse_fecha_santander(fecha_word["text"])
+                break
 
-                # Comprobante: columna siguiente (x ≈ 65–110)
-                comp_words = [
-                    w for w in line_words
-                    if _X_FECHA_MAX < w["x0"] <= _X_COMP_MAX
-                ]
-                current_comp = " ".join(w["text"] for w in comp_words) if comp_words else None
+            if not in_movements:
+                # Check if this line has the column header (pages 3+ don't have
+                # "Movimientos en pesos" but do have the table header)
+                if "Saldo en cuenta" in line:
+                    in_movements = True
+                continue
 
-                # Descripción: palabras en zona descripción (x > _X_DESC_MIN, x < _X_AMOUNT_MIN)
-                desc_words = [
-                    w for w in line_words
-                    if w["x0"] > _X_DESC_MIN and w["x0"] < _X_AMOUNT_MIN
-                ]
-                current_desc_parts = [w["text"] for w in desc_words]
+            # Skip page headers and table column headers
+            if line.startswith("Cuenta Corriente"):
+                continue
+            if line in ("Fecha", "Comprobante", "Movimiento", "Débito",
+                        "Crédito", "Saldo en cuenta"):
+                continue
+            # Skip combined header line fragments
+            if line.startswith("CBU:") or line.startswith("Acuerdo:") or line.startswith("Vencimiento:"):
+                continue
+            if line.startswith("Emisión"):
+                continue
+            if line.startswith("Desde:") or line.startswith("Hasta:"):
+                continue
+            if line.startswith("Total en "):
+                continue
+            if line == "Período":
+                continue
+            if line.startswith("* Salvo"):
+                continue
 
-            else:
-                # Línea de continuación (descripción multi-línea)
-                # Solo agregar si hay una transacción abierta y la línea no tiene montos
-                if current_fecha:
-                    desc_words = [
-                        w for w in line_words
-                        if w["x0"] > _X_DESC_MIN and w["x0"] < _X_AMOUNT_MIN
-                    ]
-                    if desc_words:
-                        current_desc_parts.extend(w["text"] for w in desc_words)
+            # Skip "Saldo Inicial" — not a real movement
+            if "Saldo Inicial" in line:
+                continue
 
-            # Procesar montos en esta línea (x0 ≥ _X_AMOUNT_MIN)
-            amount_words = [w for w in line_words if w["x0"] >= _X_AMOUNT_MIN]
-            for w in amount_words:
-                if w["text"].lower() == "pesos":
-                    continue  # etiqueta, no el número
-                if not _looks_like_monto(w["text"]):
+            # Check for "pesos AMOUNT" line
+            m_pesos = _RE_PESOS_AMOUNT.match(line)
+            if m_pesos:
+                amount_text = m_pesos.group(1)
+                amount = parse_monto_argentino(amount_text)
+                if amount is not None and current_fecha:
+                    # Try to find the Y position for this amount
+                    y_hint = None
+                    for y_key_str, y_val in y_mapping.items():
+                        if y_key_str.endswith(f":{amount_text}"):
+                            y_hint = y_val
+                            # Remove from mapping to avoid reuse
+                            del y_mapping[y_key_str]
+                            break
+
+                    column = _find_amount_column(amount, y_hint, amount_index)
+
+                    current_amounts.append(amount)
+                    current_amount_columns.append(column)
+
+                    if column == "debito":
+                        current_debito = amount
+                    elif column == "credito":
+                        current_credito = amount
+                    elif column == "saldo":
+                        current_saldo = amount
+                continue
+
+            # Check for date line (DD/MM/YY) — start of new movement
+            m_date = _RE_DATE.match(line)
+            if m_date:
+                date_str = m_date.group(1)
+                rest = m_date.group(2).strip()
+
+                fecha = _parse_fecha_santander(date_str)
+                if fecha:
+                    # Flush previous movement
+                    flush_record()
+
+                    current_fecha = fecha
+
+                    # Rest of the line may contain comprobante and/or description
+                    if rest:
+                        parts = rest.split(None, 1)
+                        # Check if first part is a comprobante (all digits)
+                        if parts and _RE_DIGITS_ONLY.match(parts[0]):
+                            current_comp = parts[0]
+                            # Remaining text after comprobante is description start
+                            if len(parts) > 1:
+                                current_desc_parts.append(parts[1])
+                        else:
+                            # No comprobante, all text is description
+                            current_desc_parts.append(rest)
+                    else:
+                        # Date-only line — peek at next line for comprobante
+                        if i < len(lines):
+                            next_line = lines[i].strip()
+                            if next_line and _RE_DIGITS_ONLY.match(next_line):
+                                current_comp = next_line
+                                i += 1
                     continue
 
-                monto = parse_monto_argentino(w["text"])
-                if monto is None:
+            # If we have an active movement, accumulate description text
+            if current_fecha and line:
+                # Skip lines that are just page numbers like "2 -  8"
+                if re.match(r'^\d+\s*-\s*\d+$', line):
                     continue
+                # Skip "pesos" alone (fragment from amount area, no number)
+                if line == "pesos":
+                    continue
+                # Skip standalone number that looks like Acuerdo amount
+                # (e.g., "25.000,00" from the page header "Acuerdo: pesos 25.000,00")
+                if not current_desc_parts and parse_monto_argentino(line) is not None:
+                    stripped = line.replace(".", "").replace(",", "")
+                    if stripped.isdigit():
+                        continue
+                current_desc_parts.append(line)
 
-                x = w["x0"]
-                if x < _X_DEBIT_MAX:
-                    current_debito = monto
-                elif x < _X_CREDIT_MAX:
-                    current_credito = monto
-                else:
-                    current_saldo = monto
-
-        # Guardar último registro de la página
+        # Flush last record on the page
         flush_record()
 
     doc.close()

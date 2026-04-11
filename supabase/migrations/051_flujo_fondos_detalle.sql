@@ -145,7 +145,9 @@ AS $$
         WHEN concepto_lower LIKE '%iva percepcion%' OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 'PERCEPCION IVA (RG 2408)'
         WHEN concepto_lower LIKE '%pago servicio por atm%'
-        THEN 'PAGO SERVICIO POR ATM'
+        THEN 'PAGO SERVICIO POR ATM (AFIP)'
+        WHEN concepto_lower LIKE '%pago servicios varios%'
+        THEN 'PAGO SERVICIOS VARIOS (AFIP)'
         WHEN concepto_lower LIKE '%federacion patr%'
         THEN 'FEDERACION PATRONAL (Seguro)'
         WHEN concepto_lower LIKE '%com. mant.%' OR concepto_lower LIKE '%com mant%'
@@ -160,6 +162,8 @@ AS $$
           OR concepto_lower LIKE '%sicoss%' OR concepto_lower LIKE '%ganancias%'
           OR concepto_lower LIKE '%monotributo%'
           OR concepto_lower LIKE '%iva percepcion%' OR concepto_lower LIKE '%iva%rg 2408%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
         THEN 'AFIP'
         WHEN concepto_lower LIKE '%arba%' OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%iibb%' OR concepto_lower LIKE '%retencion iibb%'
@@ -285,7 +289,8 @@ AS $$
       )
   ),
 
-  -- Bank credits that are inter-account transfers or Inviu
+  -- Bank credits that are own-company transfers or Inviu
+  -- Deposits (caja, efectivo, ATM) and interbancarias are now counted as income
   transf_banco_cred AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
@@ -294,14 +299,6 @@ AS $$
           OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
           OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
         THEN 'INVIU: ' || LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 34)
-        WHEN COALESCE(concepto, '') LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
-        THEN 'CREDITO TRASPASO CAJERO AUTOMATICO'
-        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
-        THEN 'DEPOSITO POR CAJA'
-        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
-        THEN 'DEPOSITO DE EFECTIVO'
-        WHEN COALESCE(concepto, '') LIKE 'CREDITO TRANSFERENCIA I%'
-        THEN 'CREDITO TRANSFERENCIA INTERBANCARIA'
         WHEN LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
         THEN 'CREDITO DESDE MERCADO PAGO'
         WHEN COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
@@ -323,12 +320,8 @@ AS $$
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
       AND (
-        -- Inter-account transfer patterns (credit side)
-        COALESCE(concepto, '') LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
-        OR COALESCE(concepto, '') LIKE 'CREDITO TRANSFERENCIA I%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        -- Own-company transfers (MP wallet → bank, other own accounts)
+        LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
         OR COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
         -- Inviu broker
         OR LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
@@ -337,7 +330,8 @@ AS $$
       )
   ),
 
-  -- MP transfers (retiro de dinero, transferencias, anulaciones)
+  -- MP transfers: only self-company + retiros (wallet→bank) + anulaciones
+  -- Third-party transfers are income (positive) or proveedores (negative)
   transf_mp AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
@@ -350,9 +344,18 @@ AS $$
     WHERE fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
       AND (
+        -- MP wallet → bank withdrawals (always internal)
         COALESCE(tipo_operacion, '') ILIKE '%Retiro de dinero%'
-        OR COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+        -- Reversals
         OR COALESCE(tipo_operacion, '') ILIKE '%Anulación%'
+        -- Only self-company transfers (to/from Nadal y Zaccaro)
+        OR (
+          COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+          AND (
+            LOWER(COALESCE(tipo_operacion, '')) LIKE '%nadal y zaccaro%'
+            OR COALESCE(tipo_operacion, '') LIKE '%30657033770%'
+          )
+        )
       )
   ),
 
@@ -365,8 +368,10 @@ AS $$
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
       'MP: ' || COALESCE(tipo_operacion, '') AS concepto,
       CASE
-        -- Proveedores: direct payments
+        -- Proveedores: direct payments + third-party transfers
         WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN 'proveedores'
+        WHEN COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
         THEN 'proveedores'
         -- Impuestos: tax retentions, perceptions, Créditos y Débitos
         WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
@@ -385,6 +390,8 @@ AS $$
       -- Subcategoria for impuestos
       CASE
         WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN NULL::text
+        WHEN COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
         THEN NULL::text
         WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
           OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%creditos y debitos%'
@@ -409,10 +416,17 @@ AS $$
     WHERE COALESCE(importe, 0) < 0
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      -- Exclude transfers (handled in transf_mp)
+      -- Exclude internal transfers (handled in transf_mp)
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
+      -- Only exclude self-company transfers (third-party = proveedores)
+      AND NOT (
+        COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+        AND (
+          LOWER(COALESCE(tipo_operacion, '')) LIKE '%nadal y zaccaro%'
+          OR COALESCE(tipo_operacion, '') LIKE '%30657033770%'
+        )
+      )
   ),
 
   -- =========================================================================
