@@ -192,6 +192,15 @@ AS $$
           OR concepto_lower LIKE '%p.serv%ente950%'
           -- Homebanking payments to Municipalidad
           OR concepto_lower LIKE '%p.serv%municipali%'
+          -- ATM/homebanking service payments (long format)
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          -- IIBB perceptions
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          -- IVA perceptions
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN monto ELSE 0
       END) AS impuestos,
 
@@ -234,6 +243,12 @@ AS $$
           OR concepto_lower LIKE '%retencion iibb%'
           OR concepto_lower LIKE '%p.serv%ente950%'
           OR concepto_lower LIKE '%p.serv%municipali%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 0
         -- Financial expense patterns
         WHEN concepto_lower LIKE '%comision%'
@@ -243,6 +258,9 @@ AS $$
           OR concepto_lower LIKE '%sellado%'
           OR concepto_lower LIKE '%amortizacion%prestamo%'
           OR concepto_lower LIKE '%cuota prestamo%'
+          OR concepto_lower LIKE '%federacion patr%'
+          OR concepto_lower LIKE '%com. mant.%'
+          OR concepto_lower LIKE '%com mant%'
         THEN monto ELSE 0
       END) AS financieros,
 
@@ -285,6 +303,12 @@ AS $$
           OR concepto_lower LIKE '%retencion iibb%'
           OR concepto_lower LIKE '%p.serv%ente950%'
           OR concepto_lower LIKE '%p.serv%municipali%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 0
         -- Financiero → skip
         WHEN concepto_lower LIKE '%comision%'
@@ -294,6 +318,9 @@ AS $$
           OR concepto_lower LIKE '%sellado%'
           OR concepto_lower LIKE '%amortizacion%prestamo%'
           OR concepto_lower LIKE '%cuota prestamo%'
+          OR concepto_lower LIKE '%federacion patr%'
+          OR concepto_lower LIKE '%com. mant.%'
+          OR concepto_lower LIKE '%com mant%'
         THEN 0
         -- Everything else = proveedores
         ELSE monto
