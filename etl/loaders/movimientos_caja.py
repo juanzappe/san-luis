@@ -58,8 +58,28 @@ def run(conn, logger, full: bool = False) -> int:
                 "tarjeta": safe_str(row.get("Tarjeta")),
             })
 
-    logger.info(f"  {len(all_records)} movimientos de caja a cargar")
+    # Deduplicate: source Excel files can contain repeated rows
+    before = len(all_records)
+    seen = set()
+    unique_records = []
+    for rec in all_records:
+        key = (
+            rec["fecha"],
+            rec["condicion_pago"],
+            rec["documento"],
+            rec["punto_venta"],
+            rec["numero"],
+            rec["importe"],
+            rec["tipo"],
+        )
+        if key not in seen:
+            seen.add(key)
+            unique_records.append(rec)
+    dupes = before - len(unique_records)
+    if dupes:
+        logger.info(f"  {dupes} duplicados eliminados del fuente ({before} → {len(unique_records)})")
+    logger.info(f"  {len(unique_records)} movimientos de caja a cargar")
 
     delete_all(conn, "movimiento_caja")
-    count = batch_insert(conn, "movimiento_caja", all_records)
+    count = batch_insert(conn, "movimiento_caja", unique_records)
     return count
