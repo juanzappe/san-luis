@@ -188,6 +188,10 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          -- Homebanking payments to AFIP (ENTE950 = AFIP code)
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          -- Homebanking payments to Municipalidad
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN monto ELSE 0
       END) AS impuestos,
 
@@ -228,6 +232,8 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN 0
         -- Financial expense patterns
         WHEN concepto_lower LIKE '%comision%'
@@ -277,6 +283,8 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN 0
         -- Financiero → skip
         WHEN concepto_lower LIKE '%comision%'
