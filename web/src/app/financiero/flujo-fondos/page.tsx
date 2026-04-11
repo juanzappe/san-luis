@@ -1,11 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart,
   Bar,
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  PieChart,
+  Pie,
+  Cell,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -484,6 +489,125 @@ export default function FlujoDeFondosPage() {
       {availableYears.length > 0 && (
         <DetallePorCategoria availableYears={availableYears} adjust={adjust} />
       )}
+
+      {/* ================================================================= */}
+      {/* LARGE CHARTS — below detail section                               */}
+      {/* ================================================================= */}
+
+      {/* Cobros vs Pagos — side by side bars */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Cobros vs Pagos (mensual)</CardTitle></CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              <Bar dataKey="totalCobros" name="Cobros" fill="#22c55e" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="totalPagos" name="Pagos" fill="#ef4444" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Composición de Egresos — stacked */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Composición de Egresos (mensual)</CardTitle></CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              <Bar dataKey="pagosProveedores" name="Proveedores" stackId="e" fill={COLORS.proveedores} />
+              <Bar dataKey="pagosSueldos" name="Sueldos" stackId="e" fill={COLORS.sueldos} />
+              <Bar dataKey="pagosImpuestos" name="Impuestos" stackId="e" fill={COLORS.impuestos} />
+              <Bar dataKey="pagosGastosFinancieros" name="Gtos. Financieros" stackId="e" fill={COLORS.financieros} />
+              <Bar dataKey="retirosSocios" name="Retiros Socios" stackId="e" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Flujo Neto Acumulado — area chart */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Flujo Neto Acumulado</CardTitle></CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={350}>
+            <AreaChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+              <Area type="monotone" dataKey="acumulado" name="Acumulado" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {/* Composición de Cobros — Pie/Donut chart */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Composición de Cobros (año actual)</CardTitle></CardHeader>
+        <CardContent className="flex justify-center">
+          <PieChartCobros data={data} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+const PIE_COLORS = ["#f59e0b", "#3b82f6", "#ef4444", "#8b5cf6"];
+
+function PieChartCobros({ data }: { data: FlujoDeFondosRow[] }) {
+  const pieData = useMemo(() => {
+    // Use last 12 months
+    const recent = data.slice(-12);
+    const values = [
+      { name: "Efectivo", value: recent.reduce((s, r) => s + r.cobrosEfectivo, 0) },
+      { name: "Bco. Provincia", value: recent.reduce((s, r) => s + r.cobrosBancoProvincia, 0) },
+      { name: "Bco. Santander", value: recent.reduce((s, r) => s + r.cobrosBancoSantander, 0) },
+      { name: "Mercado Pago", value: recent.reduce((s, r) => s + r.cobrosMP, 0) },
+    ];
+    return values.filter((v) => v.value > 0);
+  }, [data]);
+
+  if (pieData.length === 0) return <p className="text-muted-foreground">Sin datos</p>;
+
+  const total = pieData.reduce((s, d) => s + d.value, 0);
+
+  return (
+    <div className="flex flex-col items-center gap-4 lg:flex-row lg:gap-8">
+      <PieChart width={400} height={400}>
+        <Pie
+          data={pieData}
+          cx={200}
+          cy={200}
+          innerRadius={80}
+          outerRadius={160}
+          paddingAngle={2}
+          dataKey="value"
+          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+        >
+          {pieData.map((_, idx) => (
+            <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
+          ))}
+        </Pie>
+        <Tooltip formatter={(v) => formatARS(Number(v ?? 0))} />
+      </PieChart>
+      <div className="space-y-2">
+        {pieData.map((d, idx) => (
+          <div key={d.name} className="flex items-center gap-2">
+            <div className="h-3 w-3 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }} />
+            <span className="text-sm">{d.name}: {formatARS(d.value)} ({((d.value / total) * 100).toFixed(1)}%)</span>
+          </div>
+        ))}
+        <div className="border-t pt-2 font-medium text-sm">Total: {formatARS(total)}</div>
+      </div>
     </div>
   );
 }
