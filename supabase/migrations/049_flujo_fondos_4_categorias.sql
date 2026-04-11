@@ -125,10 +125,11 @@ AS $$
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%inviu%'
       -- =====================================================================
       -- EXCLUDE partner withdrawals (tracked separately in retiros CTE)
+      -- Note: "DEB LOTE ZACCARO FABIAN" is payroll, NOT a withdrawal —
+      -- only exclude transfers to personal accounts (N:NADAL/N:ZACCARO pattern)
       -- =====================================================================
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL ANDREA%'
       AND COALESCE(concepto, '') NOT LIKE '%N:ZACCARO FABIAN%'
-      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%zaccaro%'
   ),
 
   -- Classify each bank debit into one of: sueldos, impuestos, financieros, proveedores
@@ -187,6 +188,10 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          -- Homebanking payments to AFIP (ENTE950 = AFIP code)
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          -- Homebanking payments to Municipalidad
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN monto ELSE 0
       END) AS impuestos,
 
@@ -227,6 +232,8 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN 0
         -- Financial expense patterns
         WHEN concepto_lower LIKE '%comision%'
@@ -276,6 +283,8 @@ AS $$
           OR concepto_lower LIKE '%sindicato%'
           OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%retencion iibb%'
+          OR concepto_lower LIKE '%p.serv%ente950%'
+          OR concepto_lower LIKE '%p.serv%municipali%'
         THEN 0
         -- Financiero → skip
         WHEN concepto_lower LIKE '%comision%'
@@ -344,6 +353,8 @@ AS $$
   -- =========================================================================
   -- RETIROS SOCIOS
   -- =========================================================================
+  -- Retiros socios: only personal transfers to partner accounts
+  -- Excludes "DEB LOTE ZACCARO FABIAN" which is payroll (sueldos)
   retiros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(debito, 0)) AS total
@@ -354,9 +365,10 @@ AS $$
         COALESCE(concepto, '') LIKE '%N:NADAL ANDREA%'
         OR COALESCE(concepto, '') LIKE '%N:ZACCARO FABIAN%'
         OR LOWER(COALESCE(concepto, '')) LIKE '%nadal%andrea%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%zaccaro%fabian%'
-        OR LOWER(COALESCE(concepto, '')) LIKE '%zaccaro%'
       )
+      -- Exclude payroll batches that mention Zaccaro
+      AND COALESCE(concepto, '') NOT LIKE 'DEB LOTE ZACCARO%'
+      AND COALESCE(concepto, '') NOT LIKE '%PAGO DE HABERES%'
     GROUP BY 1
   )
 
