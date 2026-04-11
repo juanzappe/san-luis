@@ -63,6 +63,7 @@ interface Props {
 interface ConceptRow {
   concepto: string;
   subcategoria: string | null;
+  banco: "provincia" | "santander" | null;
   periods: Map<string, number>;
   total: number;
 }
@@ -90,24 +91,25 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
     return Array.from(set).sort();
   }, [allData]);
 
-  // Filter by category, apply inflation, group by concept
+  // Filter by category, apply inflation, group by concept + banco
   const { rows, grandTotal } = useMemo(() => {
     const filtered = allData.filter((r) => r.categoria === categoria);
     const map = new Map<string, ConceptRow>();
 
     for (const r of filtered) {
       const adj = adjust(r.monto, r.periodo);
-      const key = r.concepto;
+      // Key by concepto + banco so same concept in different banks stays separate
+      const bancoKey = r.banco ?? "mp";
+      const key = `${r.concepto}||${bancoKey}`;
       const existing = map.get(key);
       if (existing) {
         existing.periods.set(r.periodo, (existing.periods.get(r.periodo) ?? 0) + adj);
         existing.total += adj;
-        // Keep first non-null subcategoria
         if (!existing.subcategoria && r.subcategoria) existing.subcategoria = r.subcategoria;
       } else {
         const periods = new Map<string, number>();
         periods.set(r.periodo, adj);
-        map.set(key, { concepto: key, subcategoria: r.subcategoria, periods, total: adj });
+        map.set(key, { concepto: r.concepto, subcategoria: r.subcategoria, banco: r.banco, periods, total: adj });
       }
     }
 
@@ -129,10 +131,11 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
 
   // Top 10 for chart
   const top10 = useMemo(() =>
-    rows.slice(0, 10).map((r) => ({
-      concepto: r.concepto.length > 30 ? r.concepto.slice(0, 28) + "…" : r.concepto,
-      total: r.total,
-    })),
+    rows.slice(0, 10).map((r) => {
+      const label = r.concepto.length > 25 ? r.concepto.slice(0, 23) + "…" : r.concepto;
+      const suffix = r.banco === "provincia" ? " [Prov]" : r.banco === "santander" ? " [Sant]" : r.banco === null && r.concepto.startsWith("MP:") ? "" : "";
+      return { concepto: label + suffix, total: r.total };
+    }),
   [rows]);
 
   // Group rows by subcategoria for impuestos and transferencias
@@ -223,6 +226,7 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="min-w-[200px]">Concepto</TableHead>
+                    <TableHead>Fuente</TableHead>
                     {showBeneficiario && <TableHead>Beneficiario</TableHead>}
                     {allPeriods.map((p) => (
                       <TableHead key={p} className="text-right whitespace-nowrap">{shortLabel(p)}</TableHead>
@@ -267,6 +271,7 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
                   {/* Grand total row */}
                   <TableRow className="bg-muted/50 font-bold">
                     <TableCell>Total</TableCell>
+                    <TableCell />
                     {showBeneficiario && <TableCell />}
                     {allPeriods.map((p) => (
                       <TableCell key={p} className="text-right">
@@ -319,6 +324,17 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
 // Sub-components
 // ---------------------------------------------------------------------------
 
+const BANCO_BADGE: Record<string, { label: string; className: string }> = {
+  provincia: { label: "Prov", className: "bg-blue-100 text-blue-700" },
+  santander: { label: "Sant", className: "bg-red-100 text-red-700" },
+};
+
+function BancoBadge({ banco }: { banco: "provincia" | "santander" | null }) {
+  if (!banco) return <span className="inline-block rounded px-1.5 py-0.5 text-[10px] font-medium bg-purple-100 text-purple-700">MP</span>;
+  const b = BANCO_BADGE[banco];
+  return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium ${b.className}`}>{b.label}</span>;
+}
+
 function ConceptTableRow({
   row, periods, showBeneficiario,
 }: {
@@ -329,6 +345,7 @@ function ConceptTableRow({
       <TableCell className="font-medium whitespace-nowrap text-sm" title={row.concepto}>
         {row.concepto.length > 40 ? row.concepto.slice(0, 38) + "…" : row.concepto}
       </TableCell>
+      <TableCell><BancoBadge banco={row.banco} /></TableCell>
       {showBeneficiario && (
         <TableCell className="text-sm">{row.subcategoria ?? "—"}</TableCell>
       )}
@@ -357,7 +374,8 @@ function ConceptGroup({
   subPeriodTotals: Map<string, number>;
   showBeneficiario: boolean;
 }) {
-  const colSpan = 1 + (showBeneficiario ? 1 : 0) + periods.length + 1;
+  // +1 for the Fuente column
+  const colSpan = 2 + (showBeneficiario ? 1 : 0) + periods.length + 1;
   return (
     <>
       {/* Group header */}
@@ -368,11 +386,12 @@ function ConceptGroup({
       </TableRow>
       {/* Items */}
       {items.map((r) => (
-        <ConceptTableRow key={r.concepto} row={r} periods={periods} showBeneficiario={showBeneficiario} />
+        <ConceptTableRow key={`${r.concepto}||${r.banco ?? "mp"}`} row={r} periods={periods} showBeneficiario={showBeneficiario} />
       ))}
       {/* Subtotal row */}
       <TableRow className="border-b-2">
         <TableCell className="font-medium text-sm">Subtotal {title}</TableCell>
+        <TableCell />
         {showBeneficiario && <TableCell />}
         {periods.map((p) => (
           <TableCell key={p} className="text-right text-sm font-medium tabular-nums">
