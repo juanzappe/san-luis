@@ -72,6 +72,7 @@ const navigation: NavItem[] = [
     icon: Wallet,
     children: [
       { label: "Flujo de Fondos", href: "/financiero/flujo-fondos" },
+      { label: "Tesorería", href: "/financiero/tesoreria" },
       { label: "Tenencias", href: "/financiero/tenencias" },
       { label: "Cuentas por Pagar", href: "/financiero/cuentas-pagar" },
       { label: "Cuentas por Cobrar", href: "/financiero/cuentas-cobrar" },

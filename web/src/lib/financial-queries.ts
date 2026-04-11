@@ -613,3 +613,73 @@ export async function fetchFlujoDeFondosDetalle(anio: number): Promise<FFDetalle
     banco: r.banco ? (String(r.banco) as "provincia" | "santander") : null,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// 10. Tesorería — Inversiones actuales
+// ---------------------------------------------------------------------------
+
+export interface InversionRow {
+  nombre: string;
+  ticker: string | null;
+  moneda: string;
+  disponibles: number;
+  valuacionMonto: number;
+  valuacionUsd: number;
+  fechaValuacion: string | null;
+}
+
+export async function fetchInversionesActuales(): Promise<InversionRow[]> {
+  const rows = await fetchWithRetry(async () => {
+    // Get the latest fecha_valuacion
+    const maxRes = await supabase
+      .from("inversion")
+      .select("fecha_valuacion")
+      .order("fecha_valuacion", { ascending: false })
+      .limit(1);
+    if (maxRes.error) throw maxRes.error;
+    const maxFecha = maxRes.data?.[0]?.fecha_valuacion;
+    if (!maxFecha) return [];
+
+    const res = await supabase
+      .from("inversion")
+      .select("nombre, ticker, moneda, disponibles, valuacion_monto, valuacion_usd, fecha_valuacion")
+      .eq("fecha_valuacion", maxFecha)
+      .order("valuacion_monto", { ascending: false });
+    if (res.error) throw res.error;
+    return res.data ?? [];
+  });
+
+  return rows.map((r: Record<string, unknown>) => ({
+    nombre: String(r.nombre ?? ""),
+    ticker: r.ticker ? String(r.ticker) : null,
+    moneda: String(r.moneda ?? "ARS"),
+    disponibles: Number(r.disponibles) || 0,
+    valuacionMonto: Number(r.valuacion_monto) || 0,
+    valuacionUsd: Number(r.valuacion_usd) || 0,
+    fechaValuacion: r.fecha_valuacion ? String(r.fecha_valuacion) : null,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// 11. Tesorería — Evolución de saldos bancarios
+// ---------------------------------------------------------------------------
+
+export interface EvolucionSaldoRow {
+  periodo: string;
+  banco: string;
+  saldo: number;
+}
+
+export async function fetchEvolucionSaldos(meses: number = 12): Promise<EvolucionSaldoRow[]> {
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_evolucion_saldos", { p_meses: meses });
+    if (res.error) throw res.error;
+    return (res.data ?? []) as { periodo: string; banco: string; saldo: number }[];
+  });
+
+  return rows.map((r) => ({
+    periodo: String(r.periodo),
+    banco: String(r.banco),
+    saldo: Number(r.saldo) || 0,
+  }));
+}
