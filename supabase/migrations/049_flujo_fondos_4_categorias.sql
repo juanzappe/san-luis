@@ -345,8 +345,7 @@ AS $$
     GROUP BY 1
   ),
 
-  -- MP: tax payments (Imp. al Cheque / Créditos y Débitos via MP)
-  -- movimiento_mp only has tipo_operacion as text descriptor (no concepto column)
+  -- MP: tax payments (Créditos y Débitos + retentions + tax-related operations)
   mp_impuestos AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
@@ -357,12 +356,21 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+      AND (
+        COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+      )
     GROUP BY 1
   ),
 
-  -- MP: platform costs = financial expenses (commissions, withholdings, fees)
-  -- Everything negative that is NOT: retiro, pago/mov general, transfer, anulación, impuestos
+  -- MP: platform costs = financial expenses (commissions, fees)
+  -- Residual after excluding: transfers, pagos, and tax-related operations
   mp_financieros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
@@ -373,7 +381,17 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Créditos y Débitos%'
+      -- Exclude tax-related (captured by mp_impuestos)
+      AND NOT (
+        COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+      )
     GROUP BY 1
   ),
 

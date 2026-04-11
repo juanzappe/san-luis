@@ -358,62 +358,61 @@ AS $$
 
   -- =========================================================================
   -- MP MOVEMENTS — classified (operational)
+  -- Single CTE with CASE WHEN for cleaner classification.
   -- =========================================================================
-
-  -- MP proveedores: Pago + Movimiento General
-  mp_prov AS (
-    SELECT
-      TO_CHAR(fecha, 'YYYY-MM') AS periodo,
-      'MP: ' || COALESCE(tipo_operacion, 'Pago') AS concepto,
-      'proveedores'::text AS categoria,
-      NULL::text AS subcategoria,
-      ABS(COALESCE(importe, 0)) AS monto,
-      'mp'::text AS fuente
-    FROM movimiento_mp
-    WHERE COALESCE(importe, 0) < 0
-      AND fecha >= (p_anio || '-01-01')::date
-      AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
-  ),
-
-  -- MP impuestos: Créditos y Débitos
-  mp_imp AS (
+  mp_clasificado AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
       'MP: ' || COALESCE(tipo_operacion, '') AS concepto,
-      'impuestos'::text AS categoria,
-      'Imp. al Cheque'::text AS subcategoria,
+      CASE
+        -- Proveedores: direct payments
+        WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN 'proveedores'
+        -- Impuestos: tax retentions, perceptions, Créditos y Débitos
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%creditos y debitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+        THEN 'impuestos'
+        -- Financieros: everything else (platform costs, commissions, fees)
+        ELSE 'financieros'
+      END AS categoria,
+      -- Subcategoria for impuestos
+      CASE
+        WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN NULL::text
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%creditos y debitos%'
+        THEN 'Imp. al Cheque'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        THEN 'ARBA'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+        THEN 'Otros'
+        ELSE NULL::text
+      END AS subcategoria,
       ABS(COALESCE(importe, 0)) AS monto,
       'mp'::text AS fuente
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
+      -- Exclude transfers (handled in transf_mp)
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
-  ),
-
-  -- MP financieros: platform costs (everything else negative)
-  mp_fin AS (
-    SELECT
-      TO_CHAR(fecha, 'YYYY-MM') AS periodo,
-      'MP: ' || COALESCE(tipo_operacion, '') AS concepto,
-      'financieros'::text AS categoria,
-      NULL::text AS subcategoria,
-      ABS(COALESCE(importe, 0)) AS monto,
-      'mp'::text AS fuente
-    FROM movimiento_mp
-    WHERE COALESCE(importe, 0) < 0
-      AND fecha >= (p_anio || '-01-01')::date
-      AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Créditos y Débitos%'
   ),
 
   -- =========================================================================
@@ -430,11 +429,7 @@ AS $$
     UNION ALL
     SELECT * FROM transf_mp
     UNION ALL
-    SELECT * FROM mp_prov
-    UNION ALL
-    SELECT * FROM mp_imp
-    UNION ALL
-    SELECT * FROM mp_fin
+    SELECT * FROM mp_clasificado
   )
 
   SELECT
