@@ -17,6 +17,8 @@ export interface FlujoDeFondosRow {
   periodo: string;
   cobrosEfectivo: number;
   cobrosBanco: number;
+  cobrosBancoProvincia: number;
+  cobrosBancoSantander: number;
   cobrosMP: number;
   totalCobros: number;
   pagosProveedores: number;
@@ -24,6 +26,8 @@ export interface FlujoDeFondosRow {
   pagosImpuestos: number;
   pagosGastosFinancieros: number;
   totalPagos: number;
+  pagosProvincia: number;
+  pagosSantander: number;
   flujoNeto: number;
   acumulado: number;
   retirosSocios: number;
@@ -34,11 +38,15 @@ type RpcFlujoRow = {
   periodo: string;
   cobros_efectivo: number;
   cobros_banco: number;
+  cobros_banco_provincia: number;
+  cobros_banco_santander: number;
   cobros_mp: number;
   pagos_proveedores: number;
   pagos_sueldos: number;
   pagos_impuestos: number;
   pagos_gastos_financieros: number;
+  pagos_provincia: number;
+  pagos_santander: number;
   retiros_socios: number;
 };
 
@@ -54,6 +62,8 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
   return rows.map((r) => {
     const cobrosEfectivo = Number(r.cobros_efectivo) || 0;
     const cobrosBanco = Number(r.cobros_banco) || 0;
+    const cobrosBancoProvincia = Number(r.cobros_banco_provincia) || 0;
+    const cobrosBancoSantander = Number(r.cobros_banco_santander) || 0;
     const cobrosMP = Number(r.cobros_mp) || 0;
     const totalCobros = cobrosEfectivo + cobrosBanco + cobrosMP;
 
@@ -62,6 +72,8 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     const pagosImpuestos = Number(r.pagos_impuestos) || 0;
     const pagosGastosFinancieros = Number(r.pagos_gastos_financieros) || 0;
     const totalPagos = pagosProveedores + pagosSueldos + pagosImpuestos + pagosGastosFinancieros;
+    const pagosProvincia = Number(r.pagos_provincia) || 0;
+    const pagosSantander = Number(r.pagos_santander) || 0;
     const retirosSocios = Number(r.retiros_socios) || 0;
 
     const flujoNeto = totalCobros - totalPagos;
@@ -69,8 +81,10 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
 
     return {
       periodo: r.periodo,
-      cobrosEfectivo, cobrosBanco, cobrosMP, totalCobros,
-      pagosProveedores, pagosSueldos, pagosImpuestos, pagosGastosFinancieros, totalPagos,
+      cobrosEfectivo, cobrosBanco, cobrosBancoProvincia, cobrosBancoSantander,
+      cobrosMP, totalCobros,
+      pagosProveedores, pagosSueldos, pagosImpuestos, pagosGastosFinancieros,
+      totalPagos, pagosProvincia, pagosSantander,
       flujoNeto,
       acumulado: acum,
       retirosSocios,
@@ -566,6 +580,7 @@ export interface FFDetalleRow {
   subcategoria: string | null;
   monto: number;
   fuente: "banco" | "mp";
+  banco: "provincia" | "santander" | null;
 }
 
 type RpcFFDetalleRow = {
@@ -575,6 +590,7 @@ type RpcFFDetalleRow = {
   subcategoria: string | null;
   monto: number;
   fuente: string;
+  banco: string | null;
 };
 
 export async function fetchFlujoDeFondosDetalle(anio: number): Promise<FFDetalleRow[]> {
@@ -590,5 +606,6 @@ export async function fetchFlujoDeFondosDetalle(anio: number): Promise<FFDetalle
     subcategoria: r.subcategoria ? String(r.subcategoria) : null,
     monto: Number(r.monto) || 0,
     fuente: String(r.fuente) as "banco" | "mp",
+    banco: r.banco ? (String(r.banco) as "provincia" | "santander") : null,
   }));
 }

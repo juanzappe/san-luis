@@ -54,6 +54,8 @@ const COLORS = {
   pagos: "#ef4444",
   efectivo: "#f59e0b",
   banco: "#3b82f6",
+  provincia: "#3b82f6",
+  santander: "#ef4444",
   mp: "#8b5cf6",
   proveedores: "#ef4444",
   sueldos: "#f97316",
@@ -83,6 +85,8 @@ interface AggregatedFlujo {
   label: string;
   cobrosEfectivo: number;
   cobrosBanco: number;
+  cobrosBancoProvincia: number;
+  cobrosBancoSantander: number;
   cobrosMP: number;
   totalCobros: number;
   pagosProveedores: number;
@@ -90,6 +94,8 @@ interface AggregatedFlujo {
   pagosImpuestos: number;
   pagosGastosFinancieros: number;
   totalPagos: number;
+  pagosProvincia: number;
+  pagosSantander: number;
   flujoNeto: number;
   acumulado: number;
   retirosSocios: number;
@@ -110,13 +116,16 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     const cur = buckets.get(bucketKey) ?? {
       key: bucketKey,
       label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
-      cobrosEfectivo: 0, cobrosBanco: 0, cobrosMP: 0, totalCobros: 0,
+      cobrosEfectivo: 0, cobrosBanco: 0, cobrosBancoProvincia: 0, cobrosBancoSantander: 0,
+      cobrosMP: 0, totalCobros: 0,
       pagosProveedores: 0, pagosSueldos: 0, pagosImpuestos: 0, pagosGastosFinancieros: 0,
-      totalPagos: 0, flujoNeto: 0,
-      acumulado: 0, retirosSocios: 0,
+      totalPagos: 0, pagosProvincia: 0, pagosSantander: 0,
+      flujoNeto: 0, acumulado: 0, retirosSocios: 0,
     };
     cur.cobrosEfectivo += r.cobrosEfectivo;
     cur.cobrosBanco += r.cobrosBanco;
+    cur.cobrosBancoProvincia += r.cobrosBancoProvincia;
+    cur.cobrosBancoSantander += r.cobrosBancoSantander;
     cur.cobrosMP += r.cobrosMP;
     cur.totalCobros += r.totalCobros;
     cur.pagosProveedores += r.pagosProveedores;
@@ -125,6 +134,8 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     cur.pagosGastosFinancieros += r.pagosGastosFinancieros;
     cur.retirosSocios += r.retirosSocios;
     cur.totalPagos += r.totalPagos;
+    cur.pagosProvincia += r.pagosProvincia;
+    cur.pagosSantander += r.pagosSantander;
     cur.flujoNeto += r.flujoNeto;
     cur.acumulado = r.acumulado; // last row in bucket = end-of-period cumulative
     buckets.set(bucketKey, cur);
@@ -213,6 +224,8 @@ export default function FlujoDeFondosPage() {
   const data: FlujoDeFondosRow[] = raw.map((r) => {
     const ce = adjust(r.cobrosEfectivo, r.periodo);
     const cb = adjust(r.cobrosBanco, r.periodo);
+    const cbp = adjust(r.cobrosBancoProvincia, r.periodo);
+    const cbs = adjust(r.cobrosBancoSantander, r.periodo);
     const cm = adjust(r.cobrosMP, r.periodo);
     const tc = ce + cb + cm;
     const pp = adjust(r.pagosProveedores, r.periodo);
@@ -220,13 +233,17 @@ export default function FlujoDeFondosPage() {
     const im = adjust(r.pagosImpuestos, r.periodo);
     const gf = adjust(r.pagosGastosFinancieros, r.periodo);
     const tp = pp + su + im + gf;
+    const pProv = adjust(r.pagosProvincia, r.periodo);
+    const pSant = adjust(r.pagosSantander, r.periodo);
     const rs = adjust(r.retirosSocios, r.periodo);
     const fn = tc - tp;
     acum += fn;
     return {
       periodo: r.periodo,
-      cobrosEfectivo: ce, cobrosBanco: cb, cobrosMP: cm, totalCobros: tc,
-      pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf, totalPagos: tp,
+      cobrosEfectivo: ce, cobrosBanco: cb, cobrosBancoProvincia: cbp, cobrosBancoSantander: cbs,
+      cobrosMP: cm, totalCobros: tc,
+      pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf,
+      totalPagos: tp, pagosProvincia: pProv, pagosSantander: pSant,
       flujoNeto: fn, acumulado: acum, retirosSocios: rs,
     };
   });
@@ -341,7 +358,8 @@ export default function FlujoDeFondosPage() {
                 <Tooltip formatter={arsTooltip} />
                 <Legend />
                 <Bar dataKey="cobrosEfectivo" name="Efectivo" stackId="c" fill={COLORS.efectivo} />
-                <Bar dataKey="cobrosBanco" name="Banco" stackId="c" fill={COLORS.banco} />
+                <Bar dataKey="cobrosBancoProvincia" name="Bco. Provincia" stackId="c" fill={COLORS.provincia} />
+                <Bar dataKey="cobrosBancoSantander" name="Bco. Santander" stackId="c" fill={COLORS.santander} />
                 <Bar dataKey="cobrosMP" name="Mercado Pago" stackId="c" fill={COLORS.mp} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -371,6 +389,24 @@ export default function FlujoDeFondosPage() {
         </Card>
       </div>
 
+      {/* Pagos por banco */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">Pagos por Banco (débitos clasificados, sin MP)</CardTitle></CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={350}>
+            <BarChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+              <XAxis dataKey="label" fontSize={12} />
+              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+              <Tooltip formatter={arsTooltip} />
+              <Legend />
+              <Bar dataKey="pagosProvincia" name="Bco. Provincia" stackId="bank" fill={COLORS.provincia} />
+              <Bar dataKey="pagosSantander" name="Bco. Santander" stackId="bank" fill={COLORS.santander} radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
       {/* Table with granularity selector */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
@@ -398,7 +434,8 @@ export default function FlujoDeFondosPage() {
                 <TableRow>
                   <TableHead>Período</TableHead>
                   <TableHead className="text-right">Efectivo</TableHead>
-                  <TableHead className="text-right">Banco</TableHead>
+                  <TableHead className="text-right">Provincia</TableHead>
+                  <TableHead className="text-right">Santander</TableHead>
                   <TableHead className="text-right">MP</TableHead>
                   <TableHead className="text-right font-bold">Cobros</TableHead>
                   <TableHead className="text-right">Proveedores</TableHead>
@@ -416,7 +453,8 @@ export default function FlujoDeFondosPage() {
                   <TableRow key={r.key}>
                     <TableCell className="font-medium whitespace-nowrap">{r.label}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cobrosEfectivo)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cobrosBanco)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.cobrosBancoProvincia)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.cobrosBancoSantander)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.cobrosMP)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalCobros)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.pagosProveedores)}</TableCell>
