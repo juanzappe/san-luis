@@ -552,3 +552,43 @@ export async function insertSaldoManual(
     .insert({ cuenta, saldo, fecha, nota: nota.trim() || null });
   if (res.error) throw res.error;
 }
+
+// ---------------------------------------------------------------------------
+// 9. Flujo de Fondos — Detalle por categoría
+// ---------------------------------------------------------------------------
+
+export type CategoriaFlujo = "proveedores" | "sueldos" | "impuestos" | "financieros" | "retiros";
+
+export interface FFDetalleRow {
+  periodo: string;
+  concepto: string;
+  categoria: CategoriaFlujo;
+  subcategoria: string | null;
+  monto: number;
+  fuente: "banco" | "mp";
+}
+
+type RpcFFDetalleRow = {
+  periodo: string;
+  concepto: string;
+  categoria: string;
+  subcategoria: string | null;
+  monto: number;
+  fuente: string;
+};
+
+export async function fetchFlujoDeFondosDetalle(anio: number): Promise<FFDetalleRow[]> {
+  const rows = await fetchWithRetry(async () => {
+    const res = await supabase.rpc("get_flujo_fondos_detalle", { p_anio: anio });
+    if (res.error) throw res.error;
+    return (res.data ?? []) as RpcFFDetalleRow[];
+  });
+  return rows.map((r) => ({
+    periodo: String(r.periodo),
+    concepto: String(r.concepto ?? ""),
+    categoria: String(r.categoria) as CategoriaFlujo,
+    subcategoria: r.subcategoria ? String(r.subcategoria) : null,
+    monto: Number(r.monto) || 0,
+    fuente: String(r.fuente) as "banco" | "mp",
+  }));
+}

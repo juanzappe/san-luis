@@ -19,6 +19,8 @@ import {
   ArrowUpCircle,
   TrendingUp,
   Sigma,
+  Scale,
+  Calendar,
   Loader2,
   AlertCircle,
 } from "lucide-react";
@@ -31,13 +33,16 @@ import { InflationToggle, useInflation } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type FlujoDeFondosRow,
+  type SaldoCuenta,
   fetchFlujoDeFondos,
+  fetchSaldosCuentas,
   formatARS,
   formatPct,
   pctDelta,
   periodoLabel,
   shortLabel,
 } from "@/lib/financial-queries";
+import { DetallePorCategoria } from "./detalle-categoria";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -129,10 +134,12 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
 }
 
 function KpiCard({
-  title, value, delta, icon: Icon, invertDelta,
+  title, value, delta, icon: Icon, invertDelta, format, subtitle,
 }: {
-  title: string; value: number; delta: number | null; icon: React.ElementType; invertDelta?: boolean;
+  title: string; value: number; delta: number | null; icon: React.ElementType;
+  invertDelta?: boolean; format?: (v: number) => string; subtitle?: string;
 }) {
+  const fmt = format ?? formatARS;
   const good = delta !== null && (invertDelta ? delta < 0 : delta > 0);
   const bad = delta !== null && (invertDelta ? delta > 0 : delta < 0);
   return (
@@ -142,8 +149,10 @@ function KpiCard({
         <Icon className="h-4 w-4 text-muted-foreground" />
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{formatARS(value)}</div>
-        {delta !== null ? (
+        <div className="text-2xl font-bold">{fmt(value)}</div>
+        {subtitle ? (
+          <p className="text-xs text-muted-foreground">{subtitle}</p>
+        ) : delta !== null ? (
           <p className={`text-xs ${good ? "text-green-600" : bad ? "text-red-600" : "text-muted-foreground"}`}>
             {formatPct(delta)} vs mes anterior
           </p>
@@ -158,14 +167,18 @@ function KpiCard({
 export default function FlujoDeFondosPage() {
   const { adjust } = useInflation();
   const [raw, setRaw] = useState<FlujoDeFondosRow[]>([]);
+  const [saldos, setSaldos] = useState<SaldoCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
 
   useEffect(() => {
-    fetchFlujoDeFondos()
-      .then(setRaw)
+    Promise.all([
+      fetchFlujoDeFondos(),
+      fetchSaldosCuentas().catch(() => [] as SaldoCuenta[]),
+    ])
+      .then(([ff, sc]) => { setRaw(ff); setSaldos(sc); })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
@@ -225,6 +238,21 @@ export default function FlujoDeFondosPage() {
   const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
   const acum12 = data.slice(-12).reduce((s, r) => s + r.flujoNeto, 0);
 
+  // Ratio de cobertura: Cobros / Pagos
+  const ratioActual = last.totalPagos > 0 ? last.totalCobros / last.totalPagos : 0;
+  const ratioPrev = prev && prev.totalPagos > 0 ? prev.totalCobros / prev.totalPagos : null;
+  const ratioDelta = ratioPrev !== null ? ((ratioActual - ratioPrev) / ratioPrev) * 100 : null;
+
+  // Días de caja: saldo total / promedio pagos diarios (últimos 3 meses)
+  const saldoTotal = saldos.reduce((s, c) => s + c.saldoArs, 0);
+  const last3 = data.slice(-3);
+  const avgMonthlyPagos = last3.length > 0 ? last3.reduce((s, r) => s + r.totalPagos, 0) / last3.length : 0;
+  const avgDailyPagos = avgMonthlyPagos / 30;
+  const diasDeCaja = avgDailyPagos > 0 ? Math.round(saldoTotal / avgDailyPagos) : 0;
+
+  // Available years for detail component
+  const availableYears = Array.from(new Set(data.map((r) => parseInt(r.periodo.slice(0, 4))))).sort((a, b) => b - a);
+
   const chartData = data.slice(-24).map((r) => ({ ...r, label: shortLabel(r.periodo) }));
 
   return (
@@ -241,11 +269,27 @@ export default function FlujoDeFondosPage() {
       </div>
 
       {/* KPIs — reflejan el mes seleccionado */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <KpiCard title="Total Cobrado" value={last.totalCobros} delta={prev ? pctDelta(last.totalCobros, prev.totalCobros) : null} icon={ArrowDownCircle} />
         <KpiCard title="Total Pagado" value={last.totalPagos} delta={prev ? pctDelta(last.totalPagos, prev.totalPagos) : null} icon={ArrowUpCircle} invertDelta />
         <KpiCard title="Flujo Neto" value={last.flujoNeto} delta={prev ? pctDelta(last.flujoNeto, prev.flujoNeto) : null} icon={TrendingUp} />
         <KpiCard title="Acumulado 12m" value={acum12} delta={null} icon={Sigma} />
+        <KpiCard
+          title="Ratio de Cobertura"
+          value={ratioActual}
+          delta={ratioDelta}
+          icon={Scale}
+          format={(v) => `${v.toFixed(2)}x`}
+          subtitle={ratioActual >= 1 ? "Cobrás más de lo que pagás" : "Pagás más de lo que cobrás"}
+        />
+        <KpiCard
+          title="Días de Caja"
+          value={diasDeCaja}
+          delta={null}
+          icon={Calendar}
+          format={(v) => `${v} días`}
+          subtitle={saldos.length > 0 ? `Saldo: ${formatARS(saldoTotal)}` : "Sin datos de saldos"}
+        />
       </div>
 
       {/* Main charts — full width */}
@@ -390,6 +434,11 @@ export default function FlujoDeFondosPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Detalle por categoría */}
+      {availableYears.length > 0 && (
+        <DetallePorCategoria availableYears={availableYears} adjust={adjust} />
+      )}
     </div>
   );
 }
