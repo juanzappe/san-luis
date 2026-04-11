@@ -62,6 +62,7 @@ const COLORS = {
   impuestos: "#06b6d4",
   financieros: "#64748b",
   retirosSocios: "#d946ef",
+  transferencias: "#8b5cf6",
   neto: "#3b82f6",
 };
 
@@ -99,6 +100,7 @@ interface AggregatedFlujo {
   flujoNeto: number;
   acumulado: number;
   retirosSocios: number;
+  transferencias: number;
 }
 
 function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granularity): AggregatedFlujo[] {
@@ -120,7 +122,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
       cobrosMP: 0, totalCobros: 0,
       pagosProveedores: 0, pagosSueldos: 0, pagosImpuestos: 0, pagosGastosFinancieros: 0,
       totalPagos: 0, pagosProvincia: 0, pagosSantander: 0,
-      flujoNeto: 0, acumulado: 0, retirosSocios: 0,
+      flujoNeto: 0, acumulado: 0, retirosSocios: 0, transferencias: 0,
     };
     cur.cobrosEfectivo += r.cobrosEfectivo;
     cur.cobrosBanco += r.cobrosBanco;
@@ -133,6 +135,7 @@ function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granulari
     cur.pagosImpuestos += r.pagosImpuestos;
     cur.pagosGastosFinancieros += r.pagosGastosFinancieros;
     cur.retirosSocios += r.retirosSocios;
+    cur.transferencias += r.transferencias;
     cur.totalPagos += r.totalPagos;
     cur.pagosProvincia += r.pagosProvincia;
     cur.pagosSantander += r.pagosSantander;
@@ -236,6 +239,7 @@ export default function FlujoDeFondosPage() {
     const pProv = adjust(r.pagosProvincia, r.periodo);
     const pSant = adjust(r.pagosSantander, r.periodo);
     const rs = adjust(r.retirosSocios, r.periodo);
+    const tr = adjust(r.transferencias, r.periodo);
     const fn = tc - tp;
     acum += fn;
     return {
@@ -244,7 +248,7 @@ export default function FlujoDeFondosPage() {
       cobrosMP: cm, totalCobros: tc,
       pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf,
       totalPagos: tp, pagosProvincia: pProv, pagosSantander: pSant,
-      flujoNeto: fn, acumulado: acum, retirosSocios: rs,
+      flujoNeto: fn, acumulado: acum, retirosSocios: rs, transferencias: tr,
     };
   });
 
@@ -381,8 +385,9 @@ export default function FlujoDeFondosPage() {
                 <Bar dataKey="pagosSueldos" name="Sueldos" stackId="p" fill={COLORS.sueldos} />
                 <Bar dataKey="pagosImpuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
                 <Bar dataKey="pagosGastosFinancieros" name="Gastos Financieros" stackId="p" fill={COLORS.financieros} radius={[4, 4, 0, 0]} />
-                {/* No operativo (separate bar, not stacked) */}
+                {/* No operativo (separate bars, not stacked) */}
                 <Bar dataKey="retirosSocios" name="Retiros socios" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="transferencias" name="Transferencias" fill={COLORS.transferencias} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </CardContent>
@@ -444,6 +449,7 @@ export default function FlujoDeFondosPage() {
                   <TableHead className="text-right">Gtos. Fin.</TableHead>
                   <TableHead className="text-right font-bold">Pagos</TableHead>
                   <TableHead className="text-right">Retiros</TableHead>
+                  <TableHead className="text-right">Transf.</TableHead>
                   <TableHead className="text-right font-bold">Neto</TableHead>
                   <TableHead className="text-right font-bold">Acumulado</TableHead>
                 </TableRow>
@@ -463,6 +469,7 @@ export default function FlujoDeFondosPage() {
                     <TableCell className="text-right">{formatARS(r.pagosGastosFinancieros)}</TableCell>
                     <TableCell className="text-right font-medium">{formatARS(r.totalPagos)}</TableCell>
                     <TableCell className="text-right">{formatARS(r.retirosSocios)}</TableCell>
+                    <TableCell className="text-right">{formatARS(r.transferencias)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.flujoNeto >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.flujoNeto)}</TableCell>
                     <TableCell className={`text-right font-bold ${r.acumulado >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.acumulado)}</TableCell>
                   </TableRow>
