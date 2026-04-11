@@ -31,7 +31,7 @@ FOLDER_LOADER_MAP = {
     "INVERSIONES": "inversiones",
     "IMPUESTOS NACIONALES": "impuestos_nacionales",
     "IMPUESTOS MUNICIPALES": "impuestos_municipales",
-    "IMPUESTOS PROVINCIALES": "impuestos_provinciales",
+    # "IMPUESTOS PROVINCIALES": "impuestos_provinciales",  # TODO: descomentar cuando se implemente el loader
     "SERVICIOS": "servicios",
     "MOSTRADOR": "mostrador",
     "EECC": "eecc",
