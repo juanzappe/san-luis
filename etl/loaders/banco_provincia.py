@@ -241,6 +241,26 @@ def run(conn, logger, full: bool = False) -> int:
 
     if total_skipped:
         logger.warning(f"  {total_skipped} filas salteadas (importe null)")
+
+    # Dedup: extractos TXT mensuales se solapan en fechas límite
+    # (ej: archivos 0801 y 0902 ambos contienen movimientos del 1 de agosto).
+    # Clave única: (fecha, concepto, importe redondeado, saldo redondeado).
+    before = len(all_records)
+    seen = set()
+    deduped = []
+    for rec in all_records:
+        key = (
+            rec["fecha"],
+            rec["concepto"],
+            round(rec["importe"], 2) if rec["importe"] is not None else None,
+            round(rec["saldo"], 2) if rec.get("saldo") is not None else None,
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(rec)
+    all_records = deduped
+    if before > len(all_records):
+        logger.info(f"  {before - len(all_records)} duplicados eliminados (cross-file overlap)")
     logger.info(f"  {len(all_records)} movimientos bancarios a cargar")
 
     # Delete provincia + insert
