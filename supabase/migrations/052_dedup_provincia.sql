@@ -3,11 +3,12 @@
 -- ambos contienen movimientos del 1 de agosto), generando ~4900 duplicados.
 -- Se eliminan filas duplicadas por (fecha, concepto, importe, saldo), conservando una.
 
-DELETE FROM movimiento_bancario
-WHERE banco = 'provincia'
-  AND id NOT IN (
-    SELECT MIN(id)
-    FROM movimiento_bancario
-    WHERE banco = 'provincia'
-    GROUP BY fecha, concepto, importe, saldo
-  );
+DELETE FROM movimiento_bancario a
+USING movimiento_bancario b
+WHERE a.banco = 'provincia'
+  AND b.banco = 'provincia'
+  AND a.fecha IS NOT DISTINCT FROM b.fecha
+  AND a.concepto IS NOT DISTINCT FROM b.concepto
+  AND a.importe IS NOT DISTINCT FROM b.importe
+  AND a.saldo IS NOT DISTINCT FROM b.saldo
+  AND a.id > b.id;
