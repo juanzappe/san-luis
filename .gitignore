@@ -23,5 +23,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# ETL
+etl/logs/
+etl/last_import.json
+
 # Datos sensibles (los de ejemplo sí van al repo)
 # datos-ejemplo/ ← estos SÍ van al repo para testear
