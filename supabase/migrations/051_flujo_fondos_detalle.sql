@@ -289,8 +289,8 @@ AS $$
       )
   ),
 
-  -- Bank credits that are own-company transfers or Inviu
-  -- Deposits (caja, efectivo, ATM) and interbancarias are now counted as income
+  -- Bank credits that are internal transfers or Inviu (informational)
+  -- Cash deposits excluded from cobros_banco (double-count with cobros_efectivo)
   transf_banco_cred AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
@@ -299,6 +299,12 @@ AS $$
           OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
           OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
         THEN 'INVIU: ' || LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 34)
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
+        THEN 'DEPOSITO POR CAJA'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
+        THEN 'DEPOSITO DE EFECTIVO'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%credito traspaso cajero%'
+        THEN 'CREDITO TRASPASO CAJERO AUTOMATICO'
         WHEN LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
         THEN 'CREDITO DESDE MERCADO PAGO'
         WHEN COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
@@ -320,8 +326,12 @@ AS $$
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
       AND (
+        -- Cash deposits (already counted in cobros_efectivo)
+        LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%credito traspaso cajero%'
         -- Own-company transfers (MP wallet → bank, other own accounts)
-        LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
         OR COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
         -- Inviu broker
         OR LOWER(COALESCE(concepto, '')) LIKE '%inviu%'

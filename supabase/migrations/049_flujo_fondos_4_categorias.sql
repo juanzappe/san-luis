@@ -15,9 +15,10 @@
 --   Inviu (broker) — not income or expense, excluded from all categories
 --   Self-company transfers — only when concepto/tipo mentions Nadal y Zaccaro / 30657033770
 --   MP wallet ↔ bank (Retiro de dinero, Mercado Pago credits) — avoid double-count
+--   Cash deposits (deposito por caja, deposito de efectivo, traspaso cajero) — already in cobros_efectivo
 --
 -- Included as income:
---   Third-party bank transfers (interbancarias, deposits, "Pago a proveedores recibido")
+--   Third-party bank transfers (interbancarias, "Pago a proveedores recibido")
 --   Third-party MP transfers received ("Transferencia recibida [NOMBRE]" = client payments)
 --
 -- Filtered: periodo >= '2024-01' (excludes 2023 and earlier)
@@ -64,14 +65,18 @@ AS $$
     GROUP BY 1
   ),
 
-  -- Cobros banco: credits EXCLUDING own-company transfers, MP, and Inviu
-  -- Includes: deposits (caja, efectivo, ATM), interbancarias, third-party transfers
+  -- Cobros banco: credits EXCLUDING own-company transfers, cash deposits, MP, Inviu
+  -- Cash deposits are already counted in cobros_efectivo (movimiento_caja)
   banco_cred AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(COALESCE(credito, 0)) AS cobros
     FROM movimiento_bancario
     WHERE COALESCE(credito, 0) > 0
       AND fecha >= '2024-01-01'
+      -- Exclude cash deposits (double-count with cobros_efectivo)
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito por caja%'
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%deposito de efectivo%'
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%credito traspaso cajero%'
       -- Exclude MP wallet → bank transfers (already counted in cobros_mp)
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
       -- Exclude transfers from own company accounts
