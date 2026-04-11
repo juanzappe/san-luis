@@ -1,9 +1,16 @@
 -- 051_flujo_fondos_detalle.sql
 -- Detail RPC for Flujo de Fondos: returns individual classified movements
--- grouped by normalized concept, with subcategoria for impuestos and retiros.
+-- grouped by normalized concept, with subcategoria for impuestos, retiros,
+-- and transferencias.
 --
 -- Uses the EXACT same classification LIKE patterns as get_flujo_fondos() (049)
 -- to guarantee consistency between aggregate totals and detail breakdown.
+--
+-- Categories:
+--   proveedores, sueldos, impuestos, financieros  — operational expenses
+--   retiros                                        — partner withdrawals
+--   transferencias                                 — inter-account transfers + Inviu (informational only)
+--   otros                                          — catch-all for unclassified (should be empty)
 
 SET search_path = public;
 
@@ -34,13 +41,15 @@ AS $$
     WHERE COALESCE(debito, 0) > 0
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      -- EXCLUDE inter-account transfers (same as get_flujo_fondos)
+      -- EXCLUDE inter-account transfers (handled in transferencias_detalle)
       AND COALESCE(concepto, '') NOT LIKE 'DEBITO TRANS.CAJERO AUT%'
       AND COALESCE(concepto, '') NOT LIKE 'BIP DB TRANSFERENCIA%'
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL Y ZACCAR%'
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%mercado pago%'
-      -- EXCLUDE Inviu
+      -- EXCLUDE Inviu (handled in transferencias_detalle)
       AND LOWER(COALESCE(concepto, '')) NOT LIKE '%inviu%'
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%invertir%'
+      AND LOWER(COALESCE(concepto, '')) NOT LIKE '%iol%invertir%'
       -- EXCLUDE partner withdrawals (handled in retiros_detalle)
       AND COALESCE(concepto, '') NOT LIKE '%N:NADAL ANDREA%'
       AND COALESCE(concepto, '') NOT LIKE '%N:ZACCARO FABIAN%'
@@ -92,6 +101,12 @@ AS $$
           OR concepto_lower LIKE '%retencion iibb%'
           OR concepto_lower LIKE '%p.serv%ente950%'
           OR concepto_lower LIKE '%p.serv%municipali%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 'impuestos'
         -- FINANCIEROS
         WHEN concepto_lower LIKE '%comision%'
@@ -101,6 +116,9 @@ AS $$
           OR concepto_lower LIKE '%sellado%'
           OR concepto_lower LIKE '%amortizacion%prestamo%'
           OR concepto_lower LIKE '%cuota prestamo%'
+          OR concepto_lower LIKE '%federacion patr%'
+          OR concepto_lower LIKE '%com. mant.%'
+          OR concepto_lower LIKE '%com mant%'
         THEN 'financieros'
         -- PROVEEDORES (residual)
         ELSE 'proveedores'
@@ -122,6 +140,16 @@ AS $$
         WHEN concepto_lower LIKE '%lote haberes%' THEN 'LOTE HABERES'
         WHEN concepto_lower LIKE '%pago de haberes%' OR concepto_lower LIKE '%pago haberes%'
         THEN 'PAGO DE HABERES'
+        WHEN concepto_lower LIKE '%i.brutos%percepcion%' OR concepto_lower LIKE '%iibb%percepcion%'
+        THEN 'PERCEPCION IIBB'
+        WHEN concepto_lower LIKE '%iva percepcion%' OR concepto_lower LIKE '%iva%rg 2408%'
+        THEN 'PERCEPCION IVA (RG 2408)'
+        WHEN concepto_lower LIKE '%pago servicio por atm%'
+        THEN 'PAGO SERVICIO POR ATM'
+        WHEN concepto_lower LIKE '%federacion patr%'
+        THEN 'FEDERACION PATRONAL (Seguro)'
+        WHEN concepto_lower LIKE '%com. mant.%' OR concepto_lower LIKE '%com mant%'
+        THEN 'COMISION MANTENIMIENTO'
         ELSE LEFT(UPPER(TRIM(concepto_raw)), 40)
       END AS concepto_norm,
 
@@ -131,9 +159,11 @@ AS $$
           OR concepto_lower LIKE '%f.931%' OR concepto_lower LIKE '%f931%'
           OR concepto_lower LIKE '%sicoss%' OR concepto_lower LIKE '%ganancias%'
           OR concepto_lower LIKE '%monotributo%'
+          OR concepto_lower LIKE '%iva percepcion%' OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 'AFIP'
         WHEN concepto_lower LIKE '%arba%' OR concepto_lower LIKE '%retencion arba%'
           OR concepto_lower LIKE '%iibb%' OR concepto_lower LIKE '%retencion iibb%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%' OR concepto_lower LIKE '%iibb%percepcion%'
         THEN 'ARBA'
         WHEN concepto_lower LIKE '%p.serv%municipali%' OR concepto_lower LIKE '%municipalidad%'
           OR concepto_lower LIKE '%seguridad e higiene%'
@@ -204,63 +234,185 @@ AS $$
   ),
 
   -- =========================================================================
-  -- MP MOVEMENTS — classified
+  -- TRANSFERENCIAS — inter-account transfers + Inviu (informational only)
+  -- These are excluded from FF calculations but shown for trazability.
+  -- Captures both debits and credits.
   -- =========================================================================
 
-  -- MP proveedores: Pago + Movimiento General
-  mp_prov AS (
+  -- Bank debits that are inter-account transfers or Inviu
+  transf_banco_deb AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
-      'MP: ' || COALESCE(tipo_operacion, 'Pago') AS concepto,
-      'proveedores'::text AS categoria,
-      NULL::text AS subcategoria,
-      ABS(COALESCE(importe, 0)) AS monto,
-      'mp'::text AS fuente
-    FROM movimiento_mp
-    WHERE COALESCE(importe, 0) < 0
+      CASE
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+        THEN 'INVIU: ' || LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 34)
+        WHEN COALESCE(concepto, '') LIKE 'DEBITO TRANS.CAJERO AUT%'
+        THEN 'TRANSFERENCIA CAJERO AUTOMATICO'
+        WHEN COALESCE(concepto, '') LIKE 'BIP DB TRANSFERENCIA%'
+        THEN 'BIP DB TRANSFERENCIA'
+        WHEN COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
+        THEN 'TRANSFERENCIA A NADAL Y ZACCARO SA'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        THEN 'TRANSFERENCIA A MERCADO PAGO'
+        ELSE LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 40)
+      END AS concepto,
+      'transferencias'::text AS categoria,
+      CASE
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+        THEN 'Inviu'
+        ELSE 'Entre cuentas propias'
+      END AS subcategoria,
+      COALESCE(debito, 0) AS monto,
+      'banco'::text AS fuente
+    FROM movimiento_bancario
+    WHERE COALESCE(debito, 0) > 0
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+      AND (
+        -- Inter-account transfer patterns
+        COALESCE(concepto, '') LIKE 'DEBITO TRANS.CAJERO AUT%'
+        OR COALESCE(concepto, '') LIKE 'BIP DB TRANSFERENCIA%'
+        OR COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        -- Inviu broker
+        OR LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+      )
   ),
 
-  -- MP impuestos: Créditos y Débitos
-  mp_imp AS (
+  -- Bank credits that are inter-account transfers or Inviu
+  transf_banco_cred AS (
+    SELECT
+      TO_CHAR(fecha, 'YYYY-MM') AS periodo,
+      CASE
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+        THEN 'INVIU: ' || LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 34)
+        WHEN COALESCE(concepto, '') LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
+        THEN 'CREDITO TRASPASO CAJERO AUTOMATICO'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
+        THEN 'DEPOSITO POR CAJA'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
+        THEN 'DEPOSITO DE EFECTIVO'
+        WHEN COALESCE(concepto, '') LIKE 'CREDITO TRANSFERENCIA I%'
+        THEN 'CREDITO TRANSFERENCIA INTERBANCARIA'
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        THEN 'CREDITO DESDE MERCADO PAGO'
+        WHEN COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
+        THEN 'CREDITO DESDE NADAL Y ZACCARO SA'
+        ELSE LEFT(UPPER(TRIM(COALESCE(concepto, ''))), 40)
+      END AS concepto,
+      'transferencias'::text AS categoria,
+      CASE
+        WHEN LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+          OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+        THEN 'Inviu'
+        ELSE 'Entre cuentas propias'
+      END AS subcategoria,
+      COALESCE(credito, 0) AS monto,
+      'banco'::text AS fuente
+    FROM movimiento_bancario
+    WHERE COALESCE(credito, 0) > 0
+      AND fecha >= (p_anio || '-01-01')::date
+      AND fecha <  ((p_anio + 1) || '-01-01')::date
+      AND (
+        -- Inter-account transfer patterns (credit side)
+        COALESCE(concepto, '') LIKE 'CREDITO TRASPASO CAJERO AUTOM%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%deposito por caja%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%deposito de efectivo%'
+        OR COALESCE(concepto, '') LIKE 'CREDITO TRANSFERENCIA I%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%mercado pago%'
+        OR COALESCE(concepto, '') LIKE '%N:NADAL Y ZACCAR%'
+        -- Inviu broker
+        OR LOWER(COALESCE(concepto, '')) LIKE '%inviu%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%invertir%'
+        OR LOWER(COALESCE(concepto, '')) LIKE '%iol%invertir%'
+      )
+  ),
+
+  -- MP transfers (retiro de dinero, transferencias, anulaciones)
+  transf_mp AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
       'MP: ' || COALESCE(tipo_operacion, '') AS concepto,
-      'impuestos'::text AS categoria,
-      'Imp. al Cheque'::text AS subcategoria,
+      'transferencias'::text AS categoria,
+      'Entre cuentas propias'::text AS subcategoria,
       ABS(COALESCE(importe, 0)) AS monto,
       'mp'::text AS fuente
     FROM movimiento_mp
-    WHERE COALESCE(importe, 0) < 0
-      AND fecha >= (p_anio || '-01-01')::date
+    WHERE fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+      AND (
+        COALESCE(tipo_operacion, '') ILIKE '%Retiro de dinero%'
+        OR COALESCE(tipo_operacion, '') ILIKE '%Transferencia%'
+        OR COALESCE(tipo_operacion, '') ILIKE '%Anulación%'
+      )
   ),
 
-  -- MP financieros: platform costs (everything else negative)
-  mp_fin AS (
+  -- =========================================================================
+  -- MP MOVEMENTS — classified (operational)
+  -- Single CTE with CASE WHEN for cleaner classification.
+  -- =========================================================================
+  mp_clasificado AS (
     SELECT
       TO_CHAR(fecha, 'YYYY-MM') AS periodo,
       'MP: ' || COALESCE(tipo_operacion, '') AS concepto,
-      'financieros'::text AS categoria,
-      NULL::text AS subcategoria,
+      CASE
+        -- Proveedores: direct payments
+        WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN 'proveedores'
+        -- Impuestos: tax retentions, perceptions, Créditos y Débitos
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%creditos y debitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+        THEN 'impuestos'
+        -- Financieros: everything else (platform costs, commissions, fees)
+        ELSE 'financieros'
+      END AS categoria,
+      -- Subcategoria for impuestos
+      CASE
+        WHEN COALESCE(tipo_operacion, '') IN ('Pago', 'Movimiento General')
+        THEN NULL::text
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%créditos y débitos%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%creditos y debitos%'
+        THEN 'Imp. al Cheque'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        THEN 'ARBA'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+          OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        THEN 'AFIP'
+        WHEN LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+        THEN 'Otros'
+        ELSE NULL::text
+      END AS subcategoria,
       ABS(COALESCE(importe, 0)) AS monto,
       'mp'::text AS fuente
     FROM movimiento_mp
     WHERE COALESCE(importe, 0) < 0
       AND fecha >= (p_anio || '-01-01')::date
       AND fecha <  ((p_anio + 1) || '-01-01')::date
-      AND COALESCE(tipo_operacion, '') NOT IN ('Pago', 'Movimiento General')
+      -- Exclude transfers (handled in transf_mp)
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Créditos y Débitos%'
   ),
 
   -- =========================================================================
@@ -271,11 +423,13 @@ AS $$
     UNION ALL
     SELECT * FROM retiros_detalle
     UNION ALL
-    SELECT * FROM mp_prov
+    SELECT * FROM transf_banco_deb
     UNION ALL
-    SELECT * FROM mp_imp
+    SELECT * FROM transf_banco_cred
     UNION ALL
-    SELECT * FROM mp_fin
+    SELECT * FROM transf_mp
+    UNION ALL
+    SELECT * FROM mp_clasificado
   )
 
   SELECT

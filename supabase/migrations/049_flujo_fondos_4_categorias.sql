@@ -192,6 +192,15 @@ AS $$
           OR concepto_lower LIKE '%p.serv%ente950%'
           -- Homebanking payments to Municipalidad
           OR concepto_lower LIKE '%p.serv%municipali%'
+          -- ATM/homebanking service payments (long format)
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          -- IIBB perceptions
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          -- IVA perceptions
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN monto ELSE 0
       END) AS impuestos,
 
@@ -234,6 +243,12 @@ AS $$
           OR concepto_lower LIKE '%retencion iibb%'
           OR concepto_lower LIKE '%p.serv%ente950%'
           OR concepto_lower LIKE '%p.serv%municipali%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 0
         -- Financial expense patterns
         WHEN concepto_lower LIKE '%comision%'
@@ -243,6 +258,9 @@ AS $$
           OR concepto_lower LIKE '%sellado%'
           OR concepto_lower LIKE '%amortizacion%prestamo%'
           OR concepto_lower LIKE '%cuota prestamo%'
+          OR concepto_lower LIKE '%federacion patr%'
+          OR concepto_lower LIKE '%com. mant.%'
+          OR concepto_lower LIKE '%com mant%'
         THEN monto ELSE 0
       END) AS financieros,
 
@@ -285,6 +303,12 @@ AS $$
           OR concepto_lower LIKE '%retencion iibb%'
           OR concepto_lower LIKE '%p.serv%ente950%'
           OR concepto_lower LIKE '%p.serv%municipali%'
+          OR concepto_lower LIKE '%pago servicio por atm%'
+          OR concepto_lower LIKE '%pago serv%'
+          OR concepto_lower LIKE '%i.brutos%percepcion%'
+          OR concepto_lower LIKE '%iibb%percepcion%'
+          OR concepto_lower LIKE '%iva percepcion%'
+          OR concepto_lower LIKE '%iva%rg 2408%'
         THEN 0
         -- Financiero → skip
         WHEN concepto_lower LIKE '%comision%'
@@ -294,6 +318,9 @@ AS $$
           OR concepto_lower LIKE '%sellado%'
           OR concepto_lower LIKE '%amortizacion%prestamo%'
           OR concepto_lower LIKE '%cuota prestamo%'
+          OR concepto_lower LIKE '%federacion patr%'
+          OR concepto_lower LIKE '%com. mant.%'
+          OR concepto_lower LIKE '%com mant%'
         THEN 0
         -- Everything else = proveedores
         ELSE monto
@@ -318,8 +345,7 @@ AS $$
     GROUP BY 1
   ),
 
-  -- MP: tax payments (Imp. al Cheque / Créditos y Débitos via MP)
-  -- movimiento_mp only has tipo_operacion as text descriptor (no concepto column)
+  -- MP: tax payments (Créditos y Débitos + retentions + tax-related operations)
   mp_impuestos AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
@@ -330,12 +356,21 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+      AND (
+        COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+      )
     GROUP BY 1
   ),
 
-  -- MP: platform costs = financial expenses (commissions, withholdings, fees)
-  -- Everything negative that is NOT: retiro, pago/mov general, transfer, anulación, impuestos
+  -- MP: platform costs = financial expenses (commissions, fees)
+  -- Residual after excluding: transfers, pagos, and tax-related operations
   mp_financieros AS (
     SELECT TO_CHAR(fecha, 'YYYY-MM') AS p,
       SUM(ABS(COALESCE(importe, 0))) AS monto
@@ -346,7 +381,17 @@ AS $$
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Retiro de dinero%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Transferencia%'
       AND COALESCE(tipo_operacion, '') NOT ILIKE '%Anulación%'
-      AND COALESCE(tipo_operacion, '') NOT ILIKE '%Créditos y Débitos%'
+      -- Exclude tax-related (captured by mp_impuestos)
+      AND NOT (
+        COALESCE(tipo_operacion, '') ILIKE '%Créditos y Débitos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retencion%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%retención%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ingresos brutos%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iibb%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%iva%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%ganancias%'
+        OR LOWER(COALESCE(tipo_operacion, '')) LIKE '%impuesto%'
+      )
     GROUP BY 1
   ),
 
