@@ -557,7 +557,7 @@ export async function insertSaldoManual(
 // 9. Flujo de Fondos — Detalle por categoría
 // ---------------------------------------------------------------------------
 
-export type CategoriaFlujo = "proveedores" | "sueldos" | "impuestos" | "financieros" | "retiros";
+export type CategoriaFlujo = "proveedores" | "sueldos" | "impuestos" | "financieros" | "retiros" | "transferencias" | "otros";
 
 export interface FFDetalleRow {
   periodo: string;

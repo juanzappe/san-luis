@@ -35,6 +35,8 @@ const CATEGORIA_LABELS: Record<CategoriaFlujo, string> = {
   impuestos: "Impuestos",
   financieros: "Gtos. Financieros",
   retiros: "Retiros",
+  transferencias: "Transferencias",
+  otros: "Otros",
 };
 
 const CATEGORIA_COLORS: Record<CategoriaFlujo, string> = {
@@ -43,12 +45,15 @@ const CATEGORIA_COLORS: Record<CategoriaFlujo, string> = {
   impuestos: "#06b6d4",
   financieros: "#64748b",
   retiros: "#d946ef",
+  transferencias: "#8b5cf6",
+  otros: "#a3a3a3",
 };
 
-const CATEGORIAS: CategoriaFlujo[] = ["proveedores", "sueldos", "impuestos", "financieros", "retiros"];
+const CATEGORIAS: CategoriaFlujo[] = ["proveedores", "sueldos", "impuestos", "financieros", "retiros", "transferencias", "otros"];
 
-// Impuestos subcategoria display order
+// Subcategoria display orders
 const IMPUESTOS_ORDER = ["AFIP", "ARBA", "Municipal", "Imp. al Cheque", "Cargas Sociales", "Otros"];
+const TRANSFERENCIAS_ORDER = ["Entre cuentas propias", "Inviu"];
 
 interface Props {
   availableYears: number[];
@@ -130,9 +135,9 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
     })),
   [rows]);
 
-  // Group rows by subcategoria for impuestos
+  // Group rows by subcategoria for impuestos and transferencias
   const groupedRows = useMemo(() => {
-    if (categoria !== "impuestos") return null;
+    if (categoria !== "impuestos" && categoria !== "transferencias") return null;
     const groups = new Map<string, ConceptRow[]>();
     for (const r of rows) {
       const sub = r.subcategoria ?? "Otros";
@@ -141,13 +146,21 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
       groups.set(sub, arr);
     }
     // Sort by predefined order
-    return IMPUESTOS_ORDER
+    const order = categoria === "transferencias" ? TRANSFERENCIAS_ORDER : IMPUESTOS_ORDER;
+    const result = order
       .filter((s) => groups.has(s))
       .map((s) => ({ subcategoria: s, items: groups.get(s)! }));
+    // Include any groups not in predefined order
+    groups.forEach((items, sub) => {
+      if (!order.includes(sub)) {
+        result.push({ subcategoria: sub, items });
+      }
+    });
+    return result;
   }, [rows, categoria]);
 
   const showBeneficiario = categoria === "retiros";
-  const showSubcategoria = categoria === "impuestos";
+  const showSubcategoria = categoria === "impuestos" || categoria === "transferencias";
 
   return (
     <Card>
@@ -196,7 +209,9 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
 
         {!loading && !fetchError && rows.length === 0 && (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            Sin datos para {CATEGORIA_LABELS[categoria]} en {anio}
+            {categoria === "otros"
+              ? "No hay movimientos sin clasificar"
+              : `Sin datos para ${CATEGORIA_LABELS[categoria]} en ${anio}`}
           </p>
         )}
 
@@ -278,6 +293,13 @@ export function DetallePorCategoria({ availableYears, adjust }: Props) {
                   </BarChart>
                 </ResponsiveContainer>
               </div>
+            )}
+
+            {/* Transferencias footnote */}
+            {categoria === "transferencias" && (
+              <p className="text-xs text-muted-foreground">
+                * Las transferencias entre cuentas propias e Inviu son solo informativas. No se incluyen en el cálculo del Flujo de Fondos.
+              </p>
             )}
 
             {/* MP footnote */}
