@@ -89,6 +89,14 @@ const navigation: NavItem[] = [
   },
   { label: "Datos del Negocio", href: "/datos-negocio", icon: Building2 },
   {
+    label: "Comprobantes",
+    href: "/comprobantes",
+    icon: FileText,
+    children: [
+      { label: "Recibidos", href: "/comprobantes/recibidos" },
+    ],
+  },
+  {
     label: "EECC",
     href: "/eecc",
     icon: FileText,
