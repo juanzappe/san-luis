@@ -20,6 +20,7 @@ export interface ComprobantesFilters {
   tipoComprobante: number | null;
   tieneCopiaFisica: boolean | null;
   search: string | null;
+  monto: number | null;
 }
 
 export interface ComprobanteRecibido {
@@ -100,6 +101,32 @@ export function formatComprobanteNumero(
   return `${pv}-${nr}`;
 }
 
+/**
+ * Parsea un número en formato argentino.
+ *
+ * Soporta variantes como:
+ *   "355.000,05" → 355000.05
+ *   "355000"     → 355000
+ *   "355,5"      → 355.5
+ *   "1.234.567"  → 1234567
+ *
+ * Devuelve `null` si el string está vacío o no es parseable.
+ */
+export function parseARSNumber(input: string): number | null {
+  const trimmed = input.trim();
+  if (trimmed === "") return null;
+
+  const hasComma = trimmed.includes(",");
+  // Si tiene coma, es el separador decimal → los puntos son miles.
+  // Si no tiene coma, los puntos se asumen también como separador de miles.
+  const normalized = hasComma
+    ? trimmed.replace(/\./g, "").replace(",", ".")
+    : trimmed.replace(/\./g, "");
+
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
 // ---------------------------------------------------------------------------
 // RPC row shapes
 // ---------------------------------------------------------------------------
@@ -142,10 +169,11 @@ export async function fetchComprobantesRecibidos(
     const res = await supabase.rpc("get_comprobantes_recibidos", {
       p_anio: filters.anio,
       p_mes: filters.mes,
-      p_cuit: filters.cuit,
+      p_cuit: filters.cuit && filters.cuit.trim() !== "" ? filters.cuit.trim() : null,
       p_tipo_comprobante: filters.tipoComprobante,
       p_tiene_copia_fisica: filters.tieneCopiaFisica,
       p_search: filters.search && filters.search.trim() !== "" ? filters.search.trim() : null,
+      p_monto: filters.monto,
       p_limit: limit,
       p_offset: offset,
     });

@@ -10,6 +10,8 @@ import {
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,9 +34,28 @@ import {
   fetchComprobantesResumen,
   formatARS2,
   formatComprobanteNumero,
+  parseARSNumber,
   tipoComprobanteLabel,
   updateCopiaFisica,
 } from "@/lib/comprobantes-queries";
+
+type SortColumn =
+  | "fecha"
+  | "tipo"
+  | "pvNumero"
+  | "cuit"
+  | "razonSocial"
+  | "neto"
+  | "iva"
+  | "total"
+  | "copia";
+
+type SortDir = "asc" | "desc";
+
+interface SortState {
+  column: SortColumn;
+  dir: SortDir;
+}
 
 const PAGE_SIZE = 50;
 
@@ -75,11 +96,15 @@ export default function ComprobantesRecibidosPage() {
     tipoComprobante: null,
     tieneCopiaFisica: null,
     search: null,
+    monto: null,
   });
 
-  // search input is separate from `filters.search` so we can debounce it
+  // text inputs are separate from filters so we can debounce them
   const [searchInput, setSearchInput] = useState("");
+  const [cuitInput, setCuitInput] = useState("");
+  const [montoInput, setMontoInput] = useState("");
   const [page, setPage] = useState(0);
+  const [sort, setSort] = useState<SortState | null>(null);
 
   const [rows, setRows] = useState<ComprobanteRecibido[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -101,6 +126,32 @@ export default function ComprobantesRecibidosPage() {
     return () => clearTimeout(t);
   }, [searchInput]);
 
+  // Debounce the CUIT input (300ms) into filters.cuit
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilters((prev) => {
+        const normalized = cuitInput.trim() === "" ? null : cuitInput.trim();
+        if (prev.cuit === normalized) return prev;
+        return { ...prev, cuit: normalized };
+      });
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [cuitInput]);
+
+  // Debounce the monto input (300ms) into filters.monto (parsed)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setFilters((prev) => {
+        const parsed = parseARSNumber(montoInput);
+        if (prev.monto === parsed) return prev;
+        return { ...prev, monto: parsed };
+      });
+      setPage(0);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [montoInput]);
+
   // Reset page when non-search filters change
   const filtersKey = useMemo(
     () =>
@@ -110,6 +161,8 @@ export default function ComprobantesRecibidosPage() {
         tipo: filters.tipoComprobante,
         copia: filters.tieneCopiaFisica,
         search: filters.search,
+        cuit: filters.cuit,
+        monto: filters.monto,
       }),
     [filters],
   );
@@ -200,9 +253,77 @@ export default function ComprobantesRecibidosPage() {
       tipoComprobante: null,
       tieneCopiaFisica: null,
       search: null,
+      monto: null,
     });
     setSearchInput("");
+    setCuitInput("");
+    setMontoInput("");
+    setSort(null);
     setPage(0);
+  };
+
+  // Client-side sorting over the current page
+  const sortedRows = useMemo(() => {
+    if (!sort) return rows;
+
+    const getValue = (r: ComprobanteRecibido): string | number | boolean => {
+      switch (sort.column) {
+        case "fecha":
+          return r.fechaEmision;
+        case "tipo":
+          return tipoComprobanteLabel(r.tipoComprobante);
+        case "pvNumero":
+          return (r.puntoVenta ?? 0) * 1e9 + (r.numeroDesde ?? 0);
+        case "cuit":
+          return r.nroDocEmisor ?? "";
+        case "razonSocial":
+          return (r.denominacionEmisor ?? "").toLowerCase();
+        case "neto":
+          return r.impNetoGravadoTotal;
+        case "iva":
+          return r.totalIva;
+        case "total":
+          return r.impTotal;
+        case "copia":
+          return r.tieneCopiaFisica ? 1 : 0;
+      }
+    };
+
+    const copy = [...rows];
+    copy.sort((a, b) => {
+      const va = getValue(a);
+      const vb = getValue(b);
+      let cmp: number;
+      if (typeof va === "number" && typeof vb === "number") {
+        cmp = va - vb;
+      } else {
+        cmp = String(va).localeCompare(String(vb), "es-AR");
+      }
+      return sort.dir === "asc" ? cmp : -cmp;
+    });
+    return copy;
+  }, [rows, sort]);
+
+  /**
+   * Click cycle on a column header: asc → desc → null (default order from RPC).
+   */
+  const handleSortClick = (column: SortColumn) => {
+    setSort((prev) => {
+      if (!prev || prev.column !== column) return { column, dir: "asc" };
+      if (prev.dir === "asc") return { column, dir: "desc" };
+      return null;
+    });
+  };
+
+  const sortIcon = (column: SortColumn) => {
+    if (!sort || sort.column !== column) {
+      return <ChevronDown className="h-3 w-3 opacity-20" />;
+    }
+    return sort.dir === "asc" ? (
+      <ChevronUp className="h-3 w-3" />
+    ) : (
+      <ChevronDown className="h-3 w-3" />
+    );
   };
 
   const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -381,6 +502,25 @@ export default function ComprobantesRecibidosPage() {
               />
             </div>
 
+            <div className="flex flex-col gap-1 min-w-[160px]">
+              <label className="text-xs text-muted-foreground">Buscar CUIT</label>
+              <Input
+                value={cuitInput}
+                onChange={(e) => setCuitInput(e.target.value)}
+                placeholder="CUIT del emisor..."
+              />
+            </div>
+
+            <div className="flex flex-col gap-1 min-w-[140px]">
+              <label className="text-xs text-muted-foreground">Buscar monto</label>
+              <Input
+                value={montoInput}
+                onChange={(e) => setMontoInput(e.target.value)}
+                placeholder="Monto total..."
+                inputMode="decimal"
+              />
+            </div>
+
             <Button variant="outline" size="sm" onClick={limpiarFiltros}>
               Limpiar filtros
             </Button>
@@ -431,19 +571,91 @@ export default function ComprobantesRecibidosPage() {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-16 text-center">Copia</TableHead>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>PV-Número</TableHead>
-                    <TableHead>CUIT Emisor</TableHead>
-                    <TableHead>Razón Social</TableHead>
-                    <TableHead className="text-right">Neto Gravado</TableHead>
-                    <TableHead className="text-right">IVA</TableHead>
-                    <TableHead className="text-right">Total</TableHead>
+                    <TableHead className="w-16 text-center">
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("copia")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Copia {sortIcon("copia")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("fecha")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Fecha {sortIcon("fecha")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("tipo")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Tipo {sortIcon("tipo")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("pvNumero")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        PV-Número {sortIcon("pvNumero")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("cuit")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        CUIT Emisor {sortIcon("cuit")}
+                      </button>
+                    </TableHead>
+                    <TableHead>
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("razonSocial")}
+                        className="inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Razón Social {sortIcon("razonSocial")}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("neto")}
+                        className="ml-auto inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Neto Gravado {sortIcon("neto")}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("iva")}
+                        className="ml-auto inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        IVA {sortIcon("iva")}
+                      </button>
+                    </TableHead>
+                    <TableHead className="text-right">
+                      <button
+                        type="button"
+                        onClick={() => handleSortClick("total")}
+                        className="ml-auto inline-flex items-center gap-1 hover:text-foreground transition-colors"
+                      >
+                        Total {sortIcon("total")}
+                      </button>
+                    </TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {rows.map((r) => (
+                  {sortedRows.map((r) => (
                     <TableRow key={r.id}>
                       <TableCell className="text-center">
                         <input
