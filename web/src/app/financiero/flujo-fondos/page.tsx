@@ -1,613 +1,586 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
-  BarChart,
-  Bar,
-  LineChart,
-  Line,
-  AreaChart,
-  Area,
-  PieChart,
-  Pie,
-  Cell,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-  ReferenceLine,
+  BarChart, Bar, AreaChart, Area, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine,
 } from "recharts";
-import {
-  ArrowDownCircle,
-  ArrowUpCircle,
-  TrendingUp,
-  Sigma,
-  Scale,
-  Calendar,
-  Loader2,
-  AlertCircle,
-} from "lucide-react";
+import { Loader2, AlertCircle, TrendingUp, TrendingDown, Minus } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
+import { Badge } from "@/components/ui/badge";
 import { InflationToggle, useInflation } from "@/lib/inflation";
-import { MonthSelector } from "@/components/month-selector";
 import {
   type FlujoDeFondosRow,
-  type SaldoCuenta,
   fetchFlujoDeFondos,
-  fetchSaldosCuentas,
-  formatARS,
-  formatPct,
-  pctDelta,
-  periodoLabel,
-  shortLabel,
+  formatARS, formatPct, pctDelta, periodoLabel, shortLabel,
 } from "@/lib/financial-queries";
 import { DetallePorCategoria } from "./detalle-categoria";
-import type {
-  Formatter, ValueType, NameType,
-} from "recharts/types/component/DefaultTooltipContent";
+import type { Formatter, ValueType, NameType } from "recharts/types/component/DefaultTooltipContent";
 
 const arsTooltip: Formatter<ValueType, NameType> = (v) => formatARS(Number(v ?? 0));
+const SHORT_MONTHS = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"];
 
+// ─── Color palette (charts + category cards only) ───────────────────────────
 const COLORS = {
-  cobros: "#22c55e",
-  pagos: "#ef4444",
-  efectivo: "#f59e0b",
-  banco: "#3b82f6",
-  provincia: "#3b82f6",
-  santander: "#ef4444",
-  mp: "#8b5cf6",
-  proveedores: "#ef4444",
-  sueldos: "#f97316",
-  impuestos: "#06b6d4",
-  financieros: "#64748b",
-  retirosSocios: "#d946ef",
-  transferencias: "#8b5cf6",
-  neto: "#3b82f6",
+  cobros: "#22c55e", pagos: "#ef4444",
+  efectivo: "#f59e0b", banco: "#3b82f6", provincia: "#3b82f6", santander: "#ef4444", mp: "#8b5cf6",
+  proveedores: "#ef4444", sueldos: "#f97316", impuestos: "#06b6d4",
+  financieros: "#64748b", tarjetas: "#f59e0b",
+  retirosSocios: "#d946ef", transferencias: "#8b5cf6", financiamiento: "#14b8a6", neto: "#3b82f6",
 };
 
+// ─── Types ──────────────────────────────────────────────────────────────────
 type Granularity = "mensual" | "trimestral" | "anual";
-
-const GRANULARITY_LABELS: Record<Granularity, string> = {
-  mensual: "Mensual",
-  trimestral: "Trimestral",
-  anual: "Anual",
-};
+type TableView = "detalle" | "ytd" | "anual";
+type ChartRange = "year" | "12m" | "all";
 
 const QUARTER_LABELS: Record<string, string> = {
-  "01": "Q1", "02": "Q1", "03": "Q1",
-  "04": "Q2", "05": "Q2", "06": "Q2",
-  "07": "Q3", "08": "Q3", "09": "Q3",
-  "10": "Q4", "11": "Q4", "12": "Q4",
+  "01": "Q1", "02": "Q1", "03": "Q1", "04": "Q2", "05": "Q2", "06": "Q2",
+  "07": "Q3", "08": "Q3", "09": "Q3", "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
-interface AggregatedFlujo {
-  key: string;
-  label: string;
-  cobrosEfectivo: number;
-  cobrosBanco: number;
-  cobrosBancoProvincia: number;
-  cobrosBancoSantander: number;
-  cobrosMP: number;
-  totalCobros: number;
-  pagosProveedores: number;
-  pagosSueldos: number;
-  pagosImpuestos: number;
-  pagosGastosFinancieros: number;
-  totalPagos: number;
-  pagosProvincia: number;
-  pagosSantander: number;
-  flujoNeto: number;
-  acumulado: number;
-  retirosSocios: number;
-  transferencias: number;
+interface AggRow {
+  key: string; label: string;
+  cobrosEfectivo: number; cobrosBancoProvincia: number; cobrosBancoSantander: number; cobrosMP: number;
+  totalCobros: number; financiamientoRecibido: number;
+  pagosProveedores: number; pagosSueldos: number; pagosImpuestos: number;
+  pagosGastosFinancieros: number; pagosTarjetas: number; totalPagos: number;
+  flujoNeto: number; retirosSocios: number; transferencias: number;
 }
 
-function aggregateFlujoDeFondos(data: FlujoDeFondosRow[], granularity: Granularity): AggregatedFlujo[] {
-  if (granularity === "mensual") {
-    return [...data]
-      .map((r) => ({ ...r, key: r.periodo, label: periodoLabel(r.periodo) }))
-      .sort((a, b) => b.key.localeCompare(a.key));
-  }
+const AGG_ZERO: Omit<AggRow, "key" | "label"> = {
+  cobrosEfectivo: 0, cobrosBancoProvincia: 0, cobrosBancoSantander: 0, cobrosMP: 0,
+  totalCobros: 0, financiamientoRecibido: 0,
+  pagosProveedores: 0, pagosSueldos: 0, pagosImpuestos: 0,
+  pagosGastosFinancieros: 0, pagosTarjetas: 0, totalPagos: 0,
+  flujoNeto: 0, retirosSocios: 0, transferencias: 0,
+};
 
-  const buckets = new Map<string, AggregatedFlujo>();
-  // data is sorted ascending — iterate in order so last acumulado per bucket is correct
+function addRow(a: Omit<AggRow, "key" | "label">, r: FlujoDeFondosRow) {
+  a.cobrosEfectivo += r.cobrosEfectivo; a.cobrosBancoProvincia += r.cobrosBancoProvincia;
+  a.cobrosBancoSantander += r.cobrosBancoSantander; a.cobrosMP += r.cobrosMP;
+  a.totalCobros += r.totalCobros; a.financiamientoRecibido += r.financiamientoRecibido;
+  a.pagosProveedores += r.pagosProveedores; a.pagosSueldos += r.pagosSueldos;
+  a.pagosImpuestos += r.pagosImpuestos; a.pagosGastosFinancieros += r.pagosGastosFinancieros;
+  a.pagosTarjetas += r.pagosTarjetas; a.totalPagos += r.totalPagos;
+  a.flujoNeto += r.flujoNeto; a.retirosSocios += r.retirosSocios; a.transferencias += r.transferencias;
+}
+
+// ─── Aggregation ────────────────────────────────────────────────────────────
+
+function aggregateDetail(data: FlujoDeFondosRow[], gran: Granularity): AggRow[] {
+  if (gran === "mensual") return data.map((r) => ({ ...AGG_ZERO, ...r, key: r.periodo, label: periodoLabel(r.periodo) }));
+  const b = new Map<string, AggRow>();
   for (const r of data) {
     const [y, m] = r.periodo.split("-");
-    const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
-    const cur = buckets.get(bucketKey) ?? {
-      key: bucketKey,
-      label: granularity === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y,
-      cobrosEfectivo: 0, cobrosBanco: 0, cobrosBancoProvincia: 0, cobrosBancoSantander: 0,
-      cobrosMP: 0, totalCobros: 0,
-      pagosProveedores: 0, pagosSueldos: 0, pagosImpuestos: 0, pagosGastosFinancieros: 0,
-      totalPagos: 0, pagosProvincia: 0, pagosSantander: 0,
-      flujoNeto: 0, acumulado: 0, retirosSocios: 0, transferencias: 0,
-    };
-    cur.cobrosEfectivo += r.cobrosEfectivo;
-    cur.cobrosBanco += r.cobrosBanco;
-    cur.cobrosBancoProvincia += r.cobrosBancoProvincia;
-    cur.cobrosBancoSantander += r.cobrosBancoSantander;
-    cur.cobrosMP += r.cobrosMP;
-    cur.totalCobros += r.totalCobros;
-    cur.pagosProveedores += r.pagosProveedores;
-    cur.pagosSueldos += r.pagosSueldos;
-    cur.pagosImpuestos += r.pagosImpuestos;
-    cur.pagosGastosFinancieros += r.pagosGastosFinancieros;
-    cur.retirosSocios += r.retirosSocios;
-    cur.transferencias += r.transferencias;
-    cur.totalPagos += r.totalPagos;
-    cur.pagosProvincia += r.pagosProvincia;
-    cur.pagosSantander += r.pagosSantander;
-    cur.flujoNeto += r.flujoNeto;
-    cur.acumulado = r.acumulado; // last row in bucket = end-of-period cumulative
-    buckets.set(bucketKey, cur);
+    const k = gran === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
+    const c = b.get(k) ?? { ...AGG_ZERO, key: k, label: gran === "trimestral" ? `${QUARTER_LABELS[m]} ${y}` : y };
+    addRow(c, r); b.set(k, c);
   }
-
-  return Array.from(buckets.values()).sort((a, b) => b.key.localeCompare(a.key));
+  return Array.from(b.values()).sort((a, x) => a.key.localeCompare(x.key));
 }
 
-function KpiCard({
-  title, value, delta, icon: Icon, invertDelta, format, subtitle,
-}: {
-  title: string; value: number; delta: number | null; icon: React.ElementType;
-  invertDelta?: boolean; format?: (v: number) => string; subtitle?: string;
+function aggregatePerYear(data: FlujoDeFondosRow[], maxMonth?: number): AggRow[] {
+  const by = new Map<number, AggRow>();
+  for (const r of data) {
+    const [yS, mS] = r.periodo.split("-");
+    const y = parseInt(yS, 10), m = parseInt(mS, 10);
+    if (maxMonth !== undefined && m > maxMonth) continue;
+    const c = by.get(y) ?? { ...AGG_ZERO, key: yS, label: maxMonth ? `${y} (YTD)` : String(y) };
+    addRow(c, r); by.set(y, c);
+  }
+  return Array.from(by.values()).sort((a, x) => a.key.localeCompare(x.key));
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function getYtdData(data: FlujoDeFondosRow[], year: number, maxMonth: number) {
+  return data.filter((r) => { const [y, m] = r.periodo.split("-"); return parseInt(y, 10) === year && parseInt(m, 10) <= maxMonth; });
+}
+function sumField(rows: FlujoDeFondosRow[], fn: (r: FlujoDeFondosRow) => number) { return rows.reduce((s, r) => s + fn(r), 0); }
+
+// ─── KPI Card — black values, only flujoNeto colored ────────────────────────
+
+function KpiCard({ title, value, delta, invertDelta, subtitle, netoColor }: {
+  title: string; value: number; delta: number | null;
+  invertDelta?: boolean; subtitle?: string; netoColor?: boolean;
 }) {
-  const fmt = format ?? formatARS;
   const good = delta !== null && (invertDelta ? delta < 0 : delta > 0);
   const bad = delta !== null && (invertDelta ? delta > 0 : delta < 0);
+  const DeltaIcon = delta === null ? Minus : good ? TrendingUp : bad ? TrendingDown : Minus;
+  const valueColor = netoColor ? (value >= 0 ? "text-green-600" : "text-red-600") : "";
   return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-        <CardTitle className="text-sm font-medium">{title}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{fmt(value)}</div>
-        {subtitle ? (
-          <p className="text-xs text-muted-foreground">{subtitle}</p>
-        ) : delta !== null ? (
-          <p className={`text-xs ${good ? "text-green-600" : bad ? "text-red-600" : "text-muted-foreground"}`}>
-            {formatPct(delta)} vs mes anterior
-          </p>
+    <div className="rounded-xl bg-muted/50 p-5 space-y-2">
+      <p className="text-sm font-medium text-muted-foreground">{title}</p>
+      <p className={`text-2xl font-bold tracking-tight ${valueColor}`}>{formatARS(value)}</p>
+      <div className="flex items-center gap-1.5">
+        {delta !== null ? (
+          <>
+            <DeltaIcon className={`h-3.5 w-3.5 ${good ? "text-green-600" : bad ? "text-red-600" : "text-muted-foreground"}`} />
+            <span className={`text-xs font-medium ${good ? "text-green-600" : bad ? "text-red-600" : "text-muted-foreground"}`}>
+              {formatPct(delta)} vs año anterior
+            </span>
+          </>
+        ) : subtitle ? (
+          <span className="text-xs text-muted-foreground">{subtitle}</span>
         ) : (
-          <p className="text-xs text-muted-foreground">Sin mes anterior</p>
+          <span className="text-xs text-muted-foreground">Sin datos previos</span>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
+// ─── Table helpers ──────────────────────────────────────────────────────────
+
+function Ars({ value, bold, neto }: { value: number; bold?: boolean; neto?: boolean }) {
+  if (value === 0) return <span className="text-muted-foreground">—</span>;
+  const c = neto ? (value >= 0 ? "text-green-600" : "text-red-600") : "";
+  return <span className={`tabular-nums ${bold ? "font-semibold" : ""} ${c}`}>{formatARS(value)}</span>;
+}
+
+function DeltaCell({ value, favorable }: { value: number | null; favorable: "higher" | "lower" }) {
+  if (value === null) return <span className="text-muted-foreground">—</span>;
+  const g = favorable === "higher" ? value > 0 : value < 0;
+  const b = favorable === "higher" ? value < 0 : value > 0;
+  return <span className={`text-xs font-medium ${g ? "text-green-600" : b ? "text-red-600" : "text-muted-foreground"}`}>{formatPct(value)}</span>;
+}
+
+function Seg<T extends string>({ options, value, onChange, labels }: {
+  options: T[]; value: T; onChange: (v: T) => void; labels?: Record<T, string>;
+}) {
+  return (
+    <div className="flex items-center rounded-lg border text-xs font-medium">
+      {options.map((o) => (
+        <button key={o} onClick={() => onChange(o)}
+          className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${value === o ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
+        >{labels?.[o] ?? o}</button>
+      ))}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAGE
+// ═══════════════════════════════════════════════════════════════════════════
+
 export default function FlujoDeFondosPage() {
-  const { adjust } = useInflation();
+  const { adjust, adjusted } = useInflation();
   const [raw, setRaw] = useState<FlujoDeFondosRow[]>([]);
-  const [saldos, setSaldos] = useState<SaldoCuenta[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
-  const [selectedPeriodo, setSelectedPeriodo] = useState("");
+  const [tableView, setTableView] = useState<TableView>("detalle");
+  const [selectedYear, setSelectedYear] = useState<number>(0);
+  const [selectedMonth, setSelectedMonth] = useState<string>("");
+  // Chart-specific filters (independent of table)
+  const [chartYear, setChartYear] = useState<number>(0);
+  const [chartRange, setChartRange] = useState<ChartRange>("year");
+  // Multi-year select for YTD/Anual comparison
+  const [compYears, setCompYears] = useState<number[]>([]);
 
   useEffect(() => {
-    Promise.all([
-      fetchFlujoDeFondos(),
-      fetchSaldosCuentas().catch(() => [] as SaldoCuenta[]),
-    ])
-      .then(([ff, sc]) => { setRaw(ff); setSaldos(sc); })
+    fetchFlujoDeFondos()
+      .then(setRaw)
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center py-24">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        <span className="ml-3 text-muted-foreground">Cargando datos…</span>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <Card><CardContent className="flex items-center gap-3 py-8">
-        <AlertCircle className="h-5 w-5 text-red-500" /><p className="text-sm">{error}</p>
-      </CardContent></Card>
-    );
-  }
-  if (raw.length === 0) {
-    return (
-      <Card><CardContent className="py-8 text-center">
-        <AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" />
-        <p className="mt-3 font-medium">Sin datos de flujo de fondos</p>
-        <p className="text-sm text-muted-foreground">Ejecutá el ETL para importar movimientos.</p>
-      </CardContent></Card>
-    );
-  }
+  // ─── Inflation-adjusted data ────────────────────────────────────────────
+  const data = useMemo(() => {
+    let acum = 0;
+    return raw.map((r) => {
+      const ce = adjust(r.cobrosEfectivo, r.periodo), cb = adjust(r.cobrosBanco, r.periodo);
+      const cbp = adjust(r.cobrosBancoProvincia, r.periodo), cbs = adjust(r.cobrosBancoSantander, r.periodo);
+      const cm = adjust(r.cobrosMP, r.periodo), tc = ce + cb + cm;
+      const fr = adjust(r.financiamientoRecibido, r.periodo);
+      const pp = adjust(r.pagosProveedores, r.periodo), su = adjust(r.pagosSueldos, r.periodo);
+      const im = adjust(r.pagosImpuestos, r.periodo), gf = adjust(r.pagosGastosFinancieros, r.periodo);
+      const pt = adjust(r.pagosTarjetas, r.periodo), tp = pp + su + im + gf + pt;
+      const pProv = adjust(r.pagosProvincia, r.periodo), pSant = adjust(r.pagosSantander, r.periodo);
+      const rs = adjust(r.retirosSocios, r.periodo), tr = adjust(r.transferencias, r.periodo);
+      const fn = tc - tp; acum += fn;
+      return { periodo: r.periodo, cobrosEfectivo: ce, cobrosBanco: cb, cobrosBancoProvincia: cbp, cobrosBancoSantander: cbs,
+        cobrosMP: cm, totalCobros: tc, financiamientoRecibido: fr,
+        pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf, pagosTarjetas: pt,
+        totalPagos: tp, pagosProvincia: pProv, pagosSantander: pSant,
+        flujoNeto: fn, acumulado: acum, retirosSocios: rs, transferencias: tr };
+    });
+  }, [raw, adjust]);
 
-  // Inflation-adjust (recompute acumulado after adjustment)
-  let acum = 0;
-  const data: FlujoDeFondosRow[] = raw.map((r) => {
-    const ce = adjust(r.cobrosEfectivo, r.periodo);
-    const cb = adjust(r.cobrosBanco, r.periodo);
-    const cbp = adjust(r.cobrosBancoProvincia, r.periodo);
-    const cbs = adjust(r.cobrosBancoSantander, r.periodo);
-    const cm = adjust(r.cobrosMP, r.periodo);
-    const tc = ce + cb + cm;
-    const pp = adjust(r.pagosProveedores, r.periodo);
-    const su = adjust(r.pagosSueldos, r.periodo);
-    const im = adjust(r.pagosImpuestos, r.periodo);
-    const gf = adjust(r.pagosGastosFinancieros, r.periodo);
-    const tp = pp + su + im + gf;
-    const pProv = adjust(r.pagosProvincia, r.periodo);
-    const pSant = adjust(r.pagosSantander, r.periodo);
-    const rs = adjust(r.retirosSocios, r.periodo);
-    const tr = adjust(r.transferencias, r.periodo);
-    const fn = tc - tp;
-    acum += fn;
-    return {
-      periodo: r.periodo,
-      cobrosEfectivo: ce, cobrosBanco: cb, cobrosBancoProvincia: cbp, cobrosBancoSantander: cbs,
-      cobrosMP: cm, totalCobros: tc,
-      pagosProveedores: pp, pagosSueldos: su, pagosImpuestos: im, pagosGastosFinancieros: gf,
-      totalPagos: tp, pagosProvincia: pProv, pagosSantander: pSant,
-      flujoNeto: fn, acumulado: acum, retirosSocios: rs, transferencias: tr,
+  // ─── Derived ────────────────────────────────────────────────────────────
+  const availableYears = useMemo(() => Array.from(new Set(data.map((r) => parseInt(r.periodo.slice(0, 4))))).sort((a, b) => b - a), [data]);
+  const currentYear = availableYears[0] ?? new Date().getFullYear();
+  const activeYear = selectedYear || currentYear;
+  const prevYear = activeYear - 1;
+  const activeChartYear = chartYear || currentYear;
+
+  const lastPeriodo = useMemo(() => {
+    const yr = data.filter((r) => r.periodo.startsWith(`${activeYear}-`));
+    return yr.length > 0 ? yr[yr.length - 1].periodo : `${activeYear}-12`;
+  }, [data, activeYear]);
+  const lastMonth = parseInt(lastPeriodo.split("-")[1], 10);
+  const lastDay = new Date().getDate();
+
+  const availableMonths = useMemo(() => data.map((r) => r.periodo).sort(), [data]);
+  const activeMonth = selectedMonth || (availableMonths.length > 0 ? availableMonths[availableMonths.length - 1] : "");
+
+  const ytdCurrent = useMemo(() => getYtdData(data, activeYear, lastMonth), [data, activeYear, lastMonth]);
+  const ytdPrev = useMemo(() => getYtdData(data, prevYear, lastMonth), [data, prevYear, lastMonth]);
+
+  // Init compYears when availableYears change
+  useEffect(() => { if (compYears.length === 0 && availableYears.length > 0) setCompYears(availableYears.slice(0, 3)); }, [availableYears, compYears.length]);
+
+  // ─── YTD KPIs ──────────────────────────────────────────────────────────
+  const cobrosYtd = sumField(ytdCurrent, (r) => r.totalCobros);
+  const cobrosPrevYtd = sumField(ytdPrev, (r) => r.totalCobros);
+  const pagosYtd = sumField(ytdCurrent, (r) => r.totalPagos);
+  const pagosPrevYtd = sumField(ytdPrev, (r) => r.totalPagos);
+  const flujoNetoYtd = cobrosYtd - pagosYtd;
+  const flujoNetoPrevYtd = cobrosPrevYtd - pagosPrevYtd;
+  const financYtd = sumField(ytdCurrent, (r) => r.financiamientoRecibido);
+  const financPrevYtd = sumField(ytdPrev, (r) => r.financiamientoRecibido);
+  const financMonths = ytdCurrent.filter((r) => r.financiamientoRecibido > 0).length;
+
+  // ─── Monthly KPIs ──────────────────────────────────────────────────────
+  const monthRow = useMemo(() => data.find((r) => r.periodo === activeMonth), [data, activeMonth]);
+  const prevYearMonth = useMemo(() => {
+    if (!activeMonth) return null;
+    const [y, m] = activeMonth.split("-");
+    return data.find((r) => r.periodo === `${parseInt(y, 10) - 1}-${m}`) ?? null;
+  }, [data, activeMonth]);
+
+  // ─── Table data ────────────────────────────────────────────────────────
+  const yearData = useMemo(() => data.filter((r) => r.periodo.startsWith(`${activeYear}-`)), [data, activeYear]);
+
+  const tableRows = useMemo(() => {
+    if (tableView === "ytd") {
+      const all = aggregatePerYear(data, lastMonth);
+      return compYears.length > 0 ? all.filter((r) => compYears.includes(parseInt(r.key, 10))) : all;
+    }
+    if (tableView === "anual") {
+      const all = aggregatePerYear(data);
+      return compYears.length > 0 ? all.filter((r) => compYears.includes(parseInt(r.key, 10))) : all;
+    }
+    return aggregateDetail(yearData, granularity);
+  }, [data, yearData, granularity, tableView, lastMonth, compYears]);
+
+  // Delta: last vs second-to-last in tableRows
+  const deltaRow = useMemo(() => {
+    if (tableRows.length < 2) return null;
+    const cur = tableRows[tableRows.length - 1];
+    const prev = tableRows[tableRows.length - 2];
+    const d = (ck: keyof AggRow, pk: keyof AggRow) => {
+      const cv = cur[ck] as number, pv = prev[pk] as number;
+      return pv !== 0 ? pctDelta(cv, pv) : null;
     };
-  });
+    return {
+      label: `Δ% ${cur.key} vs ${prev.key}`,
+      cobrosEfectivo: d("cobrosEfectivo","cobrosEfectivo"), cobrosBancoProvincia: d("cobrosBancoProvincia","cobrosBancoProvincia"),
+      cobrosBancoSantander: d("cobrosBancoSantander","cobrosBancoSantander"), cobrosMP: d("cobrosMP","cobrosMP"),
+      totalCobros: d("totalCobros","totalCobros"),
+      pagosProveedores: d("pagosProveedores","pagosProveedores"), pagosSueldos: d("pagosSueldos","pagosSueldos"),
+      pagosImpuestos: d("pagosImpuestos","pagosImpuestos"), pagosGastosFinancieros: d("pagosGastosFinancieros","pagosGastosFinancieros"),
+      pagosTarjetas: d("pagosTarjetas","pagosTarjetas"), totalPagos: d("totalPagos","totalPagos"),
+      flujoNeto: d("flujoNeto","flujoNeto"), retirosSocios: d("retirosSocios","retirosSocios"),
+      transferencias: d("transferencias","transferencias"), financiamientoRecibido: d("financiamientoRecibido","financiamientoRecibido"),
+    };
+  }, [tableRows]);
 
-  const periodos = data.map((r) => r.periodo);
-  const activePeriodo = selectedPeriodo || periodos[periodos.length - 1] || "";
-  const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
-  const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
-  const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
-  const acum12 = data.slice(-12).reduce((s, r) => s + r.flujoNeto, 0);
+  const ytdBadgeText = `YTD al ${String(lastDay).padStart(2, "0")}/${String(lastMonth).padStart(2, "0")}`;
 
-  // Ratio de cobertura: Cobros / Pagos
-  const ratioActual = last.totalPagos > 0 ? last.totalCobros / last.totalPagos : 0;
-  const ratioPrev = prev && prev.totalPagos > 0 ? prev.totalCobros / prev.totalPagos : null;
-  const ratioDelta = ratioPrev !== null ? ((ratioActual - ratioPrev) / ratioPrev) * 100 : null;
+  // ─── Chart data (independent filter) ───────────────────────────────────
+  const chartData = useMemo(() => {
+    let rows: FlujoDeFondosRow[];
+    if (chartRange === "all") rows = data;
+    else if (chartRange === "12m") rows = data.slice(-12);
+    else rows = data.filter((r) => r.periodo.startsWith(`${activeChartYear}-`));
+    if (rows.length === 0) rows = data.slice(-12);
+    return rows.map((r) => {
+      const [y, m] = r.periodo.split("-");
+      return { ...r, label: chartRange === "all" ? `${SHORT_MONTHS[parseInt(m, 10) - 1]} ${y.slice(2)}` : SHORT_MONTHS[parseInt(m, 10) - 1] ?? m };
+    });
+  }, [data, activeChartYear, chartRange]);
 
-  // Días de caja: saldo total / promedio pagos diarios (últimos 3 meses)
-  const saldoTotal = saldos.reduce((s, c) => s + c.saldoArs, 0);
-  const last3 = data.slice(-3);
-  const avgMonthlyPagos = last3.length > 0 ? last3.reduce((s, r) => s + r.totalPagos, 0) / last3.length : 0;
-  const avgDailyPagos = avgMonthlyPagos / 30;
-  const diasDeCaja = avgDailyPagos > 0 ? Math.round(saldoTotal / avgDailyPagos) : 0;
+  const chartDataAccum = useMemo(() => {
+    let acc = 0;
+    return chartData.map((r) => { acc += r.flujoNeto; return { ...r, acumAnual: acc }; });
+  }, [chartData]);
 
-  // Available years for detail component
-  const availableYears = Array.from(new Set(data.map((r) => parseInt(r.periodo.slice(0, 4))))).sort((a, b) => b - a);
+  // toggle year in compYears
+  const toggleCompYear = (y: number) => {
+    setCompYears((prev) => prev.includes(y) ? prev.filter((x) => x !== y) : [...prev, y].sort((a, b) => a - b));
+  };
 
-  const chartData = data.slice(-24).map((r) => ({ ...r, label: shortLabel(r.periodo) }));
+  // ─── Render ────────────────────────────────────────────────────────────
+
+  if (loading) return <div className="flex items-center justify-center py-24"><Loader2 className="h-8 w-8 animate-spin text-muted-foreground" /><span className="ml-3 text-muted-foreground">Cargando datos...</span></div>;
+  if (error) return <Card><CardContent className="flex items-center gap-3 py-8"><AlertCircle className="h-5 w-5 text-red-500" /><p className="text-sm">{error}</p></CardContent></Card>;
+  if (raw.length === 0) return <Card><CardContent className="py-8 text-center"><AlertCircle className="mx-auto h-8 w-8 text-muted-foreground" /><p className="mt-3 font-medium">Sin datos de flujo de fondos</p></CardContent></Card>;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Flujo de Fondos</h1>
-          <p className="text-muted-foreground">Método directo — {periodoLabel(last.periodo)}</p>
+          <p className="text-muted-foreground mt-1">Método directo — {activeYear}{adjusted && <span className="ml-2 text-xs text-amber-600">(pesos constantes)</span>}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <MonthSelector periodos={periodos} value={activePeriodo} onChange={setSelectedPeriodo} />
-          <InflationToggle />
+        <InflationToggle />
+      </div>
+
+      {/* ═══ SECCIÓN 1: KPIs ═══════════════════════════════════════════════ */}
+
+      {/* Fila 1: YTD — all black except flujo neto */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <KpiCard title={`Cobros operativos (${ytdBadgeText})`} value={cobrosYtd} delta={cobrosPrevYtd > 0 ? pctDelta(cobrosYtd, cobrosPrevYtd) : null} />
+        <KpiCard title={`Pagos operativos (${ytdBadgeText})`} value={pagosYtd} delta={pagosPrevYtd > 0 ? pctDelta(pagosYtd, pagosPrevYtd) : null} invertDelta />
+        <KpiCard title={`Flujo neto operativo (${ytdBadgeText})`} value={flujoNetoYtd} delta={flujoNetoPrevYtd !== 0 ? pctDelta(flujoNetoYtd, flujoNetoPrevYtd) : null} netoColor />
+        <KpiCard title={`Financiamiento recibido (${ytdBadgeText})`} value={financYtd} delta={financPrevYtd > 0 ? pctDelta(financYtd, financPrevYtd) : null} subtitle={financMonths > 0 ? `${financMonths} ${financMonths === 1 ? "mes" : "meses"} con desembolso` : "Sin desembolsos"} />
+      </div>
+
+      {/* Fila 2: Mes — all black except flujo neto */}
+      <div className="space-y-3">
+        <div className="flex items-center gap-3">
+          <p className="text-sm font-medium text-muted-foreground">Mes seleccionado:</p>
+          <select value={activeMonth} onChange={(e) => setSelectedMonth(e.target.value)} className="rounded-md border bg-background px-3 py-1.5 text-sm">
+            {availableMonths.map((p) => <option key={p} value={p}>{periodoLabel(p)}</option>)}
+          </select>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <KpiCard title={`Cobros — ${monthRow ? periodoLabel(monthRow.periodo) : ""}`} value={monthRow?.totalCobros ?? 0} delta={prevYearMonth && monthRow ? pctDelta(monthRow.totalCobros, prevYearMonth.totalCobros) : null} />
+          <KpiCard title={`Pagos — ${monthRow ? periodoLabel(monthRow.periodo) : ""}`} value={monthRow?.totalPagos ?? 0} delta={prevYearMonth && monthRow ? pctDelta(monthRow.totalPagos, prevYearMonth.totalPagos) : null} invertDelta />
+          <KpiCard title={`Flujo neto — ${monthRow ? periodoLabel(monthRow.periodo) : ""}`} value={monthRow?.flujoNeto ?? 0} delta={prevYearMonth && monthRow && prevYearMonth.flujoNeto !== 0 ? pctDelta(monthRow.flujoNeto, prevYearMonth.flujoNeto) : null} netoColor />
+          <KpiCard title={`Retiros socios — ${monthRow ? periodoLabel(monthRow.periodo) : ""}`} value={monthRow?.retirosSocios ?? 0} delta={prevYearMonth && monthRow && prevYearMonth.retirosSocios > 0 ? pctDelta(monthRow.retirosSocios, prevYearMonth.retirosSocios) : null} invertDelta />
         </div>
       </div>
 
-      {/* KPIs — reflejan el mes seleccionado */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-        <KpiCard title="Total Cobrado" value={last.totalCobros} delta={prev ? pctDelta(last.totalCobros, prev.totalCobros) : null} icon={ArrowDownCircle} />
-        <KpiCard title="Total Pagado" value={last.totalPagos} delta={prev ? pctDelta(last.totalPagos, prev.totalPagos) : null} icon={ArrowUpCircle} invertDelta />
-        <KpiCard title="Flujo Neto" value={last.flujoNeto} delta={prev ? pctDelta(last.flujoNeto, prev.flujoNeto) : null} icon={TrendingUp} />
-        <KpiCard title="Acumulado 12m" value={acum12} delta={null} icon={Sigma} />
-        <KpiCard
-          title="Ratio de Cobertura"
-          value={ratioActual}
-          delta={ratioDelta}
-          icon={Scale}
-          format={(v) => `${v.toFixed(2)}x`}
-          subtitle={ratioActual >= 1 ? "Cobrás más de lo que pagás" : "Pagás más de lo que cobrás"}
-        />
-        <KpiCard
-          title="Días de Caja"
-          value={diasDeCaja}
-          delta={null}
-          icon={Calendar}
-          format={(v) => `${v} días`}
-          subtitle={saldos.length > 0 ? `Saldo: ${formatARS(saldoTotal)}` : "Sin datos de saldos"}
-        />
-      </div>
-
-      {/* Main charts — full width */}
-      <div className="grid gap-4">
-        <Card>
-          <CardHeader><CardTitle className="text-base">Cobros vs Pagos</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={420}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Legend />
-                <Bar dataKey="totalCobros" name="Cobros" fill={COLORS.cobros} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="totalPagos" name="Pagos" fill={COLORS.pagos} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">Flujo Neto Acumulado</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={420}>
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
-                <Line type="monotone" dataKey="acumulado" name="Acumulado" stroke={COLORS.neto} strokeWidth={2} dot={{ r: 2 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Composition charts — 2 columns on desktop */}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader><CardTitle className="text-base">Composición de Cobros</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Legend />
-                <Bar dataKey="cobrosEfectivo" name="Efectivo" stackId="c" fill={COLORS.efectivo} />
-                <Bar dataKey="cobrosBancoProvincia" name="Bco. Provincia" stackId="c" fill={COLORS.provincia} />
-                <Bar dataKey="cobrosBancoSantander" name="Bco. Santander" stackId="c" fill={COLORS.santander} />
-                <Bar dataKey="cobrosMP" name="Mercado Pago" stackId="c" fill={COLORS.mp} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><CardTitle className="text-base">Composición de Egresos</CardTitle></CardHeader>
-          <CardContent>
-            <ResponsiveContainer width="100%" height={400}>
-              <BarChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                <XAxis dataKey="label" fontSize={12} />
-                <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-                <Tooltip formatter={arsTooltip} />
-                <Legend />
-                {/* Operativos (stacked) */}
-                <Bar dataKey="pagosProveedores" name="Proveedores" stackId="p" fill={COLORS.proveedores} />
-                <Bar dataKey="pagosSueldos" name="Sueldos" stackId="p" fill={COLORS.sueldos} />
-                <Bar dataKey="pagosImpuestos" name="Impuestos" stackId="p" fill={COLORS.impuestos} />
-                <Bar dataKey="pagosGastosFinancieros" name="Gastos Financieros" stackId="p" fill={COLORS.financieros} radius={[4, 4, 0, 0]} />
-                {/* No operativo (separate bars, not stacked) */}
-                <Bar dataKey="retirosSocios" name="Retiros socios" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
-                <Bar dataKey="transferencias" name="Transferencias" fill={COLORS.transferencias} radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Pagos por banco */}
+      {/* ═══ SECCIÓN 2: Cuadro comparativo ════════════════════════════════ */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Pagos por Banco (débitos clasificados, sin MP)</CardTitle></CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="label" fontSize={12} />
-              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar dataKey="pagosProvincia" name="Bco. Provincia" stackId="bank" fill={COLORS.provincia} />
-              <Bar dataKey="pagosSantander" name="Bco. Santander" stackId="bank" fill={COLORS.santander} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
-
-      {/* Table with granularity selector */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">Resumen {GRANULARITY_LABELS[granularity]}</CardTitle>
-          <div className="flex items-center rounded-lg border text-xs font-medium">
-            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
-              <button
-                key={g}
-                onClick={() => setGranularity(g)}
-                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
-                  granularity === g
-                    ? "bg-primary text-primary-foreground"
-                    : "hover:bg-accent"
-                }`}
-              >
-                {g}
-              </button>
-            ))}
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-center gap-3">
+              <CardTitle className="text-base">Cuadro comparativo</CardTitle>
+              <Badge variant="secondary" className="text-[10px]">{ytdBadgeText}</Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              {tableView === "detalle" ? (
+                <select value={activeYear} onChange={(e) => setSelectedYear(Number(e.target.value))} className="rounded-md border bg-background px-3 py-1.5 text-sm">
+                  {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+                </select>
+              ) : (
+                /* Multi-year checkboxes for comparison views */
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {availableYears.map((y) => (
+                    <label key={y} className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs cursor-pointer transition-colors ${compYears.includes(y) ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}>
+                      <input type="checkbox" checked={compYears.includes(y)} onChange={() => toggleCompYear(y)} className="sr-only" />
+                      {y}
+                    </label>
+                  ))}
+                </div>
+              )}
+              {tableView === "detalle" && (
+                <Seg options={["mensual","trimestral","anual"] as Granularity[]} value={granularity} onChange={setGranularity} />
+              )}
+              <Seg options={["detalle","ytd","anual"] as TableView[]} value={tableView} onChange={setTableView} labels={{ detalle: "Detalle", ytd: "Comp. YTD", anual: "Comp. Anual" }} />
+            </div>
           </div>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
+                <TableRow className="border-b-0">
+                  <TableHead rowSpan={2} className="sticky left-0 bg-background z-20 align-bottom border-r">Periodo</TableHead>
+                  <TableHead colSpan={5} className="text-center text-xs font-medium bg-green-50/50 dark:bg-green-950/20 border-b">COBROS</TableHead>
+                  <TableHead colSpan={6} className="text-center text-xs font-medium bg-red-50/50 dark:bg-red-950/20 border-b">EGRESOS</TableHead>
+                  <TableHead rowSpan={2} className="text-right align-bottom font-semibold">Flujo Neto</TableHead>
+                  <TableHead colSpan={3} className="text-center text-xs font-medium bg-muted/30 border-b">NO OPERACIONAL</TableHead>
+                </TableRow>
                 <TableRow>
-                  <TableHead>Período</TableHead>
-                  <TableHead className="text-right">Efectivo</TableHead>
-                  <TableHead className="text-right">Provincia</TableHead>
-                  <TableHead className="text-right">Santander</TableHead>
-                  <TableHead className="text-right">MP</TableHead>
-                  <TableHead className="text-right font-bold">Cobros</TableHead>
-                  <TableHead className="text-right">Proveedores</TableHead>
-                  <TableHead className="text-right">Sueldos</TableHead>
-                  <TableHead className="text-right">Impuestos</TableHead>
-                  <TableHead className="text-right">Gtos. Fin.</TableHead>
-                  <TableHead className="text-right font-bold">Pagos</TableHead>
-                  <TableHead className="text-right">Retiros</TableHead>
-                  <TableHead className="text-right">Transf.</TableHead>
-                  <TableHead className="text-right font-bold">Neto</TableHead>
-                  <TableHead className="text-right font-bold">Acumulado</TableHead>
+                  <TableHead className="text-right bg-green-50/50 dark:bg-green-950/20">Efectivo</TableHead>
+                  <TableHead className="text-right bg-green-50/50 dark:bg-green-950/20">Bco.Prov</TableHead>
+                  <TableHead className="text-right bg-green-50/50 dark:bg-green-950/20">Bco.Sant</TableHead>
+                  <TableHead className="text-right bg-green-50/50 dark:bg-green-950/20">MP</TableHead>
+                  <TableHead className="text-right font-semibold bg-green-50/50 dark:bg-green-950/20">Total</TableHead>
+                  <TableHead className="text-right bg-red-50/50 dark:bg-red-950/20">Proveedores</TableHead>
+                  <TableHead className="text-right bg-red-50/50 dark:bg-red-950/20">Sueldos</TableHead>
+                  <TableHead className="text-right bg-red-50/50 dark:bg-red-950/20">Impuestos</TableHead>
+                  <TableHead className="text-right bg-red-50/50 dark:bg-red-950/20">Gtos.Fin.</TableHead>
+                  <TableHead className="text-right bg-red-50/50 dark:bg-red-950/20">Tarjetas</TableHead>
+                  <TableHead className="text-right font-semibold bg-red-50/50 dark:bg-red-950/20">Total</TableHead>
+                  <TableHead className="text-right bg-muted/30">Retiros</TableHead>
+                  <TableHead className="text-right bg-muted/30">Transf.</TableHead>
+                  <TableHead className="text-right bg-muted/30">Financ.</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {aggregateFlujoDeFondos(data, granularity).map((r) => (
-                  <TableRow key={r.key}>
-                    <TableCell className="font-medium whitespace-nowrap">{r.label}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cobrosEfectivo)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cobrosBancoProvincia)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cobrosBancoSantander)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.cobrosMP)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatARS(r.totalCobros)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.pagosProveedores)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.pagosSueldos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.pagosImpuestos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.pagosGastosFinancieros)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatARS(r.totalPagos)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.retirosSocios)}</TableCell>
-                    <TableCell className="text-right">{formatARS(r.transferencias)}</TableCell>
-                    <TableCell className={`text-right font-bold ${r.flujoNeto >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.flujoNeto)}</TableCell>
-                    <TableCell className={`text-right font-bold ${r.acumulado >= 0 ? "text-green-600" : "text-red-600"}`}>{formatARS(r.acumulado)}</TableCell>
+                {tableRows.map((r, idx) => (
+                  <TableRow key={r.key} className={idx % 2 === 0 ? "bg-muted/20" : ""}>
+                    <TableCell className="sticky left-0 z-20 border-r font-medium whitespace-nowrap bg-background">{r.label}</TableCell>
+                    <TableCell className="text-right"><Ars value={r.cobrosEfectivo} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.cobrosBancoProvincia} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.cobrosBancoSantander} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.cobrosMP} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.totalCobros} bold /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.pagosProveedores} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.pagosSueldos} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.pagosImpuestos} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.pagosGastosFinancieros} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.pagosTarjetas} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.totalPagos} bold /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.flujoNeto} bold neto /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.retirosSocios} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.transferencias} /></TableCell>
+                    <TableCell className="text-right"><Ars value={r.financiamientoRecibido} /></TableCell>
                   </TableRow>
                 ))}
+                {deltaRow && (
+                  <TableRow className="border-t-2 bg-muted/50">
+                    <TableCell className="sticky left-0 z-20 border-r bg-muted/50 font-semibold text-xs">{deltaRow.label}</TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.cobrosEfectivo} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.cobrosBancoProvincia} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.cobrosBancoSantander} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.cobrosMP} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.totalCobros} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.pagosProveedores} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.pagosSueldos} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.pagosImpuestos} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.pagosGastosFinancieros} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.pagosTarjetas} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.totalPagos} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.flujoNeto} favorable="higher" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.retirosSocios} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.transferencias} favorable="lower" /></TableCell>
+                    <TableCell className="text-right"><DeltaCell value={deltaRow.financiamientoRecibido} favorable="higher" /></TableCell>
+                  </TableRow>
+                )}
               </TableBody>
             </Table>
           </div>
         </CardContent>
       </Card>
 
-      {/* Detalle por categoría */}
-      {availableYears.length > 0 && (
-        <DetallePorCategoria availableYears={availableYears} adjust={adjust} />
-      )}
+      {/* ═══ SECCIÓN 3: Gráficos — full width, own filters ══════════════ */}
+      <div className="space-y-6">
+        {/* Chart filter bar */}
+        <div className="flex items-center gap-3">
+          <p className="text-sm font-medium text-muted-foreground">Gráficos:</p>
+          <select value={activeChartYear} onChange={(e) => { setChartYear(Number(e.target.value)); setChartRange("year"); }} className="rounded-md border bg-background px-3 py-1.5 text-sm">
+            {availableYears.map((y) => <option key={y} value={y}>{y}</option>)}
+          </select>
+          <Seg options={["year","12m","all"] as ChartRange[]} value={chartRange} onChange={setChartRange} labels={{ year: "Año completo", "12m": "Últimos 12m", all: "Todos" }} />
+        </div>
 
-      {/* ================================================================= */}
-      {/* LARGE CHARTS — below detail section                               */}
-      {/* ================================================================= */}
+        {/* 1. Cobros vs Pagos */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Cobros vs Pagos</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartData} barGap={2}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} tickLine={false} />
+                <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} tickLine={false} />
+                <Tooltip formatter={arsTooltip} /><Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+                <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                <Bar dataKey="totalCobros" name="Cobros" fill={COLORS.cobros} radius={[3, 3, 0, 0]} />
+                <Bar dataKey="totalPagos" name="Pagos" fill={COLORS.pagos} radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      {/* Cobros vs Pagos — side by side bars */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Cobros vs Pagos (mensual)</CardTitle></CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="label" fontSize={12} />
-              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar dataKey="totalCobros" name="Cobros" fill="#22c55e" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="totalPagos" name="Pagos" fill="#ef4444" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        {/* 2. Composición de egresos */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Composición de egresos</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} tickLine={false} />
+                <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} tickLine={false} />
+                <Tooltip formatter={arsTooltip} /><Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+                <Area type="monotone" dataKey="pagosProveedores" name="Proveedores" stackId="1" fill={COLORS.proveedores} stroke={COLORS.proveedores} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="pagosSueldos" name="Sueldos" stackId="1" fill={COLORS.sueldos} stroke={COLORS.sueldos} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="pagosImpuestos" name="Impuestos" stackId="1" fill={COLORS.impuestos} stroke={COLORS.impuestos} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="pagosGastosFinancieros" name="Gtos. Fin." stackId="1" fill={COLORS.financieros} stroke={COLORS.financieros} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="pagosTarjetas" name="Tarjetas" stackId="1" fill={COLORS.tarjetas} stroke={COLORS.tarjetas} fillOpacity={0.7} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      {/* Composición de Egresos — stacked */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Composición de Egresos (mensual)</CardTitle></CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="label" fontSize={12} />
-              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <Legend />
-              <Bar dataKey="pagosProveedores" name="Proveedores" stackId="e" fill={COLORS.proveedores} />
-              <Bar dataKey="pagosSueldos" name="Sueldos" stackId="e" fill={COLORS.sueldos} />
-              <Bar dataKey="pagosImpuestos" name="Impuestos" stackId="e" fill={COLORS.impuestos} />
-              <Bar dataKey="pagosGastosFinancieros" name="Gtos. Financieros" stackId="e" fill={COLORS.financieros} />
-              <Bar dataKey="retirosSocios" name="Retiros Socios" stackId="e" fill={COLORS.retirosSocios} radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        {/* 3. Flujo neto mensual (NEW — green/red bars) */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Flujo neto mensual</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} tickLine={false} />
+                <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} tickLine={false} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                <Bar dataKey="flujoNeto" name="Flujo Neto" radius={[3, 3, 0, 0]}>
+                  {chartData.map((entry, i) => (
+                    <Cell key={i} fill={entry.flujoNeto >= 0 ? COLORS.cobros : COLORS.pagos} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      {/* Flujo Neto Acumulado — area chart */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Flujo Neto Acumulado</CardTitle></CardHeader>
-        <CardContent>
-          <ResponsiveContainer width="100%" height={350}>
-            <AreaChart data={data.slice(-12).map((r) => ({ ...r, label: shortLabel(r.periodo) }))}>
-              <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-              <XAxis dataKey="label" fontSize={12} />
-              <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
-              <Tooltip formatter={arsTooltip} />
-              <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
-              <Area type="monotone" dataKey="acumulado" name="Acumulado" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} strokeWidth={2} />
-            </AreaChart>
-          </ResponsiveContainer>
-        </CardContent>
-      </Card>
+        {/* 4. Flujo neto acumulado */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Flujo neto acumulado</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={chartDataAccum}>
+                <defs>
+                  <linearGradient id="gradPos" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={COLORS.cobros} stopOpacity={0.3} />
+                    <stop offset="100%" stopColor={COLORS.cobros} stopOpacity={0.05} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} tickLine={false} />
+                <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} tickLine={false} />
+                <Tooltip formatter={arsTooltip} />
+                <ReferenceLine y={0} stroke="#666" strokeDasharray="3 3" />
+                <Area type="monotone" dataKey="acumAnual" name="Acumulado" stroke={COLORS.neto} fill="url(#gradPos)" strokeWidth={2} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
 
-      {/* Composición de Cobros — Pie/Donut chart */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">Composición de Cobros (año actual)</CardTitle></CardHeader>
-        <CardContent className="flex justify-center">
-          <PieChartCobros data={data} />
-        </CardContent>
-      </Card>
-    </div>
-  );
-}
-
-const PIE_COLORS = ["#f59e0b", "#3b82f6", "#ef4444", "#8b5cf6"];
-
-function PieChartCobros({ data }: { data: FlujoDeFondosRow[] }) {
-  const pieData = useMemo(() => {
-    // Use last 12 months
-    const recent = data.slice(-12);
-    const values = [
-      { name: "Efectivo", value: recent.reduce((s, r) => s + r.cobrosEfectivo, 0) },
-      { name: "Bco. Provincia", value: recent.reduce((s, r) => s + r.cobrosBancoProvincia, 0) },
-      { name: "Bco. Santander", value: recent.reduce((s, r) => s + r.cobrosBancoSantander, 0) },
-      { name: "Mercado Pago", value: recent.reduce((s, r) => s + r.cobrosMP, 0) },
-    ];
-    return values.filter((v) => v.value > 0);
-  }, [data]);
-
-  if (pieData.length === 0) return <p className="text-muted-foreground">Sin datos</p>;
-
-  const total = pieData.reduce((s, d) => s + d.value, 0);
-
-  return (
-    <div className="flex flex-col items-center gap-4 lg:flex-row lg:gap-8">
-      <PieChart width={400} height={400}>
-        <Pie
-          data={pieData}
-          cx={200}
-          cy={200}
-          innerRadius={80}
-          outerRadius={160}
-          paddingAngle={2}
-          dataKey="value"
-          label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
-        >
-          {pieData.map((_, idx) => (
-            <Cell key={idx} fill={PIE_COLORS[idx % PIE_COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip formatter={(v) => formatARS(Number(v ?? 0))} />
-      </PieChart>
-      <div className="space-y-2">
-        {pieData.map((d, idx) => (
-          <div key={d.name} className="flex items-center gap-2">
-            <div className="h-3 w-3 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }} />
-            <span className="text-sm">{d.name}: {formatARS(d.value)} ({((d.value / total) * 100).toFixed(1)}%)</span>
-          </div>
-        ))}
-        <div className="border-t pt-2 font-medium text-sm">Total: {formatARS(total)}</div>
+        {/* 5. Cobros por fuente */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">Cobros por fuente</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <AreaChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="label" fontSize={12} tickLine={false} />
+                <YAxis fontSize={11} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} tickLine={false} />
+                <Tooltip formatter={arsTooltip} /><Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
+                <Area type="monotone" dataKey="cobrosEfectivo" name="Efectivo" stackId="1" fill={COLORS.efectivo} stroke={COLORS.efectivo} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="cobrosBanco" name="Banco" stackId="1" fill={COLORS.banco} stroke={COLORS.banco} fillOpacity={0.7} />
+                <Area type="monotone" dataKey="cobrosMP" name="Mercado Pago" stackId="1" fill={COLORS.mp} stroke={COLORS.mp} fillOpacity={0.7} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </CardContent>
+        </Card>
       </div>
+
+      {/* ═══ SECCIÓN 4: Análisis por categoría ════════════════════════════ */}
+      {availableYears.length > 0 && (
+        <DetallePorCategoria availableYears={availableYears} adjust={adjust} flujoData={data} activeYear={activeYear} />
+      )}
     </div>
   );
 }

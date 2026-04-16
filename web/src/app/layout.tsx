@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { Sidebar } from "@/components/layout/sidebar";
 import { MobileNav } from "@/components/layout/mobile-nav";
+import { MainContent } from "@/components/layout/main-content";
 import { Providers } from "./providers";
 import "./globals.css";
 
@@ -28,9 +29,7 @@ export default function RootLayout({
         <Providers>
           <Sidebar />
           <MobileNav />
-          <main className="min-h-screen lg:pl-64">
-            <div className="container mx-auto p-6 lg:p-8">{children}</div>
-          </main>
+          <MainContent>{children}</MainContent>
         </Providers>
       </body>
     </html>

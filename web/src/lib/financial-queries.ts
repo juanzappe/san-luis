@@ -21,10 +21,12 @@ export interface FlujoDeFondosRow {
   cobrosBancoSantander: number;
   cobrosMP: number;
   totalCobros: number;
+  financiamientoRecibido: number;
   pagosProveedores: number;
   pagosSueldos: number;
   pagosImpuestos: number;
   pagosGastosFinancieros: number;
+  pagosTarjetas: number;
   totalPagos: number;
   pagosProvincia: number;
   pagosSantander: number;
@@ -46,10 +48,12 @@ type RpcFlujoRow = {
   pagos_sueldos: number;
   pagos_impuestos: number;
   pagos_gastos_financieros: number;
+  pagos_tarjetas: number;
   pagos_provincia: number;
   pagos_santander: number;
   retiros_socios: number;
   transferencias: number;
+  financiamiento_recibido: number;
 };
 
 export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
@@ -69,11 +73,14 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     const cobrosMP = Number(r.cobros_mp) || 0;
     const totalCobros = cobrosEfectivo + cobrosBanco + cobrosMP;
 
+    const financiamientoRecibido = Number(r.financiamiento_recibido) || 0;
+
     const pagosProveedores = Number(r.pagos_proveedores) || 0;
     const pagosSueldos = Number(r.pagos_sueldos) || 0;
     const pagosImpuestos = Number(r.pagos_impuestos) || 0;
     const pagosGastosFinancieros = Number(r.pagos_gastos_financieros) || 0;
-    const totalPagos = pagosProveedores + pagosSueldos + pagosImpuestos + pagosGastosFinancieros;
+    const pagosTarjetas = Number(r.pagos_tarjetas) || 0;
+    const totalPagos = pagosProveedores + pagosSueldos + pagosImpuestos + pagosGastosFinancieros + pagosTarjetas;
     const pagosProvincia = Number(r.pagos_provincia) || 0;
     const pagosSantander = Number(r.pagos_santander) || 0;
     const retirosSocios = Number(r.retiros_socios) || 0;
@@ -85,8 +92,8 @@ export async function fetchFlujoDeFondos(): Promise<FlujoDeFondosRow[]> {
     return {
       periodo: r.periodo,
       cobrosEfectivo, cobrosBanco, cobrosBancoProvincia, cobrosBancoSantander,
-      cobrosMP, totalCobros,
-      pagosProveedores, pagosSueldos, pagosImpuestos, pagosGastosFinancieros,
+      cobrosMP, totalCobros, financiamientoRecibido,
+      pagosProveedores, pagosSueldos, pagosImpuestos, pagosGastosFinancieros, pagosTarjetas,
       totalPagos, pagosProvincia, pagosSantander,
       flujoNeto,
       acumulado: acum,
@@ -575,7 +582,7 @@ export async function insertSaldoManual(
 // 9. Flujo de Fondos — Detalle por categoría
 // ---------------------------------------------------------------------------
 
-export type CategoriaFlujo = "proveedores" | "sueldos" | "impuestos" | "financieros" | "retiros" | "transferencias" | "otros";
+export type CategoriaFlujo = "proveedores" | "sueldos" | "impuestos" | "financieros" | "tarjetas" | "retiros" | "transferencias" | "otros";
 
 export interface FFDetalleRow {
   periodo: string;
@@ -618,7 +625,7 @@ export async function fetchFlujoDeFondosDetalle(anio: number): Promise<FFDetalle
 // 10. Tesorería — Inversiones actuales
 // ---------------------------------------------------------------------------
 
-export interface InversionRow {
+export interface InversionActualRow {
   nombre: string;
   ticker: string | null;
   moneda: string;
@@ -628,7 +635,7 @@ export interface InversionRow {
   fechaValuacion: string | null;
 }
 
-export async function fetchInversionesActuales(): Promise<InversionRow[]> {
+export async function fetchInversionesActuales(): Promise<InversionActualRow[]> {
   const rows = await fetchWithRetry(async () => {
     // Get the latest fecha_valuacion
     const maxRes = await supabase
@@ -682,4 +689,96 @@ export async function fetchEvolucionSaldos(meses: number = 12): Promise<Evolucio
     banco: String(r.banco),
     saldo: Number(r.saldo) || 0,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// 12. Configuración manual (key-value)
+// ---------------------------------------------------------------------------
+
+export async function fetchConfigManual(key: string): Promise<string | null> {
+  const res = await supabase
+    .from("configuracion_manual")
+    .select("valor")
+    .eq("key", key)
+    .maybeSingle();
+  if (res.error) throw res.error;
+  return res.data?.valor as string | null;
+}
+
+export async function upsertConfigManual(key: string, valor: string): Promise<void> {
+  const res = await supabase
+    .from("configuracion_manual")
+    .upsert(
+      { key, valor, updated_at: new Date().toISOString() },
+      { onConflict: "key" },
+    );
+  if (res.error) throw res.error;
+}
+
+// ---------------------------------------------------------------------------
+// 13. Inmuebles
+// ---------------------------------------------------------------------------
+
+export interface InmuebleRow {
+  id: number;
+  descripcion: string;
+  direccion: string | null;
+  valorEstimado: number;
+  fechaValuacion: string | null;
+  observaciones: string | null;
+}
+
+export async function fetchInmuebles(): Promise<InmuebleRow[]> {
+  const res = await supabase
+    .from("inmueble")
+    .select("id, descripcion, direccion, valor_estimado, fecha_valuacion, observaciones")
+    .order("id", { ascending: true });
+  if (res.error) throw res.error;
+  return (res.data ?? []).map((r) => ({
+    id: r.id as number,
+    descripcion: (r.descripcion ?? "") as string,
+    direccion: (r.direccion as string) ?? null,
+    valorEstimado: Number(r.valor_estimado) || 0,
+    fechaValuacion: (r.fecha_valuacion as string) ?? null,
+    observaciones: (r.observaciones as string) ?? null,
+  }));
+}
+
+export async function insertInmueble(data: Omit<InmuebleRow, "id">): Promise<InmuebleRow> {
+  const res = await supabase
+    .from("inmueble")
+    .insert({
+      descripcion: data.descripcion,
+      direccion: data.direccion,
+      valor_estimado: data.valorEstimado,
+      fecha_valuacion: data.fechaValuacion,
+      observaciones: data.observaciones,
+    })
+    .select("id, descripcion, direccion, valor_estimado, fecha_valuacion, observaciones")
+    .single();
+  if (res.error) throw res.error;
+  return {
+    id: res.data.id as number,
+    descripcion: res.data.descripcion as string,
+    direccion: (res.data.direccion as string) ?? null,
+    valorEstimado: Number(res.data.valor_estimado) || 0,
+    fechaValuacion: (res.data.fecha_valuacion as string) ?? null,
+    observaciones: (res.data.observaciones as string) ?? null,
+  };
+}
+
+export async function updateInmueble(id: number, data: Partial<Omit<InmuebleRow, "id">>): Promise<void> {
+  const payload: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (data.descripcion !== undefined) payload.descripcion = data.descripcion;
+  if (data.direccion !== undefined) payload.direccion = data.direccion;
+  if (data.valorEstimado !== undefined) payload.valor_estimado = data.valorEstimado;
+  if (data.fechaValuacion !== undefined) payload.fecha_valuacion = data.fechaValuacion;
+  if (data.observaciones !== undefined) payload.observaciones = data.observaciones;
+  const res = await supabase.from("inmueble").update(payload).eq("id", id);
+  if (res.error) throw res.error;
+}
+
+export async function deleteInmueble(id: number): Promise<void> {
+  const res = await supabase.from("inmueble").delete().eq("id", id);
+  if (res.error) throw res.error;
 }
