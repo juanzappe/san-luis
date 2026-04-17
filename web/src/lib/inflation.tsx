@@ -4,11 +4,11 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import useSWR from "swr";
 import { supabase } from "@/lib/supabase";
 
 // ---------------------------------------------------------------------------
@@ -41,57 +41,60 @@ const InflationContext = createContext<InflationCtx>({
 // Provider
 // ---------------------------------------------------------------------------
 
+const EMPTY_IPC_MAP = new Map<string, number>();
+
+async function fetchIpcMap(): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from("indicador_macro")
+    .select("fecha, valor")
+    .eq("tipo", "ipc")
+    .order("fecha", { ascending: true });
+  if (error || !data || data.length === 0) return EMPTY_IPC_MAP;
+  const map = new Map<string, number>();
+  for (const row of data as IpcEntry[]) {
+    if (!row.fecha || row.fecha.length < 7) continue;
+    const periodo = row.fecha.slice(0, 7);
+    map.set(periodo, Number(row.valor));
+  }
+  return map;
+}
+
 export function InflationProvider({ children }: { children: ReactNode }) {
   const [adjusted, setAdjusted] = useState(true); // default: pesos constantes
-  const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
-  const [ipcLoaded, setIpcLoaded] = useState(false);
 
-  // Fetch IPC from indicador_macro
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const { data, error } = await supabase
-          .from("indicador_macro")
-          .select("fecha, valor")
-          .eq("tipo", "ipc")
-          .order("fecha", { ascending: true });
-        if (error || !data || data.length === 0) {
-          setIpcLoaded(true);
-          return;
-        }
-        const map = new Map<string, number>();
-        for (const row of data as IpcEntry[]) {
-          if (!row.fecha || row.fecha.length < 7) continue;
-          const periodo = row.fecha.slice(0, 7);
-          map.set(periodo, Number(row.valor));
-        }
-        setIpcMap(map);
-      } catch {
-        // silently ignore network errors; ipcLoaded=true lets the app render without IPC
-      } finally {
-        setIpcLoaded(true);
-      }
-    };
-    load();
-  }, []);
+  // IPC data is shared across the entire app. SWR dedupes the fetch across
+  // any component that calls it and keeps the result cached between
+  // navigations. IPC changes monthly, so no need to revalidate aggressively.
+  const { data: ipcMap, isLoading } = useSWR(
+    "inflation:ipc",
+    fetchIpcMap,
+    {
+      // Cachear 1 hora (IPC cambia mensualmente)
+      dedupingInterval: 3_600_000,
+      revalidateOnFocus: false,
+      revalidateIfStale: false,
+    },
+  );
+  const resolvedIpcMap = ipcMap ?? EMPTY_IPC_MAP;
+  const ipcLoaded = !isLoading;
 
   // Base IPC = último mes disponible
   const ipcBase = useMemo(() => {
-    if (ipcMap.size === 0) return 1;
-    const sorted = Array.from(ipcMap.entries()).sort((a, b) =>
+    if (resolvedIpcMap.size === 0) return 1;
+    const sorted = Array.from(resolvedIpcMap.entries()).sort((a, b) =>
       a[0].localeCompare(b[0]),
     );
     return sorted[sorted.length - 1][1];
-  }, [ipcMap]);
+  }, [resolvedIpcMap]);
 
   const adjust = useCallback(
     (monto: number, periodo: string): number => {
-      if (!adjusted || ipcMap.size === 0) return monto;
-      const ipcMes = ipcMap.get(periodo);
+      if (!adjusted || resolvedIpcMap.size === 0) return monto;
+      const ipcMes = resolvedIpcMap.get(periodo);
       if (!ipcMes || ipcMes === 0) return monto;
       return monto * (ipcBase / ipcMes);
     },
-    [adjusted, ipcMap, ipcBase],
+    [adjusted, resolvedIpcMap, ipcBase],
   );
 
   const value = useMemo(

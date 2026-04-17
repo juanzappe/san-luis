@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
+import useSWR from "swr";
 import { useInflation } from "@/lib/inflation";
 import {
   type EgresoRow,
@@ -25,49 +26,72 @@ export interface UseEgresosDataResult {
   periodos: string[];
 }
 
+// Claves SWR compartidas: todas las páginas que usan este hook apuntan al
+// mismo slot de caché, así que la segunda navegación vuelve instantánea.
+const SWR_OPTS = {
+  dedupingInterval: 300_000, // 5 min
+  revalidateOnFocus: false,
+  revalidateIfStale: false,
+} as const;
+
+const EMPTY_EGRESOS: EgresoRow[] = [];
+const EMPTY_RESULTADO: ResultadoRow[] = [];
+const EMPTY_IPC = new Map<string, number>();
+const EMPTY_TAX = { mensual: [] as ResumenMensualRow[] };
+const EMPTY_FIN: Array<{ periodo: string; comisionesBancarias: number; intereses: number; comisionesMp: number }> = [];
+
 /**
  * Shared hook that fetches egresos + resultado + IPC + tax data,
  * applies inflation adjustment, and returns processed data.
  *
- * Extracted from economico/egresos/page.tsx to be reused by sub-pages.
+ * Cacheado con SWR — se dedupa entre páginas y se preserva entre navegaciones
+ * durante el intervalo configurado.
  */
 export function useEgresosData(): UseEgresosDataResult {
   const { adjust } = useInflation();
-  const [raw, setRaw] = useState<EgresoRow[]>([]);
-  const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
-  const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
-  const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
-  // Financieros reducidos a los 3 conceptos operativos
-  // (comisiones bancarias + intereses + comisiones MP). Seguros y "otros"
-  // del banco quedan fuera: seguros reales salen por factura_recibida en
-  // Gastos Comerciales; "otros" son movimientos no clasificables.
-  const [finCoreMap, setFinCoreMap] = useState<Map<string, number>>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    Promise.all([
-      fetchEgresos(),
-      fetchResultado(),
-      fetchIpcMensualMap(),
-      fetchResumenFiscal(),
-      fetchFinancierosDesglose(),
-    ])
-      .then(([egresos, resultado, ipc, fiscal, financieros]) => {
-        setRaw(egresos);
-        setRawResultado(resultado);
-        setIpcMap(ipc);
-        setTaxMap(new Map(fiscal.mensual.map((r) => [r.periodo, r])));
-        setFinCoreMap(new Map(
-          financieros.map((r) => [
-            r.periodo,
-            r.comisionesBancarias + r.intereses + r.comisionesMp,
-          ]),
-        ));
-      })
-      .catch((e) => setError(e.message ?? "Error"))
-      .finally(() => setLoading(false));
-  }, []);
+  const egresosSWR = useSWR("egresos:fetchEgresos", fetchEgresos, SWR_OPTS);
+  const resultadoSWR = useSWR("egresos:fetchResultado", fetchResultado, SWR_OPTS);
+  const ipcSWR = useSWR("egresos:fetchIpcMensualMap", fetchIpcMensualMap, SWR_OPTS);
+  const taxSWR = useSWR("egresos:fetchResumenFiscal", fetchResumenFiscal, SWR_OPTS);
+  const finSWR = useSWR("egresos:fetchFinancierosDesglose", fetchFinancierosDesglose, SWR_OPTS);
+
+  const raw = egresosSWR.data ?? EMPTY_EGRESOS;
+  const rawResultado = resultadoSWR.data ?? EMPTY_RESULTADO;
+  const ipcMap = ipcSWR.data ?? EMPTY_IPC;
+  const taxData = taxSWR.data ?? EMPTY_TAX;
+  const financieros = finSWR.data ?? EMPTY_FIN;
+
+  const loading =
+    egresosSWR.isLoading ||
+    resultadoSWR.isLoading ||
+    ipcSWR.isLoading ||
+    taxSWR.isLoading ||
+    finSWR.isLoading;
+
+  const error =
+    egresosSWR.error?.message ??
+    resultadoSWR.error?.message ??
+    ipcSWR.error?.message ??
+    taxSWR.error?.message ??
+    finSWR.error?.message ??
+    null;
+
+  const taxMap = useMemo(
+    () => new Map(taxData.mensual.map((r) => [r.periodo, r])),
+    [taxData],
+  );
+
+  const finCoreMap = useMemo(
+    () =>
+      new Map(
+        financieros.map((r) => [
+          r.periodo,
+          r.comisionesBancarias + r.intereses + r.comisionesMp,
+        ]),
+      ),
+    [financieros],
+  );
 
   const resultadoMap = useMemo(
     () => new Map(rawResultado.map((r) => [r.periodo, r])),

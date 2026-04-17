@@ -2,8 +2,22 @@
 const isDev = process.env.NODE_ENV === "development";
 
 const nextConfig = {
+  reactStrictMode: true,
+  poweredByHeader: false,
+  compress: true,
+
   images: {
     remotePatterns: [],
+  },
+
+  experimental: {
+    optimizePackageImports: [
+      "recharts",
+      "lucide-react",
+      "date-fns",
+      "@radix-ui/react-dialog",
+      "@base-ui/react",
+    ],
   },
 
   async headers() {
