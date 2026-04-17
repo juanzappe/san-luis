@@ -60,6 +60,145 @@ export function fuenteLabel(key: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Grupos visibles en la Card "Fuentes disponibles"
+// ---------------------------------------------------------------------------
+
+export interface FuenteGroupItem {
+  label: string;
+  description?: string;
+  loader: string;
+  formats: string[];
+}
+
+export interface FuenteGroup {
+  title: string;
+  items: FuenteGroupItem[];
+}
+
+export const FUENTES_GROUPS: FuenteGroup[] = [
+  {
+    title: "Posberry",
+    items: [
+      {
+        label: "Detalle de ventas",
+        description: "XLSX con sheet ventas_detalle",
+        loader: "mostrador",
+        formats: ["xlsx"],
+      },
+      {
+        label: "Movimientos de caja",
+        description: "XLSX con sheet movcaja",
+        loader: "movimientos_caja",
+        formats: ["xlsx"],
+      },
+    ],
+  },
+  {
+    title: "ARCA (AFIP)",
+    items: [
+      {
+        label: "Facturas emitidas (ingresos)",
+        description: "Mis Comprobantes Emitidos",
+        loader: "arca_ingresos",
+        formats: ["csv"],
+      },
+      {
+        label: "Facturas recibidas (egresos)",
+        description: "Mis Comprobantes Recibidos",
+        loader: "arca_egresos",
+        formats: ["csv"],
+      },
+      {
+        label: "Servicios / catering",
+        description: "Detalle de facturas ZIP",
+        loader: "servicios",
+        formats: ["zip"],
+      },
+    ],
+  },
+  {
+    title: "Bancos",
+    items: [
+      {
+        label: "Banco Provincia",
+        description: "Extractos",
+        loader: "banco_provincia",
+        formats: ["txt", "xlsx"],
+      },
+      {
+        label: "Banco Santander",
+        description: "Extractos",
+        loader: "movimiento_santander",
+        formats: ["pdf", "csv"],
+      },
+      {
+        label: "Mercado Pago",
+        description: "Reporte de movimientos",
+        loader: "mercado_pago",
+        formats: ["xlsx", "csv"],
+      },
+    ],
+  },
+  {
+    title: "Sueldos e Impuestos",
+    items: [
+      {
+        label: "Liquidaciones mensuales",
+        description: "SICOSS / sueldos",
+        loader: "sueldos",
+        formats: ["xlsx"],
+      },
+      {
+        label: "Impuestos Nacionales",
+        description: "VEPs AFIP",
+        loader: "impuestos_nacionales",
+        formats: ["csv"],
+      },
+      {
+        label: "Impuestos Municipales",
+        description: "Tasas",
+        loader: "impuestos_municipales",
+        formats: ["pdf"],
+      },
+    ],
+  },
+  {
+    title: "Inversiones",
+    items: [
+      {
+        label: "InvertirOnline",
+        description: "Tenencias + movimientos",
+        loader: "inversiones",
+        formats: ["xlsx"],
+      },
+    ],
+  },
+  {
+    title: "Contable / Maestros",
+    items: [
+      {
+        label: "EECC auditados",
+        description: "XLSX con hojas ESP $ y ER $",
+        loader: "eecc",
+        formats: ["xlsx"],
+      },
+      {
+        label: "Productos (catálogo)",
+        description: "XLSX sheet Productos",
+        loader: "productos",
+        formats: ["xlsx"],
+      },
+      {
+        label: "Segmentación",
+        description: "4 CSV: clientes, proveedores, categorías, sectores",
+        loader: "segmentacion",
+        formats: ["csv"],
+      },
+    ],
+  },
+];
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 

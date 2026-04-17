@@ -30,6 +30,7 @@ import {
 import {
   detectFuente,
   FUENTES,
+  FUENTES_GROUPS,
   fuenteLabel,
   uploadFile,
   runLoaders,
@@ -37,6 +38,7 @@ import {
   formatBytes,
   type FileQueueItem,
   type FileStatus,
+  type FuenteGroupItem,
   type ImportLogRow,
 } from "@/lib/import-queries";
 
@@ -106,6 +108,10 @@ export default function ImportarDatosPage() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [phase, setPhase] = useState<BatchPhase>({ kind: "idle" });
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Fuente pre-seleccionada por click en la tarjeta "Fuentes disponibles".
+  // useRef (no state) porque addFiles tiene que leerla sincrónicamente desde
+  // el callback de <input onChange>, antes de que React procese un setState.
+  const preselectedFuenteRef = useRef<string | null>(null);
 
   // Load import history
   const loadHistory = useCallback(() => {
@@ -119,15 +125,25 @@ export default function ImportarDatosPage() {
     loadHistory();
   }, [loadHistory]);
 
-  // Add files to queue
+  // Add files to queue. Si hay fuente pre-seleccionada (click en una tarjeta),
+  // la usamos en vez de la detección automática por nombre.
   const addFiles = useCallback((files: FileList | File[]) => {
+    const forced = preselectedFuenteRef.current;
     const items: FileQueueItem[] = Array.from(files).map((file) => ({
       id: uid(),
       file,
-      fuente: detectFuente(file.name),
+      fuente: forced ?? detectFuente(file.name),
       status: "pendiente" as FileStatus,
     }));
     setQueue((prev) => [...prev, ...items]);
+    preselectedFuenteRef.current = null;
+  }, []);
+
+  // Click en un item de "Fuentes disponibles": abrir file picker con la fuente
+  // pre-seleccionada. Útil cuando el nombre del archivo no matchea el pattern.
+  const handleSourceClick = useCallback((item: FuenteGroupItem) => {
+    preselectedFuenteRef.current = item.loader;
+    fileInputRef.current?.click();
   }, []);
 
   // Update a queue item
@@ -443,11 +459,14 @@ export default function ImportarDatosPage() {
           ref={fileInputRef}
           type="file"
           multiple
-          accept=".csv,.xlsx,.xls,.txt"
+          accept=".csv,.xlsx,.xls,.txt,.zip,.pdf"
           className="hidden"
           onChange={handleFileInput}
         />
       </div>
+
+      {/* Fuentes disponibles (referencia + click para abrir picker con fuente forzada) */}
+      <FuentesDisponibles onSourceClick={handleSourceClick} />
 
       {/* File queue */}
       {queue.length > 0 && (
@@ -690,6 +709,73 @@ function PhaseBanner({ phase }: { phase: BatchPhase }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Fuentes disponibles — grilla con los 6 grupos y sus items clickeables
+// ---------------------------------------------------------------------------
+
+function FuentesDisponibles({
+  onSourceClick,
+}: {
+  onSourceClick: (item: FuenteGroupItem) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Fuentes disponibles</CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Hacé click en una fuente para abrir el selector con esa fuente
+          forzada (útil si el nombre del archivo no la detecta automáticamente).
+        </p>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+          {FUENTES_GROUPS.map((group) => (
+            <div key={group.title} className="space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                {group.title}
+              </h3>
+              <div className="space-y-1">
+                {group.items.map((item) => (
+                  <button
+                    key={item.loader}
+                    type="button"
+                    onClick={() => onSourceClick(item)}
+                    className="group flex w-full items-start gap-2 rounded-lg border border-transparent px-2 py-2 text-left transition-colors hover:border-border hover:bg-muted/50"
+                  >
+                    <FileUp className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground group-hover:text-foreground" />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {item.label}
+                        </span>
+                        <div className="flex gap-1">
+                          {item.formats.map((fmt) => (
+                            <span
+                              key={fmt}
+                              className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono uppercase text-muted-foreground"
+                            >
+                              {fmt}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                      {item.description && (
+                        <p className="truncate text-xs text-muted-foreground">
+                          {item.description}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
