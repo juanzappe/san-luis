@@ -32,13 +32,33 @@ import {
   FUENTES,
   fuenteLabel,
   uploadFile,
-  runLoader,
+  runLoaders,
   fetchImportLog,
   formatBytes,
   type FileQueueItem,
   type FileStatus,
   type ImportLogRow,
 } from "@/lib/import-queries";
+
+// Orden recomendado para correr loaders cuando hay varias fuentes:
+// productos y segmentacion primero (establecen FKs), el resto después.
+const LOADER_PRIORITY: Record<string, number> = {
+  productos: 0,
+  segmentacion: 1,
+};
+function sortByPriority(loaders: string[]): string[] {
+  return [...loaders].sort(
+    (a, b) => (LOADER_PRIORITY[a] ?? 99) - (LOADER_PRIORITY[b] ?? 99),
+  );
+}
+
+// Cuánto tarda cada fase para que la UI muestre ETA razonable.
+type BatchPhase =
+  | { kind: "idle" }
+  | { kind: "uploading"; total: number; done: number }
+  | { kind: "processing"; total: number; done: number; current: string }
+  | { kind: "refreshing" }
+  | { kind: "complete"; elapsed: number };
 
 // ---------------------------------------------------------------------------
 // Status badge
@@ -84,6 +104,7 @@ export default function ImportarDatosPage() {
   const [dragging, setDragging] = useState(false);
   const [history, setHistory] = useState<ImportLogRow[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [phase, setPhase] = useState<BatchPhase>({ kind: "idle" });
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Load import history
@@ -124,7 +145,7 @@ export default function ImportarDatosPage() {
     setQueue((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
-  // Upload a single file
+  // Upload a single file (acción manual, sin procesar)
   const handleUpload = useCallback(
     async (item: FileQueueItem) => {
       if (!item.fuente) return;
@@ -140,45 +161,201 @@ export default function ImportarDatosPage() {
     [updateItem, loadHistory]
   );
 
-  // Process (run ETL loader) for a single file
-  const handleProcess = useCallback(
-    async (item: FileQueueItem) => {
-      if (!item.fuente) return;
-      const loader = FUENTES.find((f) => f.key === item.fuente)?.loader ?? item.fuente;
+  // Sube los items pendientes en paralelo. Devuelve map id → {fuente, logId?, ok}.
+  const uploadPending = useCallback(
+    async (items: FileQueueItem[]) => {
+      const toUpload = items.filter((i) => i.status === "pendiente" && i.fuente);
+      let done = 0;
+      setPhase({ kind: "uploading", total: toUpload.length, done });
 
-      // Upload first if still pending
-      if (item.status === "pendiente") {
-        updateItem(item.id, { status: "guardando" });
-        const uploadResult = await uploadFile(item.file, item.fuente);
-        if (!uploadResult.ok) {
-          updateItem(item.id, { status: "error", error: uploadResult.error });
-          return;
-        }
-        updateItem(item.id, { status: "guardado", logId: uploadResult.logId });
-        item = { ...item, status: "guardado", logId: uploadResult.logId };
-      }
-
-      updateItem(item.id, { status: "procesando" });
-      const result = await runLoader(loader, item.logId);
-      if (result.ok) {
-        updateItem(item.id, { status: "procesado", registros: result.registros });
-      } else {
-        updateItem(item.id, { status: "error", error: result.error });
-      }
-      loadHistory();
+      const results = await Promise.all(
+        toUpload.map(async (item) => {
+          updateItem(item.id, { status: "guardando" });
+          const r = await uploadFile(item.file, item.fuente!);
+          done += 1;
+          setPhase({ kind: "uploading", total: toUpload.length, done });
+          if (r.ok) {
+            updateItem(item.id, { status: "guardado", logId: r.logId });
+            return { id: item.id, fuente: item.fuente!, logId: r.logId, ok: true };
+          } else {
+            updateItem(item.id, { status: "error", error: r.error });
+            return { id: item.id, fuente: item.fuente!, logId: undefined, ok: false };
+          }
+        }),
+      );
+      return results;
     },
-    [updateItem, loadHistory]
+    [updateItem],
   );
 
-  // Bulk: upload & process all pending
+  // Procesa: sube lo pendiente, agrupa por fuente, corre cada loader una sola
+  // vez, refresca las MVs al final. Una sola llamada al endpoint bulk.
   const handleProcessAll = useCallback(async () => {
-    const pending = queue.filter(
-      (item) => item.fuente && (item.status === "pendiente" || item.status === "guardado")
+    const startedAt = Date.now();
+    const candidates = queue.filter(
+      (item) => item.fuente && (item.status === "pendiente" || item.status === "guardado"),
     );
-    for (const item of pending) {
-      await handleProcess(item);
+    if (candidates.length === 0) return;
+
+    // 1) Subir pendientes en paralelo.
+    const uploaded = await uploadPending(candidates);
+    const uploadedOk = uploaded.filter((u) => u.ok);
+
+    // 2) Items listos para procesar: los recién subidos + los que ya estaban "guardado".
+    const readyItems = queue.filter(
+      (item) =>
+        item.fuente &&
+        (item.status === "guardado" ||
+          uploadedOk.some((u) => u.id === item.id && u.fuente === item.fuente)),
+    );
+
+    // 3) Agrupar por fuente y obtener los logIds de cada fuente.
+    const fuentesSet = new Set<string>();
+    const logIdsByLoader: Record<string, number[]> = {};
+    const itemsByFuente = new Map<string, string[]>(); // fuente → [itemId]
+
+    for (const item of readyItems) {
+      const f = item.fuente!;
+      fuentesSet.add(f);
+      if (item.logId != null) {
+        (logIdsByLoader[f] ||= []).push(item.logId);
+      }
+      (itemsByFuente.get(f) ?? itemsByFuente.set(f, []).get(f)!).push(item.id);
     }
-  }, [queue, handleProcess]);
+
+    if (fuentesSet.size === 0) {
+      setPhase({ kind: "idle" });
+      return;
+    }
+
+    const loaders = sortByPriority(
+      Array.from(fuentesSet).map(
+        (f) => FUENTES.find((x) => x.key === f)?.loader ?? f,
+      ),
+    );
+
+    // 4) Marcar items como "procesando".
+    for (const item of readyItems) {
+      updateItem(item.id, { status: "procesando" });
+    }
+
+    // 5) Ejecutar loaders (el endpoint corre en orden y refresca MVs al final).
+    setPhase({ kind: "processing", total: loaders.length, done: 0, current: loaders[0] });
+    const response = await runLoaders(loaders, logIdsByLoader);
+
+    // 6) Actualizar status por fuente en base a los resultados.
+    for (const result of response.results) {
+      const ids = itemsByFuente.get(result.loader) ?? [];
+      // `registros` del loader es el total procesado para la fuente entera.
+      for (const id of ids) {
+        if (result.ok) {
+          updateItem(id, {
+            status: "procesado",
+            registros: result.registros ?? undefined,
+          });
+        } else {
+          updateItem(id, {
+            status: "error",
+            error: result.error ?? "Error ejecutando loader",
+          });
+        }
+      }
+    }
+
+    // 7) Fase de refresh (si hubo refresh del endpoint, ya ocurrió servidor-side).
+    if (response.refresh?.ok) {
+      setPhase({ kind: "refreshing" });
+      // Pequeña espera visual para que el usuario vea el mensaje.
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    setPhase({ kind: "complete", elapsed: Date.now() - startedAt });
+    loadHistory();
+
+    // Volver a idle tras 4s para que la UI quede limpia.
+    setTimeout(() => setPhase({ kind: "idle" }), 4000);
+  }, [queue, uploadPending, updateItem, loadHistory]);
+
+  // Variante de un solo item: reusa handleProcessAll filtrando.
+  const handleProcess = useCallback(
+    async (target: FileQueueItem) => {
+      if (!target.fuente) return;
+      // Hack: filtrar temporalmente procesando solo los que tengan el mismo id.
+      // La lógica de batch ya cubre 1 item, solo hay que asegurarse de que los
+      // demás no sean candidatos — marcamos el resto como "no-elegibles"
+      // temporalmente, pero más simple: clonamos queue, filtramos y llamamos.
+      const originalQueue = queue;
+      const singleItemQueue = queue.filter((x) => x.id === target.id);
+      // Usamos una versión local sin modificar el estado global.
+      // Dado que handleProcessAll usa el estado, hacemos el flujo inline.
+      const startedAt = Date.now();
+
+      // 1) Upload si es necesario
+      if (target.status === "pendiente") {
+        updateItem(target.id, { status: "guardando" });
+        setPhase({ kind: "uploading", total: 1, done: 0 });
+        const r = await uploadFile(target.file, target.fuente);
+        setPhase({ kind: "uploading", total: 1, done: 1 });
+        if (!r.ok) {
+          updateItem(target.id, { status: "error", error: r.error });
+          setPhase({ kind: "idle" });
+          loadHistory();
+          return;
+        }
+        updateItem(target.id, { status: "guardado", logId: r.logId });
+        target = { ...target, status: "guardado", logId: r.logId };
+      }
+
+      // 2) Ejecutar loader
+      const fuente = target.fuente;
+      if (!fuente) return;
+      const loader = FUENTES.find((f) => f.key === fuente)?.loader ?? fuente;
+      updateItem(target.id, { status: "procesando" });
+      setPhase({ kind: "processing", total: 1, done: 0, current: loader });
+      const response = await runLoaders(
+        [loader],
+        target.logId ? { [loader]: [target.logId] } : undefined,
+      );
+      const r = response.results[0];
+
+      if (r?.ok) {
+        updateItem(target.id, {
+          status: "procesado",
+          registros: r.registros ?? undefined,
+        });
+      } else {
+        updateItem(target.id, {
+          status: "error",
+          error: r?.error ?? "Error ejecutando loader",
+        });
+      }
+
+      if (response.refresh?.ok) {
+        setPhase({ kind: "refreshing" });
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      setPhase({ kind: "complete", elapsed: Date.now() - startedAt });
+      loadHistory();
+      setTimeout(() => setPhase({ kind: "idle" }), 4000);
+      // Silencia "originalQueue / singleItemQueue" unused warnings
+      void originalQueue;
+      void singleItemQueue;
+    },
+    [queue, updateItem, loadHistory],
+  );
+
+  // Auto-limpiar items "procesado" exitosos tras 5s (dejar errores visibles).
+  useEffect(() => {
+    const processedIds = queue
+      .filter((item) => item.status === "procesado")
+      .map((item) => item.id);
+    if (processedIds.length === 0) return;
+    const timer = setTimeout(() => {
+      setQueue((prev) => prev.filter((item) => !processedIds.includes(item.id)));
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [queue]);
 
   // Drag & drop handlers
   const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -235,6 +412,9 @@ export default function ImportarDatosPage() {
           se procesan con Python.
         </span>
       </div>
+
+      {/* Phase banner */}
+      <PhaseBanner phase={phase} />
 
       {/* Drop zone */}
       <div
@@ -464,6 +644,51 @@ export default function ImportarDatosPage() {
           )}
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phase banner — muestra progreso en vivo durante el batch de import + ETL.
+// ---------------------------------------------------------------------------
+
+function PhaseBanner({ phase }: { phase: BatchPhase }) {
+  if (phase.kind === "idle") return null;
+
+  let icon: React.ElementType = Loader2;
+  let className = "animate-spin text-blue-600";
+  let label = "";
+  let pct: number | null = null;
+
+  if (phase.kind === "uploading") {
+    label = `Subiendo archivos (${phase.done}/${phase.total})`;
+    pct = phase.total > 0 ? (phase.done / phase.total) * 100 : 0;
+  } else if (phase.kind === "processing") {
+    label = `Ejecutando ETL — ${phase.current}`;
+  } else if (phase.kind === "refreshing") {
+    label = "Refrescando materialized views (puede tardar ~25s)";
+    className = "animate-spin text-amber-600";
+  } else if (phase.kind === "complete") {
+    icon = CheckCircle2;
+    className = "text-green-600";
+    label = `Listo en ${(phase.elapsed / 1000).toFixed(1)}s — datos actualizados`;
+  }
+
+  const Icon = icon;
+  return (
+    <div className="rounded-lg border bg-card px-4 py-3">
+      <div className="flex items-center gap-3">
+        <Icon className={`h-5 w-5 shrink-0 ${className}`} />
+        <div className="flex-1 text-sm font-medium">{label}</div>
+      </div>
+      {pct != null && (
+        <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full bg-blue-500 transition-all duration-200"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      )}
     </div>
   );
 }

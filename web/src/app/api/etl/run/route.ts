@@ -4,19 +4,20 @@ import path from "path";
 import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
+export const maxDuration = 600;
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
-// Whitelist of valid loader names
 const VALID_LOADERS = new Set([
   "productos",
   "arca_ingresos",
   "arca_egresos",
   "sueldos",
   "banco_provincia",
+  "movimiento_santander",
   "mercado_pago",
   "movimientos_caja",
   "mostrador",
@@ -28,6 +29,8 @@ const VALID_LOADERS = new Set([
   "segmentacion",
   "ipc",
 ]);
+
+const LOADER_TIMEOUT_MS = 600_000; // 10 min por loader
 
 function execPromise(
   args: string[],
@@ -50,10 +53,83 @@ function execPromise(
 }
 
 function parseRegistros(output: string, loader: string): number | null {
-  // Match: "✓ {loader}: {N} registros"
   const re = new RegExp(`✓\\s*${loader}:\\s*(\\d+)\\s*registros`);
   const match = output.match(re);
   return match ? parseInt(match[1], 10) : null;
+}
+
+interface LoaderResult {
+  loader: string;
+  ok: boolean;
+  registros: number | null;
+  output: string;
+  error?: string;
+}
+
+async function runSingleLoader(
+  loader: string,
+  etlDir: string,
+  logIds: Map<string, number[]>,
+): Promise<LoaderResult> {
+  // Marcar logs asociados como "procesando"
+  const ids = logIds.get(loader) ?? [];
+  if (ids.length > 0) {
+    await supabase
+      .from("import_log")
+      .update({ estado: "procesando" })
+      .in("id", ids);
+  }
+
+  try {
+    const { stdout, stderr } = await execPromise(
+      ["main.py", loader],
+      { cwd: etlDir, timeout: LOADER_TIMEOUT_MS },
+    );
+    const registros = parseRegistros(stdout, loader);
+
+    if (ids.length > 0) {
+      await supabase
+        .from("import_log")
+        .update({ estado: "procesado", registros_procesados: registros })
+        .in("id", ids);
+    }
+
+    return {
+      loader,
+      ok: true,
+      registros,
+      output: (stdout + "\n" + stderr).slice(0, 2000),
+    };
+  } catch (execErr) {
+    const e = execErr as Error & { stdout?: string; stderr?: string };
+    const out = (e.stdout ?? "") + "\n" + (e.stderr ?? e.message);
+
+    if (ids.length > 0) {
+      await supabase
+        .from("import_log")
+        .update({
+          estado: "error",
+          error_mensaje: (e.stderr ?? e.message).slice(0, 1000),
+        })
+        .in("id", ids);
+    }
+
+    return {
+      loader,
+      ok: false,
+      registros: null,
+      output: out.slice(0, 2000),
+      error: `Error ejecutando ${loader}`,
+    };
+  }
+}
+
+async function refreshMvs(): Promise<{ ok: boolean; elapsed_ms: number; error?: string }> {
+  const t0 = Date.now();
+  const { error } = await supabase.rpc("refresh_aggregate_mvs");
+  const elapsed_ms = Date.now() - t0;
+  if (error) return { ok: false, elapsed_ms, error: error.message };
+  return { ok: true, elapsed_ms };
 }
 
 export async function POST(request: NextRequest) {
@@ -66,74 +142,55 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json();
-    const loader = body.loader as string;
-    const logId = body.logId as number | undefined;
 
-    if (!loader || !VALID_LOADERS.has(loader)) {
+    // Backward-compatible: accept either `loader: string` or `loaders: string[]`.
+    let loaders: string[] = [];
+    if (typeof body.loader === "string") loaders = [body.loader];
+    if (Array.isArray(body.loaders)) loaders = body.loaders;
+
+    // Legacy: old callers pass a single logId tied to a single loader.
+    // New callers can pass logIdsByLoader: { [loader]: number[] }.
+    const logIds = new Map<string, number[]>();
+    if (typeof body.logId === "number" && loaders.length === 1) {
+      logIds.set(loaders[0], [body.logId]);
+    }
+    if (body.logIdsByLoader && typeof body.logIdsByLoader === "object") {
+      for (const [k, v] of Object.entries(body.logIdsByLoader)) {
+        if (Array.isArray(v)) logIds.set(k, v as number[]);
+      }
+    }
+
+    // Validar
+    if (loaders.length === 0) {
+      return NextResponse.json({ error: "Se requiere 'loader' o 'loaders'" }, { status: 400 });
+    }
+    const invalid = loaders.filter((l) => !VALID_LOADERS.has(l));
+    if (invalid.length > 0) {
       return NextResponse.json(
-        { error: `Loader inválido: ${loader}. Válidos: ${Array.from(VALID_LOADERS).join(", ")}` },
+        { error: `Loader(s) inválido(s): ${invalid.join(", ")}` },
         { status: 400 },
       );
     }
 
-    // Update log status to "procesando"
-    if (logId) {
-      await supabase
-        .from("import_log")
-        .update({ estado: "procesando" })
-        .eq("id", logId);
-    }
-
     const etlDir = path.resolve(process.cwd(), "..", "etl");
 
-    let stdout: string;
-    let stderr: string;
-    try {
-      const result = await execPromise(["main.py", loader], { cwd: etlDir, timeout: 120_000 });
-      stdout = result.stdout;
-      stderr = result.stderr;
-    } catch (execErr) {
-      const e = execErr as Error & { stdout?: string; stderr?: string };
-      stdout = e.stdout ?? "";
-      stderr = e.stderr ?? e.message;
-
-      // Update log with error
-      if (logId) {
-        await supabase
-          .from("import_log")
-          .update({
-            estado: "error",
-            error_mensaje: stderr.slice(0, 1000),
-          })
-          .eq("id", logId);
-      }
-
-      return NextResponse.json({
-        ok: false,
-        error: `Error ejecutando ${loader}`,
-        output: (stdout + "\n" + stderr).slice(0, 2000),
-      }, { status: 500 });
+    // Ejecutar loaders secuencialmente (algunos dependen de FKs de otros).
+    const results: LoaderResult[] = [];
+    for (const loader of loaders) {
+      const r = await runSingleLoader(loader, etlDir, logIds);
+      results.push(r);
     }
 
-    const registros = parseRegistros(stdout, loader);
+    // Refrescar MVs al final si al menos un loader tuvo éxito.
+    const anyOk = results.some((r) => r.ok);
+    const refresh = anyOk ? await refreshMvs() : null;
 
-    // Update log with success
-    if (logId) {
-      await supabase
-        .from("import_log")
-        .update({
-          estado: "procesado",
-          registros_procesados: registros,
-        })
-        .eq("id", logId);
-    }
-
+    const allOk = results.every((r) => r.ok);
     return NextResponse.json({
-      ok: true,
-      loader,
-      registros,
-      output: (stdout + "\n" + stderr).slice(0, 2000),
-    });
+      ok: allOk,
+      results,
+      refresh,
+    }, { status: allOk ? 200 : 207 /* multi-status */ });
   } catch (err) {
     console.error("[etl/run] Unhandled error:", err);
     return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });

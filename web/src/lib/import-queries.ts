@@ -104,18 +104,43 @@ export async function uploadFile(
   return { ok: true, logId: data.logId };
 }
 
-export async function runLoader(
-  loader: string,
-  logId?: number
-): Promise<{ ok: boolean; registros?: number; output?: string; error?: string }> {
+export interface LoaderResult {
+  loader: string;
+  ok: boolean;
+  registros: number | null;
+  output: string;
+  error?: string;
+}
+
+export interface RunLoadersResponse {
+  ok: boolean;
+  results: LoaderResult[];
+  refresh: { ok: boolean; elapsed_ms: number; error?: string } | null;
+}
+
+/**
+ * Ejecuta uno o más loaders en orden y refresca los materialized views
+ * al final (una sola vez para todo el batch).
+ */
+export async function runLoaders(
+  loaders: string[],
+  logIdsByLoader?: Record<string, number[]>,
+): Promise<RunLoadersResponse> {
   const res = await fetch("/api/etl/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ loader, logId }),
+    body: JSON.stringify({ loaders, logIdsByLoader }),
   });
   const data = await res.json();
-  if (!res.ok) return { ok: false, error: data.error ?? "Error al procesar" };
-  return { ok: true, registros: data.registros, output: data.output };
+  // El endpoint devuelve 207 si hay alguno con error, pero igual tiene results.
+  if (!data?.results) {
+    return {
+      ok: false,
+      results: [],
+      refresh: null,
+    };
+  }
+  return data as RunLoadersResponse;
 }
 
 // ---------------------------------------------------------------------------
