@@ -20,6 +20,7 @@ const FOLDER_MAP: Record<string, string> = {
   mostrador: "MOSTRADOR",
   sueldos: "SUELDOS",
   banco_provincia: "MOVIMIENTOS BANCARIOS/BANCO PROVINCIA",
+  movimiento_santander: "MOVIMIENTOS BANCARIOS/BANCO SANTANDER",
   mercado_pago: "MOVIMIENTOS BANCARIOS/MERCADO PAGO",
   movimientos_caja: "MOVIMIENTOS DE CAJA",
   inversiones: "INVERSIONES",
