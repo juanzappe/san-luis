@@ -14,7 +14,7 @@ import {
   Cell,
   ReferenceLine,
 } from "recharts";
-import { Loader2, AlertCircle, Info } from "lucide-react";
+import { Loader2, AlertCircle, Info, ChevronDown } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -32,8 +32,17 @@ import {
   RATIO_PMN,
   computeIpcFallback,
 } from "@/lib/economic-queries";
-import { fetchResumenFiscal, computeGastosComerciales, type ResumenMensualRow } from "@/lib/tax-queries";
+import { fetchResumenFiscal, getCuotaFija, type ResumenMensualRow } from "@/lib/tax-queries";
 import { fetchIpcMensualMap } from "@/lib/macro-queries";
+import {
+  fetchFechaCorteYtd,
+  fetchIngresosMesParcial,
+  fetchEgresosMesParcial,
+  ytdMonthRangeLabel,
+  type YtdCutoff,
+  type IngresoParcial,
+  type EgresoParcial,
+} from "@/lib/ytd-cutoff";
 import type {
   Formatter, ValueType, NameType,
 } from "recharts/types/component/DefaultTooltipContent";
@@ -76,26 +85,32 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
-const MONTH_SHORT: Record<string, string> = {
-  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
-  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
-  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
-};
-
 function aggregateResultado(
   data: ExtendedResultadoRow[],
   granularity: Granularity,
   ytdLastMonth?: number,
+  ytdPartialRows?: Map<string, ExtendedResultadoRow>,
 ): ExtendedResultadoRow[] {
   if (granularity === "mensual") return data;
 
-  // For YTD: filter to months 1..N before aggregating by year
+  // For YTD: filter to months 1..ytdLastMonth. If a partial-month map is
+  // provided (because the cutoff is not end-of-month), substitute rows for
+  // that month across every year so the across-year comparison is truncated
+  // to the same day.
   let source = data;
   if (granularity === "ytd" && ytdLastMonth) {
-    source = data.filter((r) => {
-      const m = parseInt(r.periodo.split("-")[1], 10);
-      return m >= 1 && m <= ytdLastMonth;
-    });
+    const cutoffMonthStr = String(ytdLastMonth).padStart(2, "0");
+    source = data
+      .filter((r) => {
+        const m = parseInt(r.periodo.split("-")[1], 10);
+        return m >= 1 && m <= ytdLastMonth;
+      })
+      .map((r) => {
+        if (!ytdPartialRows || ytdPartialRows.size === 0) return r;
+        const m = r.periodo.split("-")[1];
+        if (m !== cutoffMonthStr) return r;
+        return ytdPartialRows.get(r.periodo) ?? r;
+      });
   }
 
   const buckets = new Map<string, ExtendedResultadoRow>();
@@ -108,6 +123,7 @@ function aggregateResultado(
     } else {
       cur.ingresos += r.ingresos;
       cur.costosOperativos += r.costosOperativos;
+      cur.comercialesProveedor += r.comercialesProveedor;
       cur.sueldos += r.sueldos;
       cur.cargasSociales += r.cargasSociales;
       cur.costosComercialesAdmin += r.costosComercialesAdmin;
@@ -137,10 +153,18 @@ function aggregateResultado(
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
 }
 
-function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number): string {
+function granularityLabel(
+  p: string,
+  g: Granularity,
+  ytdLastMonth?: number,
+  cutoff?: YtdCutoff | null,
+): string {
   if (g === "anual") return p;
   if (g === "ytd" && ytdLastMonth) {
-    return `Ene-${MONTH_SHORT[String(ytdLastMonth).padStart(2, "0")] ?? ytdLastMonth} ${p}`;
+    const firstMonth = "01";
+    const lastMonth = String(ytdLastMonth).padStart(2, "0");
+    const range = ytdMonthRangeLabel(firstMonth, lastMonth, cutoff);
+    return `${range} ${p}`;
   }
   if (g === "trimestral") {
     const [y, q] = p.split("-");
@@ -173,7 +197,7 @@ function PnlLine({
 }) {
   return (
     <TableRow className={border ? "border-t-2 border-foreground/20" : ""}>
-      <TableCell className={`${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
+      <TableCell className={`sticky left-0 z-10 bg-card ${bold ? "font-bold" : ""} ${indent ? "pl-8" : ""}`}>
         <span className="inline-flex items-center gap-1">
           {negative && !bold ? `(−) ${label}` : label}
           {infoTip && (
@@ -343,6 +367,122 @@ function buildWaterfall(row: ExtendedResultadoRow): WaterfallBar[] {
 }
 
 // ---------------------------------------------------------------------------
+// P&L row derivation — single source of truth for full-month and partial-month
+// ---------------------------------------------------------------------------
+// Given nominal values for the daily-truncatable items (ingresos, proveedores,
+// sueldos, cargas, financieros bancarios) and a monthFraction (1 for full
+// month, day/daysInMonth for partial), produces a fully-derived P&L row.
+// monthFraction is applied inside the function to items without a partial RPC
+// that don't scale with ingresos: cuotas fijas municipales, imp. al cheque,
+// amortizaciones, RECPAM histórico.
+// ---------------------------------------------------------------------------
+interface DerivePnlInput {
+  periodo: string;
+  ingresosNominal: number;
+  costosOperativosNominal: number;
+  /** Honorarios+Seguros+Telefonía+Servicios públicos (van a Gastos Comerciales). */
+  comercialesProveedorNominal: number;
+  sueldosNominal: number;
+  cargasSocialesNominal: number;
+  costosFinancierosBankNominal: number;
+  /** 1 for full month; (day/daysInMonth) for partial. */
+  monthFraction: number;
+}
+
+interface DerivePnlCtx {
+  adjust: (v: number, p: string) => number;
+  ipcMap: Map<string, number>;
+  ipcFallback: number;
+  taxMap: Map<string, ResumenMensualRow>;
+}
+
+function derivePnlRow(input: DerivePnlInput, ctx: DerivePnlCtx): ExtendedResultadoRow {
+  const { periodo, monthFraction: f } = input;
+  const year = periodo.split("-")[0];
+  const { adjust, ipcMap, ipcFallback, taxMap } = ctx;
+
+  const ing = adjust(input.ingresosNominal, periodo);
+  const costOp = adjust(input.costosOperativosNominal, periodo);
+  const sueldos = adjust(input.sueldosNominal, periodo);
+  const cargasSoc = adjust(input.cargasSocialesNominal, periodo);
+
+  // Costos Comerciales: IIBB (4.5%) + Seg. e Hig. (1%) escalan con ingresos;
+  // cuotas fijas municipales pro-rateadas + Imp. al Cheque (LEY 25.413)
+  // pro-rateado por monthFraction + facturas de Honorarios/Seguros/Telefonía/
+  // Servicios públicos (proveedor-based), idéntico criterio que
+  // /economico/egresos/gastos-comerciales.
+  const tax = taxMap.get(periodo);
+  const costComNominal =
+    input.ingresosNominal * 0.045 +
+    input.ingresosNominal * 0.01 +
+    (getCuotaFija("publicidad", periodo) + getCuotaFija("espacioPublico", periodo)) * f +
+    (tax?.cheque ?? 0) * f +
+    input.comercialesProveedorNominal;
+  const costCom = adjust(costComNominal, periodo);
+
+  // Costos Financieros: sólo bancarios (comisiones, intereses, seguros).
+  const costFin = adjust(input.costosFinancierosBankNominal, periodo);
+
+  const margenBruto = ing - costOp - sueldos - cargasSoc;
+
+  // RECPAM: histórico auditado pro-rateado por f; estimado con inflación IPC
+  // (o fallback), que escala naturalmente con ingresosNominal.
+  let recpamNominal: number;
+  let recpamEstimado: boolean;
+  let recpamConIpcReal: boolean;
+  if (year in RECPAM_HISTORICO) {
+    recpamNominal = (RECPAM_HISTORICO[year] / 12) * f;
+    recpamEstimado = false;
+    recpamConIpcReal = false;
+  } else {
+    const inflacionDecimal = ipcMap.get(periodo) ?? null;
+    if (inflacionDecimal !== null) {
+      recpamNominal = input.ingresosNominal * RATIO_PMN * inflacionDecimal;
+      recpamConIpcReal = true;
+    } else {
+      recpamNominal = input.ingresosNominal * RATIO_PMN * ipcFallback;
+      recpamConIpcReal = false;
+    }
+    recpamEstimado = true;
+  }
+  const recpamBase = year in RECPAM_HISTORICO ? `${year}-12` : periodo;
+  const recpam = adjust(recpamNominal, recpamBase);
+
+  // Amortizaciones: base mensual (anual/12) pro-rateada por f.
+  const amortBase = year in AMORTIZACIONES_ANUAL
+    ? AMORTIZACIONES_ANUAL[year] / 12
+    : AMORT_MENSUAL_BASE;
+  const amortizaciones = adjust(amortBase * f, periodo);
+
+  const ebitda = margenBruto + amortizaciones;
+  const resAntesGan = margenBruto - costCom - costFin - recpam;
+  const gan = resAntesGan > 0 ? resAntesGan * TASA_GANANCIAS : 0;
+  const resNeto = resAntesGan - gan;
+  const margenPct = ing > 0 ? (resNeto / ing) * 100 : 0;
+
+  return {
+    periodo,
+    ingresos: ing,
+    costosOperativos: costOp,
+    comercialesProveedor: adjust(input.comercialesProveedorNominal, periodo),
+    sueldos,
+    cargasSociales: cargasSoc,
+    margenBruto,
+    costosComercialesAdmin: costCom,
+    costosFinancieros: costFin,
+    recpam,
+    recpamEstimado,
+    recpamConIpcReal,
+    amortizaciones,
+    ebitda,
+    resultadoAntesGanancias: resAntesGan,
+    ganancias: gan,
+    resultadoNeto: resNeto,
+    margenPct,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 export default function EstadoResultadosPage() {
@@ -350,10 +490,15 @@ export default function EstadoResultadosPage() {
   const [raw, setRaw] = useState<ResultadoRow[]>([]);
   const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
   const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
+  const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
+  const [partialIng, setPartialIng] = useState<Map<string, IngresoParcial>>(new Map());
+  const [partialEgr, setPartialEgr] = useState<Map<string, EgresoParcial>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
   const [selectedYear, setSelectedYear] = useState<string | null>(null);
+  const [isPnlCollapsed, setIsPnlCollapsed] = useState(false);
+  const [isInfoCollapsed, setIsInfoCollapsed] = useState(false);
 
   useEffect(() => {
     Promise.all([fetchResultado(), fetchIpcMensualMap(), fetchResumenFiscal()])
@@ -364,91 +509,39 @@ export default function EstadoResultadosPage() {
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
+
+    // YTD cutoff from DB (last date with data). If it's not end-of-month,
+    // fetch partial-month data for that (month, day) to truncate all years
+    // to the same day in the YTD comparison.
+    fetchFechaCorteYtd()
+      .then((c) => {
+        if (!c) return;
+        setYtdCutoff(c);
+        if (!c.esFindeMes) {
+          fetchIngresosMesParcial(c.mes, c.dia).then(setPartialIng).catch(() => {});
+          fetchEgresosMesParcial(c.mes, c.dia).then(setPartialEgr).catch(() => {});
+        }
+      })
+      .catch(() => {});
   }, []);
 
   // Latest IPC value available, or the hardcoded fallback — used when a period has no IPC data
   const ipcFallback = useMemo(() => computeIpcFallback(ipcMap), [ipcMap]);
 
-  // Adjust for inflation + compute RECPAM, Amortizaciones, EBITDA
-  const data: ExtendedResultadoRow[] = useMemo(
-    () => raw.map((r) => {
-        const year = r.periodo.split("-")[0];
-        const ing = adjust(r.ingresos, r.periodo);
-        const costOp = adjust(r.costosOperativos, r.periodo);
-        const sueldos = adjust(r.sueldos, r.periodo);
-        const cargasSoc = adjust(r.cargasSociales, r.periodo);
-        // Costos Comerciales: 4.5% IIBB + 1% Seg. e Hig. + cuotas fijas municipales
-        // Uses r.ingresos (same base shown in the P&L) for consistency across views
-        const costComNominal = computeGastosComerciales(r.ingresos, r.periodo);
-        const costCom = adjust(costComNominal, r.periodo);
-        // Costos Financieros: bank fees/interest + Imp. al Cheque from Resumen Fiscal
-        const tax = taxMap.get(r.periodo);
-        const costFin = adjust(r.costosFinancieros + (tax?.cheque ?? 0), r.periodo);
-        const margenBruto = ing - costOp - sueldos - cargasSoc;
-
-        // RECPAM: datos auditados para años históricos; estimado para el resto.
-        // Estimación: RECPAM = ingresos × RATIO_PMN × inflación_mensual
-        // donde RATIO_PMN ≈ 2.18 (posición monetaria neta / ingresos, derivado de 0.218 / 0.10)
-        // Fallback: última inflación conocida (ipcFallback), no ratio fijo.
-        let recpamNominal: number;
-        let recpamEstimado: boolean;
-        let recpamConIpcReal: boolean;
-        if (year in RECPAM_HISTORICO) {
-          recpamNominal = RECPAM_HISTORICO[year] / 12;
-          recpamEstimado = false;
-          recpamConIpcReal = false;
-        } else {
-          const inflacionDecimal = ipcMap.get(r.periodo) ?? null;
-          if (inflacionDecimal !== null) {
-            recpamNominal = r.ingresos * RATIO_PMN * inflacionDecimal;
-            recpamConIpcReal = true;
-          } else {
-            // Usar última inflación conocida en lugar del ratio fijo 21.8%
-            // (que estaba calibrado para ~10 % mensual de 2024 y sobrestima 7x con inflación del 3 %)
-            recpamNominal = r.ingresos * RATIO_PMN * ipcFallback;
-            recpamConIpcReal = false;
-          }
-          recpamEstimado = true;
-        }
-        // For historical RECPAM (2024 and earlier), the value is at Dec prices
-        // of that year, so use "YYYY-12" as base month for inflation adjustment.
-        const recpamBase = (year in RECPAM_HISTORICO) ? `${year}-12` : r.periodo;
-        const recpam = adjust(recpamNominal, recpamBase);
-
-        // Amortizaciones: historical (distributed monthly) or base 2024
-        const amortNominal = year in AMORTIZACIONES_ANUAL
-          ? AMORTIZACIONES_ANUAL[year] / 12
-          : AMORT_MENSUAL_BASE;
-        const amortizaciones = adjust(amortNominal, r.periodo);
-
-        const ebitda = margenBruto + amortizaciones;
-        const resAntesGan = margenBruto - costCom - costFin - recpam;
-        const gan = resAntesGan > 0 ? resAntesGan * TASA_GANANCIAS : 0;
-        const resNeto = resAntesGan - gan;
-        const margenPct = ing > 0 ? (resNeto / ing) * 100 : 0;
-
-        return {
-          periodo: r.periodo,
-          ingresos: ing,
-          costosOperativos: costOp,
-          sueldos,
-          cargasSociales: cargasSoc,
-          margenBruto,
-          costosComercialesAdmin: costCom,
-          costosFinancieros: costFin,
-          recpam,
-          recpamEstimado,
-          recpamConIpcReal,
-          amortizaciones,
-          ebitda,
-          resultadoAntesGanancias: resAntesGan,
-          ganancias: gan,
-          resultadoNeto: resNeto,
-          margenPct,
-        };
-      }),
-    [raw, adjust, ipcMap, ipcFallback, taxMap],
-  );
+  // Full-month derivation: delegates to derivePnlRow with monthFraction=1.
+  const data: ExtendedResultadoRow[] = useMemo(() => {
+    const ctx: DerivePnlCtx = { adjust, ipcMap, ipcFallback, taxMap };
+    return raw.map((r) => derivePnlRow({
+      periodo: r.periodo,
+      ingresosNominal: r.ingresos,
+      costosOperativosNominal: r.costosOperativos,
+      comercialesProveedorNominal: r.comercialesProveedor,
+      sueldosNominal: r.sueldos,
+      cargasSocialesNominal: r.cargasSociales,
+      costosFinancierosBankNominal: r.costosFinancieros,
+      monthFraction: 1,
+    }, ctx));
+  }, [raw, adjust, ipcMap, ipcFallback, taxMap]);
 
   // Available years from data
   const availableYears = useMemo(() => {
@@ -459,7 +552,7 @@ export default function EstadoResultadosPage() {
   // Default to current year (or last available)
   const activeYear = selectedYear ?? availableYears[availableYears.length - 1] ?? new Date().getFullYear().toString();
 
-  // YTD: find the last month with data in the most recent year
+  // YTD: last month with data in the most recent year
   const ytdLastMonth = useMemo(() => {
     if (data.length === 0) return 0;
     const lastYear = availableYears[availableYears.length - 1];
@@ -474,12 +567,51 @@ export default function EstadoResultadosPage() {
     return maxMonth;
   }, [data, availableYears]);
 
+  // Per-year partial-month rows for YTD: built only when the cutoff is not
+  // end-of-month AND partial data has loaded. Substitute every year's cutoff
+  // month so comparisons are truncated to the same day.
+  const ytdPartialRows = useMemo(() => {
+    const m = new Map<string, ExtendedResultadoRow>();
+    if (!ytdCutoff || ytdCutoff.esFindeMes) return m;
+    if (partialIng.size === 0 && partialEgr.size === 0) return m;
+    const cutoffMonthStr = String(ytdCutoff.mes).padStart(2, "0");
+    const ctx: DerivePnlCtx = { adjust, ipcMap, ipcFallback, taxMap };
+    for (const r of raw) {
+      const [y, mm] = r.periodo.split("-");
+      if (mm !== cutoffMonthStr) continue;
+      const daysInMonth = new Date(parseInt(y, 10), ytdCutoff.mes, 0).getDate();
+      const ratio = Math.min(1, ytdCutoff.dia / daysInMonth);
+      const ingP = partialIng.get(r.periodo);
+      const egrP = partialEgr.get(r.periodo);
+      m.set(r.periodo, derivePnlRow({
+        periodo: r.periodo,
+        // Day-truncatable items: use partial RPC when available, else pro-rate nominal.
+        ingresosNominal: ingP
+          ? ingP.mostrador + ingP.restobar + ingP.servicios
+          : r.ingresos * ratio,
+        // egrP.proveedores es el total (operativo+comercial); le restamos la
+        // porción comercial pro-rateada, asumiendo que su distribución diaria
+        // es uniforme (honorarios/seguros/telefonía suelen ser mensuales).
+        costosOperativosNominal:
+          (egrP?.proveedores ?? (r.costosOperativos + r.comercialesProveedor) * ratio)
+          - r.comercialesProveedor * ratio,
+        comercialesProveedorNominal: r.comercialesProveedor * ratio,
+        costosFinancierosBankNominal: egrP?.financieros ?? r.costosFinancieros * ratio,
+        // Monthly-only concepts (F.931): pro-rate by day.
+        sueldosNominal: r.sueldos * ratio,
+        cargasSocialesNominal: r.cargasSociales * ratio,
+        monthFraction: ratio,
+      }, ctx));
+    }
+    return m;
+  }, [raw, ytdCutoff, adjust, ipcMap, ipcFallback, taxMap, partialIng, partialEgr]);
+
   // Aggregate by selected granularity, then filter by year
   const tablePeriods = useMemo(() => {
-    const aggregated = aggregateResultado(data, granularity, ytdLastMonth);
+    const aggregated = aggregateResultado(data, granularity, ytdLastMonth, ytdPartialRows);
     if (granularity === "anual" || granularity === "ytd") return aggregated;
     return aggregated.filter((r) => r.periodo.startsWith(activeYear));
-  }, [data, granularity, activeYear, ytdLastMonth]);
+  }, [data, granularity, activeYear, ytdLastMonth, ytdPartialRows]);
 
   const lastRow = data.length > 0 ? data[data.length - 1] : null;
 
@@ -553,10 +685,73 @@ export default function EstadoResultadosPage() {
         <InflationToggle />
       </div>
 
+      {/* Info callout */}
+      <Card className="border-l-4 border-l-primary">
+        <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+          <div className="flex items-center gap-2">
+            <Info className="h-4 w-4 shrink-0 text-primary" />
+            <CardTitle className="text-sm font-semibold">Cómo leer este Estado de Resultados</CardTitle>
+          </div>
+          <button
+            onClick={() => setIsInfoCollapsed((v) => !v)}
+            className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            aria-label={isInfoCollapsed ? "Expandir explicación" : "Colapsar explicación"}
+            aria-expanded={!isInfoCollapsed}
+          >
+            <ChevronDown
+              className={`h-4 w-4 shrink-0 transition-transform duration-200 ${
+                isInfoCollapsed ? "-rotate-90" : ""
+              }`}
+            />
+          </button>
+        </CardHeader>
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
+            isInfoCollapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"
+          }`}
+        >
+          <div className="overflow-hidden">
+            <CardContent className="pt-0 text-sm space-y-2">
+              <p>
+                P&L armado desde los <strong>datos operativos</strong> (ventas POS, facturas ARCA, F.931, movimientos bancarios, impuestos) — no es una copia del balance del contador, es lo que se deduce de la operatoria del mes.
+              </p>
+              <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+                <li>
+                  <strong className="text-foreground">Criterio devengado</strong>: sueldos salen del F.931 del mes (no de cuándo se pagan); IIBB, Seg. e Higiene y cargas sociales se calculan sobre la base del mes.
+                </li>
+                <li>
+                  <strong className="text-foreground">Ajuste por inflación</strong>: los montos se guardan en pesos nominales. Con el toggle arriba a la derecha se ajustan al mes más reciente vía IPC. Sin ajuste, comparar años distintos engaña.
+                </li>
+                <li>
+                  <strong className="text-foreground">Partes estimadas</strong>: RECPAM y amortizaciones son reales para 2021-2024 (EECC auditados); para 2025+ se estiman (<em>RECPAM = ingresos × PMN × IPC</em>; amortizaciones con base 2024/12). Imp. a las Ganancias es una estimación al 36,7% efectivo — no contempla diferencias temporarias ni ajuste impositivo.
+                </li>
+                <li>
+                  <strong className="text-foreground">Modo YTD</strong>: cuando el último mes no está completo, todos los años de la comparación se truncan al mismo día (p. ej. &ldquo;Ene–7 Abr&rdquo;) para que la comparación año contra año sea justa.
+                </li>
+              </ul>
+            </CardContent>
+          </div>
+        </div>
+      </Card>
+
       {/* P&L Table */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">Estado de Resultados</CardTitle>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsPnlCollapsed((v) => !v)}
+              className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              aria-label={isPnlCollapsed ? "Expandir tabla" : "Colapsar tabla"}
+              aria-expanded={!isPnlCollapsed}
+            >
+              <ChevronDown
+                className={`h-4 w-4 shrink-0 transition-transform duration-200 ${
+                  isPnlCollapsed ? "-rotate-90" : ""
+                }`}
+              />
+            </button>
+            <CardTitle className="text-base">Estado de Resultados</CardTitle>
+          </div>
           <div className="flex items-center gap-2">
             {granularity !== "anual" && granularity !== "ytd" && (
               <div className="flex items-center rounded-lg border text-xs font-medium">
@@ -592,14 +787,20 @@ export default function EstadoResultadosPage() {
             </div>
           </div>
         </CardHeader>
+        <div
+          className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
+            isPnlCollapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"
+          }`}
+        >
+          <div className="overflow-hidden">
         <CardContent>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[220px]">Concepto</TableHead>
+                <TableHead className="w-[220px] sticky left-0 z-20 bg-card">Concepto</TableHead>
                 {tablePeriods.map((r) => (
                   <TableHead key={r.periodo} className="text-right">
-                    {granularityLabel(r.periodo, granularity, ytdLastMonth)}
+                    {granularityLabel(r.periodo, granularity, ytdLastMonth, ytdCutoff)}
                   </TableHead>
                 ))}
               </TableRow>
@@ -623,13 +824,13 @@ export default function EstadoResultadosPage() {
                 negative
               />
               <TableRow className="text-xs text-muted-foreground">
-                <TableCell className="pl-12">Sueldos</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card pl-12">Sueldos</TableCell>
                 {tablePeriods.map((r) => (
                   <TableCell key={r.periodo} className="text-right">{formatARS(r.sueldos)}</TableCell>
                 ))}
               </TableRow>
               <TableRow className="text-xs text-muted-foreground">
-                <TableCell className="pl-12">Cargas Sociales (F.931)</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card pl-12">Cargas Sociales (F.931)</TableCell>
                 {tablePeriods.map((r) => (
                   <TableCell key={r.periodo} className="text-right">{formatARS(r.cargasSociales)}</TableCell>
                 ))}
@@ -641,7 +842,7 @@ export default function EstadoResultadosPage() {
                 border
               />
               <TableRow>
-                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen bruto %</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card text-xs italic text-muted-foreground pl-8">Margen bruto %</TableCell>
                 {tablePeriods.map((r) => {
                   const pct = r.ingresos > 0 ? (r.margenBruto / r.ingresos) * 100 : 0;
                   return (
@@ -658,7 +859,7 @@ export default function EstadoResultadosPage() {
                 infoTip={`EBITDA = Margen Bruto + Amortizaciones (~${formatARS(AMORT_MENSUAL_BASE)}/mes base 2024). Datos de estados contables auditados para 2021-2024.`}
               />
               <TableRow>
-                <TableCell className="text-xs italic text-muted-foreground pl-8">EBITDA %</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card text-xs italic text-muted-foreground pl-8">EBITDA %</TableCell>
                 {tablePeriods.map((r) => {
                   const pct = r.ingresos > 0 ? (r.ebitda / r.ingresos) * 100 : 0;
                   return (
@@ -700,7 +901,7 @@ export default function EstadoResultadosPage() {
                 border
               />
               <TableRow>
-                <TableCell className="text-xs italic text-muted-foreground pl-8">Resultado antes de Gan. %</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card text-xs italic text-muted-foreground pl-8">Resultado antes de Gan. %</TableCell>
                 {tablePeriods.map((r) => {
                   const pct = r.ingresos > 0 ? (r.resultadoAntesGanancias / r.ingresos) * 100 : 0;
                   return (
@@ -725,7 +926,7 @@ export default function EstadoResultadosPage() {
               />
               {/* Margin % row */}
               <TableRow>
-                <TableCell className="text-xs italic text-muted-foreground pl-8">Margen neto %</TableCell>
+                <TableCell className="sticky left-0 z-10 bg-card text-xs italic text-muted-foreground pl-8">Margen neto %</TableCell>
                 {tablePeriods.map((r) => (
                   <TableCell
                     key={r.periodo}
@@ -740,6 +941,8 @@ export default function EstadoResultadosPage() {
             </TableBody>
           </Table>
         </CardContent>
+          </div>
+        </div>
       </Card>
 
       {/* Ingresos vs Egresos & Resultado Neto — 2 column */}
@@ -753,7 +956,7 @@ export default function EstadoResultadosPage() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth, ytdCutoff),
                   ingresos: r.ingresos,
                   egresos: r.costosOperativos + r.sueldos + r.costosComercialesAdmin + r.costosFinancieros + Math.max(0, r.recpam) + r.ganancias,
                 }))}
@@ -780,7 +983,7 @@ export default function EstadoResultadosPage() {
             <ResponsiveContainer width="100%" height={300}>
               <BarChart
                 data={tablePeriods.map((r) => ({
-                  label: granularityLabel(r.periodo, granularity, ytdLastMonth),
+                  label: granularityLabel(r.periodo, granularity, ytdLastMonth, ytdCutoff),
                   resultado: r.resultadoNeto,
                 }))}
               >

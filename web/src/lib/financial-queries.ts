@@ -315,6 +315,7 @@ export interface AgingBucket {
 
 function daysDiff(from: string, to: Date): number {
   const d = new Date(from);
+  if (isNaN(d.getTime())) return 0;
   return Math.floor((to.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
 }
 

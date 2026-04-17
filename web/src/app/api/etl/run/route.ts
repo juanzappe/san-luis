@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import path from "path";
 import { createClient } from "@supabase/supabase-js";
 
@@ -30,11 +30,11 @@ const VALID_LOADERS = new Set([
 ]);
 
 function execPromise(
-  cmd: string,
+  args: string[],
   options: { cwd: string; timeout: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    exec(cmd, options, (err, stdout, stderr) => {
+    execFile("python", args, options, (err, stdout, stderr) => {
       if (err) {
         reject(
           Object.assign(err, {
@@ -85,12 +85,11 @@ export async function POST(request: NextRequest) {
     }
 
     const etlDir = path.resolve(process.cwd(), "..", "etl");
-    const cmd = `python main.py ${loader}`;
 
     let stdout: string;
     let stderr: string;
     try {
-      const result = await execPromise(cmd, { cwd: etlDir, timeout: 120_000 });
+      const result = await execPromise(["main.py", loader], { cwd: etlDir, timeout: 120_000 });
       stdout = result.stdout;
       stderr = result.stderr;
     } catch (execErr) {
@@ -136,7 +135,7 @@ export async function POST(request: NextRequest) {
       output: (stdout + "\n" + stderr).slice(0, 2000),
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Error desconocido";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    console.error("[etl/run] Unhandled error:", err);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }

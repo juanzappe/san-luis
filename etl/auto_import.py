@@ -39,6 +39,8 @@ FOLDER_LOADER_MAP = {
     "SEGMENTACION": "segmentacion",
 }
 
+DATA_EXTENSIONS = {".xlsx", ".xls", ".csv", ".txt", ".zip", ".pdf"}
+
 LAST_IMPORT_PATH = SCRIPT_DIR / "last_import.json"
 LOG_DIR = SCRIPT_DIR / "logs"
 LOG_FILE = LOG_DIR / "auto_import.log"
@@ -85,11 +87,11 @@ def save_last_run(ts):
 
 
 def folder_has_changes(folder_path, last_run_ts):
-    """Verifica si algún archivo en la carpeta tiene mtime posterior a last_run_ts."""
+    """Verifica si algún archivo de datos en la carpeta tiene mtime posterior a last_run_ts."""
     if not folder_path.exists():
         return False
     for entry in folder_path.rglob("*"):
-        if entry.is_file():
+        if entry.is_file() and entry.suffix.lower() in DATA_EXTENSIONS:
             if os.path.getmtime(entry) > last_run_ts:
                 return True
     return False

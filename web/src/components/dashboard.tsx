@@ -325,6 +325,8 @@ export default function Dashboard() {
     return { flujoLast: last, flujoПrev: prev };
   }, [flujoRaw, activePeriodo, adjust]);
 
+  const reversedMonthly = useMemo(() => [...adjustedMonthly].reverse(), [adjustedMonthly]);
+
   // --- Loading / retrying state ---
   if (loading) {
     return <DashboardSkeleton retrying={retrying} />;
@@ -624,7 +626,7 @@ export default function Dashboard() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[...monthly].reverse().map((row: MonthRow) => (
+              {reversedMonthly.map((row: MonthRow) => (
                 <TableRow key={row.periodo}>
                   <TableCell className="font-medium">
                     {periodoLabel(row.periodo)}

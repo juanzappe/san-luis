@@ -84,4 +84,30 @@ def run(conn, logger, full: bool = False) -> int:
     logger.info(f"  {len(all_facturas)} facturas emitidas a cargar")
     delete_all(conn, "factura_emitida")
     count = batch_insert(conn, "factura_emitida", all_facturas)
+
+    # Link cliente_id via CUIT
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE factura_emitida fe
+            SET cliente_id = c.id
+            FROM cliente c
+            WHERE c.cuit = fe.nro_doc_receptor
+              AND fe.cliente_id IS NULL
+        """)
+        logger.info(f"  {cur.rowcount} facturas emitidas → cliente_id linkeado")
+
+    # Link unidad_negocio_id via punto_venta
+    pv_to_unidad = {"Mostrador": 8, "Restobar": 998, "Servicios": 6}
+    with conn.cursor() as cur:
+        for nombre, pv in pv_to_unidad.items():
+            cur.execute("""
+                UPDATE factura_emitida fe
+                SET unidad_negocio_id = un.id
+                FROM unidad_negocio un
+                WHERE un.nombre = %s
+                  AND fe.punto_venta = %s
+                  AND fe.unidad_negocio_id IS NULL
+            """, (nombre, pv))
+        logger.info("  unidad_negocio_id linkeado por punto_venta")
+
     return count

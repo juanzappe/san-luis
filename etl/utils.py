@@ -1,5 +1,6 @@
 """Utilidades compartidas para el pipeline ETL de San Luis."""
 
+import math
 import os
 import re
 import logging
@@ -33,16 +34,23 @@ def get_data_raw_path() -> Path:
 # Operaciones SQL batch
 # ---------------------------------------------------------------------------
 
+def _safe_id(name: str) -> str:
+    """Validates a SQL identifier (table/column name). Only a-z, 0-9, _ allowed."""
+    if not re.match(r'^[a-z][a-z0-9_]*$', name):
+        raise ValueError(f"Identificador SQL inválido: {name!r}")
+    return name
+
+
 def delete_all(conn, tabla: str):
     """DELETE FROM tabla (todas las filas)."""
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {tabla}")
+        cur.execute(f"DELETE FROM {_safe_id(tabla)}")
 
 
 def delete_where(conn, tabla: str, campo: str, valor):
     """DELETE FROM tabla WHERE campo = valor."""
     with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {tabla} WHERE {campo} = %s", (valor,))
+        cur.execute(f"DELETE FROM {_safe_id(tabla)} WHERE {_safe_id(campo)} = %s", (valor,))
 
 
 def batch_insert(conn, tabla: str, datos: list[dict],
@@ -51,9 +59,9 @@ def batch_insert(conn, tabla: str, datos: list[dict],
     if not datos:
         return 0
     cols = list(datos[0].keys())
-    cols_sql = ", ".join(cols)
+    cols_sql = ", ".join(_safe_id(c) for c in cols)
     template = "(" + ", ".join([f"%({c})s" for c in cols]) + ")"
-    sql = f"INSERT INTO {tabla} ({cols_sql}) VALUES %s"
+    sql = f"INSERT INTO {_safe_id(tabla)} ({cols_sql}) VALUES %s"
 
     total = 0
     with conn.cursor() as cur:
@@ -71,25 +79,22 @@ def batch_insert_returning(conn, tabla: str, datos: list[dict],
                            batch_size: int = 500) -> list[dict]:
     """Insert en batches y retorna las columnas solicitadas (RETURNING).
 
-    Retorna lista de dicts con las columnas pedidas en `returning`.
+    Usa execute_values con RETURNING para un único round-trip por batch.
     """
     if not datos:
         return []
     cols = list(datos[0].keys())
-    cols_sql = ", ".join(cols)
-    placeholders = ", ".join([f"%({c})s" for c in cols])
-    returning_sql = ", ".join(returning)
-    sql = f"INSERT INTO {tabla} ({cols_sql}) VALUES ({placeholders}) RETURNING {returning_sql}"
+    cols_sql = ", ".join(_safe_id(c) for c in cols)
+    template = "(" + ", ".join([f"%({c})s" for c in cols]) + ")"
+    returning_sql = ", ".join(_safe_id(c) for c in returning)
+    sql = f"INSERT INTO {_safe_id(tabla)} ({cols_sql}) VALUES %s RETURNING {returning_sql}"
 
     all_rows = []
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         for i in range(0, len(datos), batch_size):
             batch = datos[i:i + batch_size]
-            for row in batch:
-                cur.execute(sql, row)
-                result = cur.fetchone()
-                if result:
-                    all_rows.append(dict(result))
+            psycopg2.extras.execute_values(cur, sql, batch, template=template, page_size=batch_size)
+            all_rows.extend(dict(row) for row in cur.fetchall())
     return all_rows
 
 
@@ -99,13 +104,13 @@ def batch_upsert(conn, tabla: str, datos: list[dict],
     if not datos:
         return 0
     cols = list(datos[0].keys())
-    cols_sql = ", ".join(cols)
+    cols_sql = ", ".join(_safe_id(c) for c in cols)
     template = "(" + ", ".join([f"%({c})s" for c in cols]) + ")"
     update_cols = [c for c in cols if c != on_conflict]
-    update_sql = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+    update_sql = ", ".join([f"{_safe_id(c)} = EXCLUDED.{_safe_id(c)}" for c in update_cols])
     sql = (
-        f"INSERT INTO {tabla} ({cols_sql}) VALUES %s "
-        f"ON CONFLICT ({on_conflict}) DO UPDATE SET {update_sql}"
+        f"INSERT INTO {_safe_id(tabla)} ({cols_sql}) VALUES %s "
+        f"ON CONFLICT ({_safe_id(on_conflict)}) DO UPDATE SET {update_sql}"
     )
 
     total = 0
@@ -132,7 +137,7 @@ def get_max_value(conn, tabla: str, columna: str) -> str | None:
     Sirve para determinar hasta dónde se cargó en modo incremental.
     """
     with conn.cursor() as cur:
-        cur.execute(f"SELECT MAX({columna})::text FROM {tabla}")
+        cur.execute(f"SELECT MAX({_safe_id(columna)})::text FROM {_safe_id(tabla)}")
         row = cur.fetchone()
         return row[0] if row and row[0] else None
 
@@ -205,7 +210,6 @@ def safe_float(val) -> float | None:
     if val is None:
         return None
     if isinstance(val, (int, float)):
-        import math
         if math.isnan(val):
             return None
         return float(val)

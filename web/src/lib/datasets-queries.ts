@@ -64,7 +64,8 @@ const STALE_DAYS = 45;
 
 function diffDays(a: string, b: string): number {
   return Math.round(
-    (new Date(b).getTime() - new Date(a).getTime()) / (1000 * 60 * 60 * 24)
+    (new Date(b + "T12:00:00").getTime() - new Date(a + "T12:00:00").getTime()) /
+      (1000 * 60 * 60 * 24),
   );
 }
 

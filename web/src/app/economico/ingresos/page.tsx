@@ -9,6 +9,8 @@ import {
   PieChart,
   Pie,
   Cell,
+  Area,
+  AreaChart,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -16,7 +18,16 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
-import { DollarSign, Store, Coffee, Utensils, Loader2, AlertCircle } from "lucide-react";
+import {
+  DollarSign,
+  Store,
+  Coffee,
+  Utensils,
+  Loader2,
+  AlertCircle,
+  Info,
+  ChevronDown,
+} from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -63,7 +74,7 @@ const YEAR_DASH: Record<string, string | undefined> = {
   "2024": "5 5",
 };
 
-type Granularity = "mensual" | "trimestral" | "anual";
+type Granularity = "mensual" | "trimestral" | "anual" | "ytd";
 
 const QUARTER_LABELS: Record<string, string> = { "01": "Q1", "02": "Q1", "03": "Q1", "04": "Q2", "05": "Q2", "06": "Q2", "07": "Q3", "08": "Q3", "09": "Q3", "10": "Q4", "11": "Q4", "12": "Q4" };
 
@@ -72,6 +83,8 @@ const MONTH_NAMES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct"
 function aggregateRows(
   data: IngresoRow[],
   granularity: Granularity,
+  ytdLastMonth?: number,
+  ytdRangeLabel?: string,
 ): { key: string; label: string; mostrador: number; restobar: number; servicios: number; total: number }[] {
   if (granularity === "mensual") {
     return data.map((r) => {
@@ -80,8 +93,13 @@ function aggregateRows(
     }).sort((a, b) => b.key.localeCompare(a.key));
   }
 
+  // YTD: filter months 1..ytdLastMonth, then aggregate by year
+  const source = granularity === "ytd" && ytdLastMonth
+    ? data.filter((r) => parseInt(r.periodo.slice(5, 7), 10) <= ytdLastMonth)
+    : data;
+
   const buckets = new Map<string, { mostrador: number; restobar: number; servicios: number; total: number }>();
-  for (const r of data) {
+  for (const r of source) {
     const [y, m] = r.periodo.split("-");
     const bucketKey = granularity === "trimestral" ? `${y}-${QUARTER_LABELS[m]}` : y;
     const cur = buckets.get(bucketKey) ?? { mostrador: 0, restobar: 0, servicios: 0, total: 0 };
@@ -94,9 +112,14 @@ function aggregateRows(
 
   return Array.from(buckets.entries())
     .map(([k, v]) => {
-      const label = granularity === "trimestral"
-        ? `${k.split("-")[1]} ${k.split("-")[0]}`
-        : k;
+      let label: string;
+      if (granularity === "trimestral") {
+        label = `${k.split("-")[1]} ${k.split("-")[0]}`;
+      } else if (granularity === "ytd") {
+        label = ytdRangeLabel ? `${ytdRangeLabel} ${k}` : k;
+      } else {
+        label = k;
+      }
       return { key: k, label, ...v };
     })
     .sort((a, b) => b.key.localeCompare(a.key));
@@ -109,11 +132,13 @@ function KpiCard({
   title,
   value,
   delta,
+  deltaYoY,
   icon: Icon,
 }: {
   title: string;
   value: number;
   delta: number | null;
+  deltaYoY?: number | null;
   icon: React.ElementType;
 }) {
   return (
@@ -130,6 +155,15 @@ function KpiCard({
           </p>
         ) : (
           <p className="text-xs text-muted-foreground">Sin mes anterior</p>
+        )}
+        {deltaYoY !== undefined && (
+          deltaYoY !== null ? (
+            <p className={`text-xs ${deltaYoY >= 0 ? "text-green-600" : "text-red-600"}`}>
+              {formatPct(deltaYoY)} vs mismo mes año anterior
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground">Sin dato año anterior</p>
+          )
         )}
       </CardContent>
     </Card>
@@ -378,7 +412,7 @@ function YtdTable({ data, cutoff, partialMap }: {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead />
+                <TableHead className="sticky left-0 z-20 bg-card" />
                 {years.map((y, i) => (
                   <React.Fragment key={y.year}>
                     <TableHead className="text-right">{monthRange} {y.year}</TableHead>
@@ -392,7 +426,7 @@ function YtdTable({ data, cutoff, partialMap }: {
             <TableBody>
               {units.map((u) => (
                 <TableRow key={u.key}>
-                  <TableCell className={u.bold ? "font-bold" : ""}>{u.label}</TableCell>
+                  <TableCell className={`sticky left-0 z-10 bg-card ${u.bold ? "font-bold" : ""}`}>{u.label}</TableCell>
                   {years.map((y, i) => {
                     const val = y[u.key];
                     const next = i < years.length - 1 ? years[i + 1] : null;
@@ -553,7 +587,7 @@ function CompositionTable({ data }: { data: IngresoRow[] }) {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Año</TableHead>
+              <TableHead className="sticky left-0 z-20 bg-card">Año</TableHead>
               {fields.map((f) => (
                 <TableHead key={f} className="text-right">{labels[f]}</TableHead>
               ))}
@@ -564,7 +598,7 @@ function CompositionTable({ data }: { data: IngresoRow[] }) {
               const prev = i < rows.length - 1 ? rows[i + 1] : null;
               return (
                 <TableRow key={r.year}>
-                  <TableCell className="font-medium">{r.year}</TableCell>
+                  <TableCell className="sticky left-0 z-10 bg-card font-medium">{r.year}</TableCell>
                   {fields.map((f) => {
                     const cur = pct(r[f], r.total);
                     const prevPct = prev ? pct(prev[f], prev.total) : null;
@@ -714,6 +748,130 @@ function SeasonalityHeatmap({ data }: { data: IngresoRow[] }) {
             </tbody>
           </table>
         </div>
+        {/* Color scale legend */}
+        <div className="mt-3 flex items-center justify-end gap-2 text-xs text-muted-foreground">
+          <span>Min: {formatCompact(minVal)}</span>
+          <div className="flex h-3 w-40 overflow-hidden rounded border">
+            <div className="flex-1 bg-green-100" />
+            <div className="flex-1 bg-green-200" />
+            <div className="flex-1 bg-green-300" />
+            <div className="flex-1 bg-green-500" />
+            <div className="flex-1 bg-green-700" />
+          </div>
+          <span>Max: {formatCompact(maxVal)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Info callout — "cómo leer esta página"
+// ---------------------------------------------------------------------------
+function IngresosCallout({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Card className="border-l-4 border-l-primary">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+        <div className="flex items-center gap-2">
+          <Info className="h-4 w-4 shrink-0 text-primary" />
+          <CardTitle className="text-sm font-semibold">Cómo leer esta página</CardTitle>
+        </div>
+        <button
+          onClick={onToggle}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          aria-label={collapsed ? "Expandir explicación" : "Colapsar explicación"}
+          aria-expanded={!collapsed}
+        >
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 transition-transform duration-200 ${collapsed ? "-rotate-90" : ""}`}
+          />
+        </button>
+      </CardHeader>
+      <div
+        className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
+          collapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <CardContent className="pt-0 text-sm space-y-2">
+            <p>
+              Ingresos agregados de las <strong>tres unidades de negocio</strong> en una misma vista para comparar pesos relativos, estacionalidad y evolución.
+            </p>
+            <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong className="text-foreground">Mostrador</strong>: ventas directas en local (POS) — neto de impuestos.
+              </li>
+              <li>
+                <strong className="text-foreground">Restobar</strong>: consumo en local (POS, diferenciado por producto).
+              </li>
+              <li>
+                <strong className="text-foreground">Servicios</strong>: catering / facturas emitidas — se cuenta por <em>fecha de emisión</em>, no de cobro (devengado).
+              </li>
+              <li>
+                <strong className="text-foreground">Ajuste por inflación</strong>: los montos se guardan nominales. El toggle arriba a la derecha los lleva al mes más reciente via IPC. Sin ajuste, comparar años distintos engaña.
+              </li>
+              <li>
+                <strong className="text-foreground">YTD</strong>: cuando el último mes está parcial, las comparaciones por año truncan todos los años al mismo día (p. ej. &ldquo;Ene–7 Abr&rdquo;) para ser justas.
+              </li>
+              <li>
+                <strong className="text-foreground">Selector de mes</strong>: afecta los KPIs y el donut de participación (muestra el año del mes elegido).
+              </li>
+            </ul>
+          </CardContent>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 100% stacked area — evolution of the mix across the last 24 months
+// ---------------------------------------------------------------------------
+function MixEvolutionArea({ data }: { data: IngresoRow[] }) {
+  const chart = useMemo(() => {
+    return data.slice(-24).map((r) => {
+      const total = r.total > 0 ? r.total : 1;
+      return {
+        label: shortLabel(r.periodo),
+        periodo: r.periodo,
+        mostrador: (r.mostrador / total) * 100,
+        restobar: (r.restobar / total) * 100,
+        servicios: (r.servicios / total) * 100,
+      };
+    });
+  }, [data]);
+
+  if (chart.length === 0) return null;
+
+  const pctTooltip: Formatter<ValueType, NameType> = (v) => `${Number(v ?? 0).toFixed(1)}%`;
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Evolución de la Mix de Ingresos</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <ResponsiveContainer width="100%" height={300}>
+          <AreaChart data={chart}>
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <XAxis dataKey="label" fontSize={11} />
+            <YAxis fontSize={11} tickFormatter={(v) => `${v}%`} domain={[0, 100]} />
+            <Tooltip formatter={pctTooltip} />
+            <Legend />
+            <Area type="monotone" dataKey="mostrador" name="Mostrador" stackId="1" fill={COLORS.mostrador} stroke={COLORS.mostrador} fillOpacity={0.8} />
+            <Area type="monotone" dataKey="restobar" name="Restobar" stackId="1" fill={COLORS.restobar} stroke={COLORS.restobar} fillOpacity={0.8} />
+            <Area type="monotone" dataKey="servicios" name="Servicios" stackId="1" fill={COLORS.servicios} stroke={COLORS.servicios} fillOpacity={0.8} />
+          </AreaChart>
+        </ResponsiveContainer>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Proporción de cada UN sobre el total mensual, últimos 24 meses.
+        </p>
       </CardContent>
     </Card>
   );
@@ -731,6 +889,8 @@ export default function IngresosPage() {
   const [selectedPeriodo, setSelectedPeriodo] = useState("");
   const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
   const [ytdPartialRaw, setYtdPartialRaw] = useState<Map<string, IngresoParcial>>(new Map());
+  const [isInfoCollapsed, setIsInfoCollapsed] = useState(false);
+
   useEffect(() => {
     fetchIngresos()
       .then(setRaw)
@@ -790,6 +950,31 @@ export default function IngresosPage() {
     });
   }, [allData]);
 
+  // For the detail table: when granularity === "ytd", truncate to months 1..lastMonth.
+  // Derive from the data itself (last month with data in the most-recent year)
+  // and build a range label consistent with ytdMonthRangeLabel.
+  const { ytdLastMonth, ytdRangeLabel } = useMemo(() => {
+    if (allData.length === 0) return { ytdLastMonth: undefined, ytdRangeLabel: undefined };
+    const lastPeriodo = allData[allData.length - 1].periodo;
+    const lastYear = lastPeriodo.slice(0, 4);
+    let maxMonth = 0;
+    let firstMonth = 13;
+    for (const r of allData) {
+      if (r.periodo.startsWith(lastYear)) {
+        const m = parseInt(r.periodo.slice(5, 7), 10);
+        if (m > maxMonth) maxMonth = m;
+        if (m < firstMonth) firstMonth = m;
+      }
+    }
+    if (maxMonth === 0) return { ytdLastMonth: undefined, ytdRangeLabel: undefined };
+    const firstStr = String(firstMonth === 13 ? 1 : firstMonth).padStart(2, "0");
+    const lastStr = String(maxMonth).padStart(2, "0");
+    return {
+      ytdLastMonth: maxMonth,
+      ytdRangeLabel: ytdMonthRangeLabel(firstStr, lastStr, ytdCutoff),
+    };
+  }, [allData, ytdCutoff]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
@@ -829,6 +1014,11 @@ export default function IngresosPage() {
   const selectedIdx = allData.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? allData[selectedIdx] : allData[allData.length - 1];
   const prev = selectedIdx >= 1 ? allData[selectedIdx - 1] : null;
+  // Same month previous year — used for YoY delta on KPIs
+  const prevYearPeriodo = last
+    ? `${parseInt(last.periodo.slice(0, 4), 10) - 1}-${last.periodo.slice(5, 7)}`
+    : "";
+  const prevYear = allData.find((r) => r.periodo === prevYearPeriodo) ?? null;
 
   return (
     <div className="space-y-6">
@@ -843,30 +1033,40 @@ export default function IngresosPage() {
         </div>
       </div>
 
+      {/* Info callout */}
+      <IngresosCallout
+        collapsed={isInfoCollapsed}
+        onToggle={() => setIsInfoCollapsed((v) => !v)}
+      />
+
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard
           title="Total Ingresos"
           value={last.total}
           delta={prev ? pctDelta(last.total, prev.total) : null}
+          deltaYoY={prevYear ? pctDelta(last.total, prevYear.total) : null}
           icon={DollarSign}
         />
         <KpiCard
           title="Mostrador"
           value={last.mostrador}
           delta={prev ? pctDelta(last.mostrador, prev.mostrador) : null}
+          deltaYoY={prevYear ? pctDelta(last.mostrador, prevYear.mostrador) : null}
           icon={Store}
         />
         <KpiCard
           title="Restobar"
           value={last.restobar}
           delta={prev ? pctDelta(last.restobar, prev.restobar) : null}
+          deltaYoY={prevYear ? pctDelta(last.restobar, prevYear.restobar) : null}
           icon={Coffee}
         />
         <KpiCard
           title="Servicios"
           value={last.servicios}
           delta={prev ? pctDelta(last.servicios, prev.servicios) : null}
+          deltaYoY={prevYear ? pctDelta(last.servicios, prevYear.servicios) : null}
           icon={Utensils}
         />
       </div>
@@ -914,17 +1114,17 @@ export default function IngresosPage() {
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">Detalle de Ingresos</CardTitle>
           <div className="flex items-center rounded-lg border text-xs font-medium">
-            {(["mensual", "trimestral", "anual"] as Granularity[]).map((g) => (
+            {(["mensual", "trimestral", "anual", "ytd"] as Granularity[]).map((g) => (
               <button
                 key={g}
                 onClick={() => setGranularity(g)}
-                className={`px-3 py-1.5 capitalize transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
                   granularity === g
                     ? "bg-primary text-primary-foreground"
                     : "hover:bg-accent"
                 }`}
               >
-                {g}
+                {g === "ytd" ? "YTD" : g.charAt(0).toUpperCase() + g.slice(1)}
               </button>
             ))}
           </div>
@@ -941,7 +1141,7 @@ export default function IngresosPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {aggregateRows(allData, granularity).map((r) => (
+              {aggregateRows(allData, granularity, ytdLastMonth, ytdRangeLabel).map((r) => (
                 <TableRow key={r.key}>
                   <TableCell>{r.label}</TableCell>
                   <TableCell className="text-right">{formatARS(r.mostrador)}</TableCell>
@@ -957,6 +1157,9 @@ export default function IngresosPage() {
 
       {/* Composition by UN per year */}
       <CompositionTable data={allData} />
+
+      {/* Mix evolution — 100% stacked area */}
+      <MixEvolutionArea data={allData} />
 
       {/* Seasonality heatmap */}
       <SeasonalityHeatmap data={allData} />

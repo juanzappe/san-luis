@@ -1,9 +1,9 @@
 # Modelo de Datos v2 — App de Gestión San Luis
 ## Nadal y Zaccaro S.A.
 
-**Fecha:** 28 de marzo de 2026  
-**Versión:** 2.0 (validado contra datasets reales)  
-**Total de tablas:** 27
+**Fecha:** 28 de marzo de 2026 · Última revisión: 17 de abril de 2026
+**Versión:** 2.0 (validado contra datasets reales)
+**Total de tablas:** 36 (al 17-04-2026 — las 27 originales + adiciones: `factura_emitida_detalle`, `import_log`, `posicion_iibb`, `comprobante_recibido`, `inmueble`, `saldo_manual`, `inversion_movimiento`, `balance_rubro`, `estado_resultados_contable` ya incluida en las 27)
 
 ---
 

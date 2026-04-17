@@ -86,8 +86,10 @@ def run(conn, logger, full: bool = False) -> int:
             h = data["header"]
             fecha = _parse_fecha_mostrador(h.get("Fecha"))
 
-            # Incremental: skip if fecha <= max_fecha
-            if max_fecha and fecha and fecha <= max_fecha:
+            # Incremental: compare date-only to avoid time-component mismatches
+            fecha_date = fecha[:10] if fecha else None
+            max_fecha_date = max_fecha[:10] if max_fecha else None
+            if max_fecha_date and fecha_date and fecha_date <= max_fecha_date:
                 skipped += 1
                 continue
 

@@ -1,8 +1,8 @@
 # Especificación Funcional — App de Gestión San Luis
 ## Nadal y Zaccaro S.A. — Confitería San Luis
 
-**Fecha:** 27 de marzo de 2026  
-**Versión:** 1.0
+**Fecha:** 17 de abril de 2026
+**Versión:** 1.1 (actualizada con implementación de Egresos/Costos completa)
 
 ---
 
@@ -42,6 +42,31 @@
   - Caja chica / tarjeta corporativa
 - **Categorización:** Automática por tipo de comprobante/fuente, con opción de corregir manualmente
 - **Apertura:** Consolidado (sin apertura por unidad de negocio por ahora)
+
+**Página principal `/economico/egresos`** (implementada):
+- Callout explicativo de los 5 grupos y convenciones.
+- 6 KPI cards (Total + 5 categorías) con delta vs mes anterior y vs mismo mes año anterior (YoY). Colores invertidos: bajar gasto = verde.
+- Tabla YTD multi-año (con cutoff por día si el mes corriente es parcial).
+- Tabla de Promedio Mensual por año.
+- Stacked bar — composición mensual últimos 12 meses.
+- **Ingresos vs Egresos** — 2 líneas superpuestas 24 meses con área del margen.
+- **Cascada del mes** — waterfall Ingresos → Costos Operativos → Sueldos → Margen Bruto → Comerciales → Financieros → Ganancias → Resultado.
+- **Estructura de Costos %** — 5 líneas (cada categoría como % de ingresos) evolutivas 24 meses.
+- Tabla detalle por período con granularidad (mensual/trim/anual). Columnas de categoría agrupan las chicas (<2% del total) en "Otros" para legibilidad.
+
+**Subpáginas** (implementadas):
+
+- **Costos Operativos** (`/economico/egresos/costos-operativos`): proveedores por categoría, neto de IVA. Tabla detalle + chart de evolución de top 5 categorías + "Resto".
+- **Sueldos** (`/economico/egresos/sueldos`): Sueldos Neto + Cargas Sociales (F.931). Chart de ratio CS/Neto evolutivo + chart de costo por empleado (usa headcount de `liquidacion_sueldo`).
+- **Gastos Comerciales** (`/economico/egresos/gastos-comerciales`): IIBB (4,5%) + Seg. e Higiene (1%) + cuotas fijas municipales + **Imp. al Cheque** (LEY 25.413). Incluye sección informativa de Posición IVA (no suma al total — referencia) + chart de Saldo IVA acumulado.
+- **Gastos Financieros** (`/economico/egresos/gastos-financieros`): Comisiones bancarias, intereses, seguros, comisiones MP, otros. Chart de intereses+comisiones acumulados 12 meses (ventana móvil).
+- **Imp. a las Ganancias** (`/economico/egresos/impuesto-ganancias`): devengado al 36,7% sobre (resultado antes − RECPAM). Incluye tabla de **tasas efectivas históricas derivadas de EECC** (2021-2024) para ver de dónde sale la tasa usada.
+
+**Convenciones de cálculo**:
+- Sueldos + Cargas Sociales viene de F.931 (devengado).
+- Gastos Comerciales es devengado (estimado cada mes sobre ingresos), no percibido.
+- Imp. al Cheque va con Gastos Comerciales (antes estaba en Financieros).
+- Imp. a las Ganancias se clampa a 0 en mensual; en trimestral/anual se recalcula sobre la base acumulada para evitar inflar la tasa efectiva.
 
 ### 1.4 Balance
 - **Tipo:** Carga del balance cerrado provisto por el contador (no se construye desde datos operativos)
@@ -127,15 +152,22 @@
 
 ## 5. COSTOS
 
+- **Ruta:** `/costos` (sección top-level, fuera de Económicos)
 - **Alcance:** Estructura de costos completa — fijos vs variables
-- **Clasificación:** Automática por categoría (ej: alquiler → fijo, insumos → variable)
-- **Fuente:** Se alimenta desde Egresos (reclasifica cada gasto como fijo o variable)
-- **Análisis:**
-  - Punto de equilibrio
-  - Margen de contribución
-  - Costo fijo vs variable por período
-  - Evolución de costos vs inflación
-- **Futuro (no en v1):** Fichas técnicas de productos (recetas con insumos para costeo por producto)
+- **Clasificación:** Automática por categoría — hoy con mapeo por defecto en el frontend (sueldos/alquiler/servicios = fijos; insumos/IIBB/ganancias = variables). La fuente canónica es `categoria_egreso.tipo_costo`; cuando se ajuste en DB, los valores se refinan sin tocar código.
+- **Fuente:** Reusa el hook `useEgresosData` — se alimenta desde Egresos.
+- **KPIs (mes corriente):**
+  - Costos Fijos totales
+  - Costos Variables totales
+  - Margen de Contribución ($ e %)
+  - Punto de Equilibrio (estable — promedio móvil 3 meses)
+- **Charts:**
+  - Ingresos vs Punto de Equilibrio — 2 líneas 24 meses
+  - Costos Fijos y Variables — stacked bar 24 meses
+  - Margen de Contribución % — line chart 24 meses
+- **Tabla:** desglose fijo/variable del mes con badges de tipo (F/V), montos y % del total.
+- **Semáforo en el card de PE:** borde verde si la facturación cubre el PE; rojo si no.
+- **Futuro (no en v1):** Fichas técnicas de productos (recetas con insumos para costeo por producto). Edición del `tipo_costo` desde UI (hoy requiere update en DB).
 
 ---
 

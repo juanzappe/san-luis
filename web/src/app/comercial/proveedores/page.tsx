@@ -16,14 +16,18 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import Link from "next/link";
 import {
   Users,
   DollarSign,
   Target,
+  TrendingUp,
+  AlertTriangle,
   ArrowLeft,
   Loader2,
   AlertCircle,
   Search,
+  Pencil,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -389,7 +393,7 @@ export default function ProveedoresPage() {
         onCategoryChange={setSelectedCategory}
       />
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <KpiCard title="Proveedores Activos" value={String(cantProv)} icon={Users} />
         <KpiCard
           title={comprasLabel}
@@ -398,7 +402,25 @@ export default function ProveedoresPage() {
           icon={DollarSign}
         />
         <KpiCard title="Concentración Top 10" value={`${data.concentracionTop10.toFixed(1)}%`} icon={Target} />
+        <KpiCard
+          title="Regla 80/20"
+          value={`${data.paretoN80Pct} prov.`}
+          delta={`${((data.paretoN80Pct / cantProv) * 100).toFixed(0)}% del total = 80% gasto`}
+          icon={TrendingUp}
+        />
       </div>
+
+      {data.concentracionTop1Pct > 15 && data.ranking[0] && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="flex items-center gap-3 py-4">
+            <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0" />
+            <p className="text-sm text-amber-800">
+              <span className="font-semibold">Concentración alta:</span>{" "}
+              <strong>{data.ranking[0].nombre}</strong> representa el {data.concentracionTop1Pct.toFixed(1)}% del gasto en proveedores.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card className="lg:col-span-2">
@@ -413,6 +435,26 @@ export default function ProveedoresPage() {
                 <Bar dataKey="monto" name="Compras" fill="#ef4444" radius={[0, 4, 4, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">Por Grupo de Costo</CardTitle></CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={280}>
+              <PieChart>
+                <Pie data={data.porGrupoCosto} cx="50%" cy="50%" innerRadius={55} outerRadius={100} dataKey="value" nameKey="name"
+                  label={({ name, percent }) => `${String(name)} ${((percent ?? 0) * 100).toFixed(0)}%`} labelLine={false} fontSize={11}>
+                  {data.porGrupoCosto.map((d, i) => (
+                    <Cell key={i} fill={d.name === "operativo" ? "#f59e0b" : d.name === "comercial" ? "#ef4444" : "#94a3b8"} />
+                  ))}
+                </Pie>
+                <Tooltip formatter={arsTooltip} />
+              </PieChart>
+            </ResponsiveContainer>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Operativo = insumos, servicios, alimentos, etc. Comercial = honorarios, seguros, telefonía, servicios públicos.
+            </p>
           </CardContent>
         </Card>
 
@@ -607,6 +649,12 @@ function PageHeader({
           ))}
         </FilterSelect>
         <InflationToggle />
+        <Link
+          href="/comercial/proveedores/editar"
+          className="flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent transition-colors"
+        >
+          <Pencil className="h-3.5 w-3.5" /> Editar categorías
+        </Link>
       </div>
     </div>
   );

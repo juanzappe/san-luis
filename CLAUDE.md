@@ -15,19 +15,21 @@ App web de gestión integral para Confitería San Luis / Nadal y Zaccaro S.A., u
 san-luis/
 ├── CLAUDE.md                   ← Este archivo
 ├── web/                        ← Next.js app
-│   ├── app/                    ← Pages (App Router)
-│   ├── components/             ← Componentes React reutilizables
-│   ├── lib/
-│   │   └── supabase.ts         ← Cliente Supabase
+│   ├── src/
+│   │   ├── app/                ← Pages (App Router)
+│   │   ├── components/         ← Componentes React reutilizables
+│   │   └── lib/                ← Supabase client + 14 query modules
 │   └── package.json
-├── importador/                 ← Python CLI para importar archivos
-│   ├── importar.py             ← CLI principal
-│   ├── config.py               ← Supabase URL + key
-│   ├── parsers/                ← Un parser por fuente de datos
-│   └── apis/                   ← Clientes para APIs externas (IPC, dólar)
+├── etl/                        ← Pipeline Python para importar datos
+│   ├── main.py                 ← CLI principal (incremental y full reload)
+│   ├── auto_import.py          ← Detección automática de cambios en data_raw/
+│   ├── utils.py                ← Utilidades compartidas (DB, parsing, logging)
+│   ├── importar.bat            ← Acceso rápido en Windows
+│   ├── loaders/                ← 16 loaders, uno por fuente de datos
+│   └── requirements.txt
 ├── supabase/
-│   └── migrations/             ← SQL para crear las 27 tablas
-├── datos-ejemplo/              ← Archivos de ejemplo para testear parsers
+│   └── migrations/             ← SQL para crear las 27 tablas + RPCs
+├── data_raw/                   ← Archivos crudos de bancos/ARCA (no commitear)
 └── docs/                       ← Especificaciones detalladas
     ├── especificacion_funcional.md
     ├── modelo_datos_v2.md

@@ -56,6 +56,8 @@ export interface ClientesData {
   ranking: ClienteRanking[];
   mensual: ClienteMensual[];
   concentracionTop10: number;
+  concentracionTop1Pct: number;
+  paretoN80Pct: number;
   pctPublico: number;
   porTipoEntidad: { name: string; value: number }[];
   porClasificacion: { name: string; value: number }[];
@@ -156,6 +158,14 @@ export function processClientesRows(rows: RpcClienteRow[]): ClientesData {
   const top10 = top5 + top6_10;
   const rest = grandTotal - top10;
   const concentracionTop10 = grandTotal > 0 ? (top10 / grandTotal) * 100 : 0;
+  const concentracionTop1Pct = ranking.length > 0 ? ranking[0].pctTotal : 0;
+
+  // Pareto: ¿cuántos clientes acumulan el 80% de la facturación?
+  let paretoN80Pct = 0;
+  for (const r of ranking) {
+    paretoN80Pct += 1;
+    if (r.pctAcumulado >= 80) break;
+  }
 
   const concentracionDonut = [
     { name: "Top 5", value: top5 },
@@ -188,7 +198,17 @@ export function processClientesRows(rows: RpcClienteRow[]): ClientesData {
       montoPrivado: m.privado,
     }));
 
-  return { ranking, mensual, concentracionTop10, pctPublico, porTipoEntidad, porClasificacion, concentracionDonut };
+  return {
+    ranking,
+    mensual,
+    concentracionTop10,
+    concentracionTop1Pct,
+    paretoN80Pct,
+    pctPublico,
+    porTipoEntidad,
+    porClasificacion,
+    concentracionDonut,
+  };
 }
 
 export async function fetchClientes(): Promise<ClientesData> {
@@ -270,6 +290,7 @@ export interface ProveedorRanking {
   nombre: string;
   tipoCosto: string;
   categoriaEgreso: string;
+  grupoCosto: string;
   montoTotal: number;
   cantFacturas: number;
   compraPromedio: number;
@@ -297,8 +318,11 @@ export interface ProveedoresData {
   ranking: ProveedorRanking[];
   mensual: ProveedorMensual[];
   concentracionTop10: number;
+  concentracionTop1Pct: number; // % del top 1 — usado para alertas
+  paretoN80Pct: number; // cantidad de proveedores que acumulan el 80% del gasto
   porTipoCosto: { name: string; value: number }[];
   porCategoriaEgreso: { name: string; value: number }[];
+  porGrupoCosto: { name: string; value: number }[];
   concentracionDonut: { name: string; value: number }[];
 }
 
@@ -311,6 +335,7 @@ export type RpcProveedorRow = {
   cantidad: number;
   tipo_costo: string;
   categoria_egreso: string;
+  grupo_costo?: string; // migración 082
 };
 
 export async function fetchProveedoresRaw(): Promise<RpcProveedorRow[]> {
@@ -354,7 +379,7 @@ export function processProveedoresRows(
   });
 
   // Aggregate by proveedor
-  const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string }>();
+  const provTotals = new Map<string, { nombre: string; monto: number; cnt: number; tipoCosto: string; categoriaEgreso: string; grupoCosto: string }>();
   const monthlyMap = new Map<string, { monto: number; proveedores: Set<string>; porCat: Map<string, number> }>();
 
   let loopRawSum = 0;
@@ -370,6 +395,7 @@ export function processProveedoresRows(
     const cnt = Number(r.cantidad) || 0;
     const cuit = r.cuit;
     const categoriaEgreso = r.categoria_egreso;
+    const grupoCosto = r.grupo_costo ?? "Sin clasificar";
 
     const existing = provTotals.get(cuit);
     if (existing) {
@@ -382,6 +408,7 @@ export function processProveedoresRows(
         cnt,
         tipoCosto: r.tipo_costo,
         categoriaEgreso,
+        grupoCosto,
       });
     }
 
@@ -425,6 +452,7 @@ export function processProveedoresRows(
       nombre: p.nombre,
       tipoCosto: p.tipoCosto,
       categoriaEgreso: p.categoriaEgreso,
+      grupoCosto: p.grupoCosto,
       montoTotal: p.monto,
       cantFacturas: p.cnt,
       compraPromedio: p.cnt > 0 ? p.monto / p.cnt : 0,
@@ -438,6 +466,14 @@ export function processProveedoresRows(
   const top6_10 = ranking.slice(5, 10).reduce((s, p) => s + p.montoTotal, 0);
   const top10 = top5 + top6_10;
   const concentracionTop10 = grandTotal > 0 ? (top10 / grandTotal) * 100 : 0;
+  const concentracionTop1Pct = ranking.length > 0 ? ranking[0].pctTotal : 0;
+
+  // Pareto: ¿cuántos proveedores acumulan el 80% del gasto?
+  let paretoN80Pct = 0;
+  for (const r of ranking) {
+    paretoN80Pct += 1;
+    if (r.pctAcumulado >= 80) break;
+  }
 
   const concentracionDonut = [
     { name: "Top 5", value: top5 },
@@ -445,15 +481,18 @@ export function processProveedoresRows(
     { name: "Resto", value: grandTotal - top10 },
   ].filter((d) => d.value > 0);
 
-  // By TipoCosto and CategoriaEgreso
+  // By TipoCosto, CategoriaEgreso, GrupoCosto
   const byTipo = new Map<string, number>();
   const byCat = new Map<string, number>();
+  const byGrupo = new Map<string, number>();
   for (const p of sorted) {
     addToMap(byTipo, p.tipoCosto, p.monto);
     addToMap(byCat, p.categoriaEgreso, p.monto);
+    addToMap(byGrupo, p.grupoCosto, p.monto);
   }
   const porTipoCosto = Array.from(byTipo.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
   const porCategoriaEgreso = Array.from(byCat.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
+  const porGrupoCosto = Array.from(byGrupo.entries()).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value);
 
   // Monthly
   const mensual: ProveedorMensual[] = Array.from(monthlyMap.entries())
@@ -464,7 +503,17 @@ export function processProveedoresRows(
       return { periodo, monto: m.monto, cantProveedores: m.proveedores.size, porCategoria };
     });
 
-  return { ranking, mensual, concentracionTop10, porTipoCosto, porCategoriaEgreso, concentracionDonut };
+  return {
+    ranking,
+    mensual,
+    concentracionTop10,
+    concentracionTop1Pct,
+    paretoN80Pct,
+    porTipoCosto,
+    porCategoriaEgreso,
+    porGrupoCosto,
+    concentracionDonut,
+  };
 }
 
 export async function fetchProveedores(): Promise<ProveedoresData> {

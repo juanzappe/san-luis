@@ -12,6 +12,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { InflationToggle, useInflation } from "@/lib/inflation";
+import { Callout } from "@/components/callout";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type FinancierosDesglose,
@@ -19,7 +20,6 @@ import {
   formatARS,
   formatPct,
   pctDelta,
-  periodoLabel,
   shortLabel,
 } from "@/lib/economic-queries";
 import type {
@@ -41,9 +41,7 @@ interface CategoryDef {
 const CATEGORIES: CategoryDef[] = [
   { key: "comisionesBancarias", label: "Comisiones Bancarias", color: "#f59e0b" },
   { key: "intereses",          label: "Intereses",            color: "#ef4444" },
-  { key: "seguros",            label: "Seguros",              color: "#6366f1" },
   { key: "comisionesMp",       label: "Comisiones MP",        color: "#8b5cf6" },
-  { key: "otros",              label: "Otros Financieros",    color: "#94a3b8" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -54,15 +52,20 @@ function KpiCard({
   title,
   value,
   delta,
+  deltaYoY,
   color,
 }: {
   title: string;
   value: number;
   delta: number | null;
+  deltaYoY?: number | null;
   color?: string;
 }) {
-  const deltaPositive = delta !== null && delta < 0;
-  const deltaNegative = delta !== null && delta > 0;
+  // Gastos: bajar es bueno → invertimos los colores
+  const colorFor = (d: number | null) => {
+    if (d === null) return "text-muted-foreground";
+    return d < 0 ? "text-green-600" : d > 0 ? "text-red-600" : "text-muted-foreground";
+  };
 
   return (
     <Card>
@@ -73,11 +76,16 @@ function KpiCard({
       <CardContent>
         <div className="text-2xl font-bold">{formatARS(value)}</div>
         {delta !== null ? (
-          <p className={`text-xs ${deltaPositive ? "text-green-600" : deltaNegative ? "text-red-600" : "text-muted-foreground"}`}>
+          <p className={`text-xs ${colorFor(delta)}`}>
             {formatPct(delta)} vs mes anterior
           </p>
         ) : (
           <p className="text-xs text-muted-foreground">Sin mes anterior</p>
+        )}
+        {deltaYoY !== undefined && deltaYoY !== null && (
+          <p className={`text-xs ${colorFor(deltaYoY)}`}>
+            {formatPct(deltaYoY)} vs mismo mes año anterior
+          </p>
         )}
       </CardContent>
     </Card>
@@ -186,18 +194,26 @@ export default function GastosFinancierosPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  // Apply inflation adjustment
+  // Apply inflation adjustment. Total recalculado sobre 3 conceptos
+  // (comisiones bancarias + intereses + comisiones MP). Seguros y "otros" del
+  // banco quedan fuera: los seguros efectivos van en Gastos Comerciales vía
+  // factura_recibida; los "otros" del RPC son movimientos no clasificables.
   const data: FinancierosDesglose[] = useMemo(
     () =>
-      raw.map((r) => ({
-        periodo: r.periodo,
-        comisionesBancarias: adjust(r.comisionesBancarias, r.periodo),
-        intereses: adjust(r.intereses, r.periodo),
-        seguros: adjust(r.seguros, r.periodo),
-        comisionesMp: adjust(r.comisionesMp, r.periodo),
-        otros: adjust(r.otros, r.periodo),
-        total: adjust(r.total, r.periodo),
-      })),
+      raw.map((r) => {
+        const comBanc = adjust(r.comisionesBancarias, r.periodo);
+        const inter = adjust(r.intereses, r.periodo);
+        const comMp = adjust(r.comisionesMp, r.periodo);
+        return {
+          periodo: r.periodo,
+          comisionesBancarias: comBanc,
+          intereses: inter,
+          seguros: 0,
+          comisionesMp: comMp,
+          otros: 0,
+          total: comBanc + inter + comMp,
+        };
+      }),
     [raw, adjust],
   );
 
@@ -206,6 +222,11 @@ export default function GastosFinancierosPage() {
   const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
   const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
+  // Mismo mes año anterior — para YoY delta en KPIs
+  const prevYearPeriodo = last
+    ? `${parseInt(last.periodo.slice(0, 4), 10) - 1}-${last.periodo.slice(5, 7)}`
+    : "";
+  const prevYear = data.find((r) => r.periodo === prevYearPeriodo) ?? null;
 
   // Filter categories that have data (sum > 0 across all months)
   const activeCategories = useMemo(() => {
@@ -266,7 +287,7 @@ export default function GastosFinancierosPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Gastos Financieros</h1>
           <p className="text-muted-foreground">
-            Comisiones bancarias, intereses, seguros y comisiones de Mercado Pago
+            Comisiones bancarias, intereses y comisiones de Mercado Pago
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -275,12 +296,35 @@ export default function GastosFinancierosPage() {
         </div>
       </div>
 
+      <Callout>
+        <p>
+          Costos financieros derivados de movimientos bancarios y de Mercado Pago.
+          <strong> No incluye</strong> el Impuesto al Cheque — se contabiliza en Gastos Comerciales / Impuestos.
+          Los seguros (p. ej. Federación Patronal) también salieron de acá y pasaron a Gastos Comerciales vía factura.
+        </p>
+        <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+          <li>
+            <strong className="text-foreground">Comisiones Bancarias</strong>: mantenimiento de cuenta, transferencias, etc.
+          </li>
+          <li>
+            <strong className="text-foreground">Intereses</strong>: por descubiertos, préstamos, tarjetas.
+          </li>
+          <li>
+            <strong className="text-foreground">Comisiones MP</strong>: comisiones de Mercado Pago sobre cobros.
+          </li>
+          <li>
+            La clasificación se deduce del concepto del movimiento (keywords configuradas en el ETL).
+          </li>
+        </ul>
+      </Callout>
+
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-6">
         <KpiCard
           title="Total Financieros"
           value={last?.total ?? 0}
           delta={prev ? pctDelta(last?.total ?? 0, prev.total) : null}
+          deltaYoY={prevYear ? pctDelta(last?.total ?? 0, prevYear.total) : null}
         />
         {activeCategories.map((c) => (
           <KpiCard
@@ -288,6 +332,7 @@ export default function GastosFinancierosPage() {
             title={c.label}
             value={last?.[c.key] ?? 0}
             delta={prev && prev[c.key] > 0 ? pctDelta(last?.[c.key] ?? 0, prev[c.key]) : null}
+            deltaYoY={prevYear && prevYear[c.key] > 0 ? pctDelta(last?.[c.key] ?? 0, prevYear[c.key]) : null}
             color={c.color}
           />
         ))}
@@ -346,7 +391,7 @@ export default function GastosFinancierosPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Período</TableHead>
+                  <TableHead className="sticky left-0 z-20 bg-card">Período</TableHead>
                   {activeCategories.map((c) => (
                     <TableHead key={c.key} className="text-right">{c.label}</TableHead>
                   ))}
@@ -356,7 +401,7 @@ export default function GastosFinancierosPage() {
               <TableBody>
                 {aggregated.map((row) => (
                   <TableRow key={row.key}>
-                    <TableCell className="font-medium whitespace-nowrap">{row.label}</TableCell>
+                    <TableCell className="sticky left-0 z-10 bg-card font-medium whitespace-nowrap">{row.label}</TableCell>
                     {activeCategories.map((c) => (
                       <TableCell key={c.key} className="text-right">
                         {formatARS(row[c.key])}
@@ -370,6 +415,43 @@ export default function GastosFinancierosPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Intereses acumulados 12 meses — ventana móvil */}
+      {data.length >= 12 && (() => {
+        const windowData = data.slice(-24);
+        const rolling = windowData.map((_, idx) => {
+          const startIdx = Math.max(0, idx - 11);
+          const window = windowData.slice(startIdx, idx + 1);
+          return {
+            label: shortLabel(windowData[idx].periodo),
+            intereses: window.reduce((s, r) => s + r.intereses, 0),
+            comisionesBancarias: window.reduce((s, r) => s + r.comisionesBancarias, 0),
+          };
+        });
+        return (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Intereses y Comisiones Acumulados (12 meses)</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={rolling}>
+                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                  <XAxis dataKey="label" fontSize={12} />
+                  <YAxis fontSize={12} tickFormatter={(v) => `${(v / 1e6).toFixed(1)}M`} />
+                  <Tooltip formatter={arsTooltip} />
+                  <Legend />
+                  <Bar dataKey="intereses" name="Intereses (12m)" fill="#ef4444" />
+                  <Bar dataKey="comisionesBancarias" name="Comisiones (12m)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Ventana móvil de los últimos 12 meses. Suba de intereses = mayor endeudamiento o tasas. Suba de comisiones = más operaciones o aumento de cargos bancarios.
+              </p>
+            </CardContent>
+          </Card>
+        );
+      })()}
 
       {/* Nota sobre Imp. al Cheque */}
       <p className="text-xs text-muted-foreground">

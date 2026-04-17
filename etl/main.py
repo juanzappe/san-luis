@@ -32,6 +32,9 @@ from loaders import (
     ipc,
 )
 
+# Loaders cuyo fallo debe detener el pipeline (otros dependen de sus FKs)
+CRITICAL_LOADERS = {"productos"}
+
 # Orden de ejecución respetando dependencias FK
 LOADERS = [
     ("productos", productos),
@@ -91,6 +94,9 @@ def main():
             elapsed = time.time() - t0
             logger.error(f"✗ {name}: {e} ({elapsed:.1f}s)", exc_info=True)
             results.append((name, 0, elapsed, str(e)))
+            if name in CRITICAL_LOADERS:
+                logger.error(f"  Loader crítico '{name}' falló — deteniendo pipeline para evitar violaciones FK")
+                break
 
     # Resumen
     logger.info("=== RESUMEN ===")

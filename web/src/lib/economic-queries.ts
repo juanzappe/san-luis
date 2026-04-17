@@ -89,6 +89,80 @@ export async function fetchIngresos(): Promise<IngresoRow[]> {
 // Egresos by cost structure
 // ---------------------------------------------------------------------------
 
+/**
+ * Categorías de proveedor (factura_recibida) que se contabilizan con Gastos
+ * Comerciales en lugar de Costos Operativos.
+ */
+export const COMERCIALES_PROVEEDOR_CATS = [
+  "Honorarios",
+  "Seguros",
+  "Telefonía",
+  "Servicios públicos",
+] as const;
+
+/**
+ * Label legible para una combinación (categoria_egreso, subcategoria).
+ * Después de la migración 079 la subcategoría quedó deprecada — esta función
+ * simplemente devuelve `categoria` en el caso común.
+ */
+export function displayCategoriaLabel(categoria: string, _subcategoria: string | null): string {
+  return categoria;
+}
+
+/**
+ * Allowlist canónica para Costos Operativos (migración 079).
+ * Lo que no esté acá cae a "Otros".
+ */
+export const PROVEEDOR_CATEGORIAS_OPERATIVAS = [
+  "Alimentos",
+  "Bebidas",
+  "Limpieza/Papelería",
+  "Construcción y mantenimiento",
+  "Nafta",
+  "Servicios Profesionales",
+  "Otros",
+] as const;
+
+/**
+ * Allowlist canónica para Gastos Comerciales (vía proveedor).
+ */
+export const PROVEEDOR_CATEGORIAS_COMERCIALES = [
+  "Honorarios",
+  "Seguros",
+  "Telefonía",
+  "Servicios públicos",
+  "Otros",
+] as const;
+
+export const COSTOS_OPERATIVOS_OTROS = "Otros";
+
+/**
+ * Orden de columnas para Costos Operativos. Mismo contenido que
+ * PROVEEDOR_CATEGORIAS_OPERATIVAS, dejado acá por compatibilidad con
+ * consumidores existentes.
+ */
+export const COSTOS_OPERATIVOS_ORDER: string[] = [...PROVEEDOR_CATEGORIAS_OPERATIVAS];
+
+/**
+ * Red de seguridad: si llega una categoría fuera de la whitelist
+ * (proveedor sin clasificar, etc.) la mandamos a "Otros".
+ * Preserva Honorarios/Seguros/Telefonía/Servicios públicos intactos
+ * (los rutea el main page hacia Gastos Comerciales).
+ */
+export function rollupCostosOperativos(cats: Record<string, number>): Record<string, number> {
+  const out: Record<string, number> = {};
+  const opAllowed = new Set<string>(PROVEEDOR_CATEGORIAS_OPERATIVAS);
+  for (const [k, v] of Object.entries(cats)) {
+    if ((COMERCIALES_PROVEEDOR_CATS as readonly string[]).includes(k)) {
+      out[k] = (out[k] ?? 0) + v;
+      continue;
+    }
+    const mapped = opAllowed.has(k) ? k : COSTOS_OPERATIVOS_OTROS;
+    out[mapped] = (out[mapped] ?? 0) + v;
+  }
+  return out;
+}
+
 export interface EgresoRow {
   periodo: string;
   // Legacy fields (used by fetchResultado for P&L)
@@ -99,11 +173,51 @@ export interface EgresoRow {
   gananciasBase: number; // resultado antes de ganancias (pre-clamp, for correct annual aggregation)
   total: number;
   // Dynamic category breakdown (from proveedor segmentation)
-  categorias: Record<string, number>; // { "Insumos": 1234, "Nafta": 5678, ... }
+  categorias: Record<string, number>; // { "Insumos — Alimentos": 1234, "Nafta": 5678, ... }
   sueldos: number;
   impuestos: number;
   sueldosNeto: number; // sueldo_neto with devengamiento (for P&L)
   cargasSociales: number; // F.931 payments (cargas sociales patronales)
+}
+
+// RPC row type for get_egresos_por_categoria_mensual (migration 077)
+type RpcEgresoCategoriaRow = {
+  periodo: string;
+  categoria_egreso: string;
+  subcategoria: string | null;
+  total: number;
+};
+
+export interface EgresoPorCategoria {
+  periodo: string;
+  label: string; // display label from displayCategoriaLabel
+  categoria: string; // raw categoria_egreso
+  subcategoria: string | null;
+  total: number;
+}
+
+export async function fetchEgresosPorCategoria(): Promise<EgresoPorCategoria[]> {
+  try {
+    const data = await fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_egresos_por_categoria_mensual");
+      if (res.error) throw res.error;
+      return res.data;
+    });
+    return ((data ?? []) as RpcEgresoCategoriaRow[])
+      .map((r) => ({
+        periodo: r.periodo,
+        label: displayCategoriaLabel(r.categoria_egreso, r.subcategoria),
+        categoria: r.categoria_egreso,
+        subcategoria: r.subcategoria,
+        total: Number(r.total) || 0,
+      }))
+      .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
+  } catch (err) {
+    // RPC aún no aplicada (migración 077). Devolver vacío; el consumidor
+    // hará fallback al total agregado de `get_egresos_mensual`.
+    console.warn("[fetchEgresosPorCategoria] RPC no disponible — falta migración 077?", err);
+    return [];
+  }
 }
 
 // RPC row type for get_egresos_mensual
@@ -119,11 +233,14 @@ type RpcEgresoRow = {
 };
 
 export async function fetchEgresos(): Promise<EgresoRow[]> {
-  const data = await fetchWithRetry(async () => {
-    const res = await supabase.rpc("get_egresos_mensual");
-    if (res.error) throw res.error;
-    return res.data;
-  });
+  const [data, porCategoria] = await Promise.all([
+    fetchWithRetry(async () => {
+      const res = await supabase.rpc("get_egresos_mensual");
+      if (res.error) throw res.error;
+      return res.data;
+    }),
+    fetchEgresosPorCategoria(),
+  ]);
 
   // Check if migration 016 (cargas_sociales column) has been applied
   if (data && data.length > 0 && !("cargas_sociales" in data[0])) {
@@ -131,6 +248,15 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
       "[fetchEgresos] ⚠ La columna cargas_sociales no existe en get_egresos_mensual. " +
       "Ejecutá la migración 016_cargas_sociales_resultado.sql en Supabase."
     );
+  }
+
+  // Build per-periodo map of category breakdown from migration 077's RPC.
+  // Si la RPC no está disponible, el map queda vacío y caemos al total agregado.
+  const breakdownByPeriodo = new Map<string, Record<string, number>>();
+  for (const c of porCategoria) {
+    const cur = breakdownByPeriodo.get(c.periodo) ?? {};
+    cur[c.label] = (cur[c.label] ?? 0) + c.total;
+    breakdownByPeriodo.set(c.periodo, cur);
   }
 
   return ((data ?? []) as RpcEgresoRow[]).map((r) => {
@@ -141,9 +267,12 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
     const financieros = Number(r.financieros) || 0;
     const cargasSoc = Number(r.cargas_sociales) || 0;
     const impuestosMes = comerciales + gan;
-    // Proveedores total goes under "Costos Operativos" category
-    const categorias: Record<string, number> = {};
-    if (proveedoresMes !== 0) categorias["Costos Operativos"] = proveedoresMes;
+    // Categorías de proveedor: breakdown del RPC 077, consolidado por rollup
+    // (whitelist + "Otros"). Si la RPC aún no está, caemos al total en "Otros".
+    const rpcCats = breakdownByPeriodo.get(r.periodo);
+    const categorias: Record<string, number> = rpcCats
+      ? rollupCostosOperativos(rpcCats)
+      : proveedoresMes !== 0 ? { [COSTOS_OPERATIVOS_OTROS]: proveedoresMes } : {};
     return {
       periodo: r.periodo,
       operativos: sueldosMes + proveedoresMes,
@@ -165,10 +294,55 @@ export async function fetchEgresos(): Promise<EgresoRow[]> {
 // Ganancias — estimated at effective tax rate + RECPAM-adjusted base
 // ---------------------------------------------------------------------------
 
-// Tasa efectiva Imp. Ganancias — promedio 2023-2024 de estados contables auditados
+// Tasa efectiva Imp. Ganancias — default: promedio 2023-2024 de EECC auditados.
+// Se puede recalcular dinámicamente con computeTasasEfectivasFromEECC() cuando
+// haya data de ejercicios más recientes.
 const TASA_GANANCIAS = 0.367;
 
 export { TASA_GANANCIAS };
+
+/**
+ * Calcula la tasa efectiva del Impuesto a las Ganancias para cada ejercicio
+ * disponible en el Estado de Resultados Contable, y devuelve también el
+ * promedio de los últimos N años (default 2).
+ *
+ * Tasa efectiva = |monto(Impuesto a las ganancias)| / monto(Resultado antes del impuesto)
+ *
+ * Si no hay datos suficientes, devuelve el fallback hardcoded.
+ */
+export function computeTasasEfectivasFromEECC(
+  eecc: EstadoResultadosContableRow[],
+  ultimosN: number = 2,
+): { porEjercicio: Record<string, number>; promedio: number; fuente: "eecc" | "fallback" } {
+  // Agrupamos por ejercicio
+  const porEjercicio = new Map<string, { impuesto: number; resultado: number }>();
+  for (const r of eecc) {
+    const key = String(r.ejercicio);
+    const cur = porEjercicio.get(key) ?? { impuesto: 0, resultado: 0 };
+    const linea = r.linea.toLowerCase();
+    if (linea.includes("impuesto a las ganancias")) {
+      cur.impuesto = Math.abs(r.monto);
+    }
+    if (linea.includes("resultado antes del impuesto")) {
+      cur.resultado = r.monto;
+    }
+    porEjercicio.set(key, cur);
+  }
+
+  const tasas: Record<string, number> = {};
+  porEjercicio.forEach(({ impuesto, resultado }, year) => {
+    if (resultado > 0 && impuesto > 0) {
+      tasas[year] = impuesto / resultado;
+    }
+  });
+
+  const sorted = Object.keys(tasas).sort().slice(-ultimosN);
+  if (sorted.length === 0) {
+    return { porEjercicio: {}, promedio: TASA_GANANCIAS, fuente: "fallback" };
+  }
+  const promedio = sorted.reduce((s, y) => s + tasas[y], 0) / sorted.length;
+  return { porEjercicio: tasas, promedio, fuente: "eecc" };
+}
 
 // RECPAM anual auditado (positivo = pérdida por inflación, negativo = ganancia)
 export const RECPAM_HISTORICO: Record<string, number> = {
@@ -236,7 +410,8 @@ export function computeGananciasNominal(
 export interface ResultadoRow {
   periodo: string;
   ingresos: number;
-  costosOperativos: number; // proveedores only
+  costosOperativos: number; // proveedores — excluye las 4 categorías que van a Gastos Comerciales
+  comercialesProveedor: number; // Honorarios+Seguros+Telefonía+Servicios públicos (van a Gastos Comerciales)
   sueldos: number; // sueldo_neto with devengamiento
   cargasSociales: number; // F.931 cargas sociales patronales
   margenBruto: number;
@@ -265,8 +440,19 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
     .map((p) => {
       const ing = ingMap.get(p) ?? 0;
       const egr = egrMap.get(p);
-      // proveedores only (operativos minus sueldos)
-      const costosOp = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
+      // Proveedores total (operativos - sueldos)
+      const provTotal = (egr?.operativos ?? 0) - (egr?.sueldos ?? 0);
+      // Separar los 4 buckets que van a Gastos Comerciales (Honorarios, Seguros,
+      // Telefonía, Servicios públicos) usando el breakdown de r.categorias.
+      // Si la RPC 077 no está aplicada, categorias tiene solo {Otros: total}
+      // y comercialesProveedor queda en 0 (comportamiento seguro).
+      let comercialesProv = 0;
+      if (egr) {
+        for (const cat of COMERCIALES_PROVEEDOR_CATS) {
+          comercialesProv += egr.categorias[cat] ?? 0;
+        }
+      }
+      const costosOp = provTotal - comercialesProv;
       const sueldos = egr?.sueldosNeto ?? 0;
       const cargasSociales = egr?.cargasSociales ?? 0;
       // Costos Comerciales & Financieros: set to 0 here, overridden by the page
@@ -285,6 +471,7 @@ export async function fetchResultado(): Promise<ResultadoRow[]> {
         periodo: p,
         ingresos: ing,
         costosOperativos: costosOp,
+        comercialesProveedor: comercialesProv,
         sueldos,
         cargasSociales,
         margenBruto,

@@ -7,6 +7,7 @@ import {
   type ResultadoRow,
   fetchEgresos,
   fetchResultado,
+  fetchFinancierosDesglose,
   computeIpcFallback,
   computeGananciasNominal,
   RECPAM_HISTORICO,
@@ -36,16 +37,33 @@ export function useEgresosData(): UseEgresosDataResult {
   const [rawResultado, setRawResultado] = useState<ResultadoRow[]>([]);
   const [ipcMap, setIpcMap] = useState<Map<string, number>>(new Map());
   const [taxMap, setTaxMap] = useState<Map<string, ResumenMensualRow>>(new Map());
+  // Financieros reducidos a los 3 conceptos operativos
+  // (comisiones bancarias + intereses + comisiones MP). Seguros y "otros"
+  // del banco quedan fuera: seguros reales salen por factura_recibida en
+  // Gastos Comerciales; "otros" son movimientos no clasificables.
+  const [finCoreMap, setFinCoreMap] = useState<Map<string, number>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    Promise.all([fetchEgresos(), fetchResultado(), fetchIpcMensualMap(), fetchResumenFiscal()])
-      .then(([egresos, resultado, ipc, fiscal]) => {
+    Promise.all([
+      fetchEgresos(),
+      fetchResultado(),
+      fetchIpcMensualMap(),
+      fetchResumenFiscal(),
+      fetchFinancierosDesglose(),
+    ])
+      .then(([egresos, resultado, ipc, fiscal, financieros]) => {
         setRaw(egresos);
         setRawResultado(resultado);
         setIpcMap(ipc);
         setTaxMap(new Map(fiscal.mensual.map((r) => [r.periodo, r])));
+        setFinCoreMap(new Map(
+          financieros.map((r) => [
+            r.periodo,
+            r.comisionesBancarias + r.intereses + r.comisionesMp,
+          ]),
+        ));
       })
       .catch((e) => setError(e.message ?? "Error"))
       .finally(() => setLoading(false));
@@ -68,13 +86,15 @@ export function useEgresosData(): UseEgresosDataResult {
       const gananciasNom = resultadoRow
         ? computeGananciasNominal(resultadoRow, ipcMap, ipcFallback)
         : 0;
-      // Add Imp. al Cheque from Resumen Fiscal to Financieros
+      // Imp. al Cheque va con Gastos Comerciales (antes estaba en Financieros).
+      // `r.financieros` queda tal cual (sólo banco), `r.total` no se altera
+      // porque ya incluía el cheque — sólo cambia a qué grupo se le asigna en
+      // los consumers.
       const cheque = taxMap.get(r.periodo)?.cheque ?? 0;
-      const financierosConCheque = r.financieros + cheque;
-      const totalConCheque = r.total + cheque;
+      const totalSinCheque = r.total; // cheque se contabiliza en comerciales
 
       // Compute gananciasBase mirroring EERR logic exactly:
-      // resultadoAntesGanancias = margenBruto - costCom(computeGastosComerciales) - costFin(+cheque) - recpam
+      // resultadoAntesGanancias = margenBruto - costCom(computeGastosComerciales + cheque) - costFin - recpam
       let gananciasBaseAdj = 0;
       if (resultadoRow) {
         const year = r.periodo.split("-")[0];
@@ -84,9 +104,15 @@ export function useEgresosData(): UseEgresosDataResult {
         const cargasSoc = adjust(resultadoRow.cargasSociales, r.periodo);
         const margenBruto = ing - costOp - sueldos - cargasSoc;
 
-        const costComNominal = computeGastosComerciales(resultadoRow.ingresos, r.periodo);
+        // Gastos Comerciales: IIBB+SegHig+cuotas+cheque + facturas de
+        // Honorarios/Seguros/Telefonía/Servicios públicos — mismo criterio
+        // que /economico/egresos/gastos-comerciales.
+        const costComNominal =
+          computeGastosComerciales(resultadoRow.ingresos, r.periodo) +
+          cheque +
+          (resultadoRow.comercialesProveedor ?? 0);
         const costCom = adjust(costComNominal, r.periodo);
-        const costFin = adjust(resultadoRow.costosFinancieros + cheque, r.periodo);
+        const costFin = adjust(resultadoRow.costosFinancieros, r.periodo);
 
         // RECPAM — same as EERR
         let recpamNominal: number;
@@ -101,14 +127,16 @@ export function useEgresosData(): UseEgresosDataResult {
         gananciasBaseAdj = margenBruto - costCom - costFin - recpam;
       }
 
+      // Financieros = sólo los 3 conceptos core (nominal → ajustado).
+      const finCoreNom = finCoreMap.get(r.periodo) ?? r.financieros;
       return {
         ...r,
         operativos: adjust(r.operativos, r.periodo),
         comerciales: adjust(r.comerciales, r.periodo),
-        financieros: adjust(financierosConCheque, r.periodo),
+        financieros: adjust(finCoreNom, r.periodo),
         ganancias: adjust(gananciasNom, r.periodo),
         gananciasBase: gananciasBaseAdj,
-        total: adjust(totalConCheque, r.periodo),
+        total: adjust(totalSinCheque, r.periodo),
         categorias: adjCats,
         sueldos: adjust(r.sueldos, r.periodo),
         sueldosNeto: adjust(r.sueldosNeto, r.periodo),
@@ -116,7 +144,7 @@ export function useEgresosData(): UseEgresosDataResult {
         impuestos: adjust(r.impuestos, r.periodo),
       };
     });
-  }, [raw, adjust, resultadoMap, ipcMap, ipcFallback, taxMap]);
+  }, [raw, adjust, resultadoMap, ipcMap, ipcFallback, taxMap, finCoreMap]);
 
   const periodos = useMemo(() => data.map((r) => r.periodo), [data]);
 

@@ -16,15 +16,18 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import Link from "next/link";
 import {
   Users,
   DollarSign,
   Target,
+  TrendingUp,
   AlertTriangle,
   ArrowLeft,
   Loader2,
   AlertCircle,
   Search,
+  Pencil,
 } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -35,6 +38,7 @@ import {
 import {
   type ClientesData,
   type ClienteDetalle,
+  type ClienteRanking,
   type RpcClienteRow,
   fetchClientesRaw,
   processClientesRows,
@@ -210,6 +214,16 @@ export default function ClientesPage() {
       nombre: c.nombre.length > 30 ? c.nombre.slice(0, 28) + "…" : c.nombre,
       monto: c.facturacionTotal,
     }));
+  }, [data]);
+
+  // Top 5 by tipo_entidad (público/privado) para ver quién lidera en cada grupo.
+  const top5PorTipo = useMemo(() => {
+    if (!data) return { publico: [], privado: [] };
+    const isPublico = (c: ClienteRanking) =>
+      c.tipoEntidad?.toLowerCase().includes("públ") || c.tipoEntidad?.toLowerCase().includes("publ");
+    const publico = data.ranking.filter(isPublico).slice(0, 5);
+    const privado = data.ranking.filter((c) => !isPublico(c)).slice(0, 5);
+    return { publico, privado };
   }, [data]);
 
   // Search-filtered ranking for table display
@@ -424,7 +438,19 @@ export default function ClientesPage() {
         </Card>
       )}
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {data.concentracionTop1Pct > 15 && data.ranking[0] && (
+        <Card className="border-amber-300 bg-amber-50">
+          <CardContent className="flex items-center gap-3 py-4">
+            <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0" />
+            <p className="text-sm text-amber-800">
+              <span className="font-semibold">Dependencia de un cliente:</span>{" "}
+              <strong>{data.ranking[0].nombre}</strong> representa el {data.concentracionTop1Pct.toFixed(1)}% de la facturación.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
         <KpiCard title="Clientes Activos" value={String(cantClientes)} icon={Users} />
         <KpiCard
           title={factLabel}
@@ -441,6 +467,12 @@ export default function ClientesPage() {
           icon={DollarSign}
         />
         <KpiCard title="Concentración Top 10" value={`${data.concentracionTop10.toFixed(1)}%`} icon={Target} />
+        <KpiCard
+          title="Regla 80/20"
+          value={`${data.paretoN80Pct} clientes`}
+          subtitle={`${((data.paretoN80Pct / cantClientes) * 100).toFixed(0)}% del total = 80% facturación`}
+          icon={TrendingUp}
+        />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -518,6 +550,54 @@ export default function ClientesPage() {
                 <Bar dataKey="montoPrivado" name="Privado" stackId="a" fill="#22c55e" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader><CardTitle className="text-base">Top 5 Público / Top 5 Privado</CardTitle></CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <p className="text-sm font-medium text-blue-600 mb-2">Público</p>
+                {top5PorTipo.publico.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sin clientes públicos en el período.</p>
+                ) : (
+                  <Table>
+                    <TableBody>
+                      {top5PorTipo.publico.map((c, i) => (
+                        <TableRow key={c.cuit} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedCuit(c.cuit)}>
+                          <TableCell className="w-6 text-muted-foreground">{i + 1}</TableCell>
+                          <TableCell className="font-medium truncate max-w-[180px]">{c.nombre}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{c.clasificacion}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">{formatARS(c.facturacionTotal)}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground w-14">{c.pctTotal.toFixed(1)}%</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+              <div>
+                <p className="text-sm font-medium text-green-600 mb-2">Privado</p>
+                {top5PorTipo.privado.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">Sin clientes privados en el período.</p>
+                ) : (
+                  <Table>
+                    <TableBody>
+                      {top5PorTipo.privado.map((c, i) => (
+                        <TableRow key={c.cuit} className="cursor-pointer hover:bg-muted/50" onClick={() => setSelectedCuit(c.cuit)}>
+                          <TableCell className="w-6 text-muted-foreground">{i + 1}</TableCell>
+                          <TableCell className="font-medium truncate max-w-[180px]">{c.nombre}</TableCell>
+                          <TableCell className="text-xs text-muted-foreground whitespace-nowrap">{c.clasificacion}</TableCell>
+                          <TableCell className="text-right whitespace-nowrap">{formatARS(c.facturacionTotal)}</TableCell>
+                          <TableCell className="text-right text-xs text-muted-foreground w-14">{c.pctTotal.toFixed(1)}%</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
 
@@ -647,6 +727,12 @@ function PageHeader({
           {incluirCF ? "Con Cons. Final" : "Sin Cons. Final"}
         </button>
         <InflationToggle />
+        <Link
+          href="/comercial/clientes/editar"
+          className="flex items-center gap-1.5 rounded-lg border border-input bg-background px-3 py-1.5 text-xs font-medium hover:bg-accent transition-colors"
+        >
+          <Pencil className="h-3.5 w-3.5" /> Editar clasificaciones
+        </Link>
       </div>
     </div>
   );

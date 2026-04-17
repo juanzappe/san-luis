@@ -107,4 +107,16 @@ def run(conn, logger, full: bool = False) -> int:
         delete_all(conn, "factura_recibida")
 
     count = batch_insert(conn, "factura_recibida", all_facturas)
+
+    # Link proveedor_id via CUIT
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE factura_recibida fr
+            SET proveedor_id = p.id
+            FROM proveedor p
+            WHERE p.cuit = fr.nro_doc_emisor
+              AND fr.proveedor_id IS NULL
+        """)
+        logger.info(f"  {cur.rowcount} facturas recibidas → proveedor_id linkeado")
+
     return count

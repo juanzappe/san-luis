@@ -190,7 +190,7 @@ export function ytdMonthRangeLabel(
 ): string {
   const first = SHORT_MONTHS[parseInt(firstMonth, 10) - 1] ?? firstMonth;
   const last = SHORT_MONTHS[parseInt(lastMonth, 10) - 1] ?? lastMonth;
-  if (cutoff && !cutoff.esFindeMes && String(cutoff.mes).padStart(2, "0") === lastMonth) {
+  if (cutoff && !cutoff.esFindeMes && String(cutoff.mes).padStart(2, "0") === String(parseInt(lastMonth, 10)).padStart(2, "0")) {
     return `${first}–${cutoff.dia} ${last}`;
   }
   return `${first}–${last}`;

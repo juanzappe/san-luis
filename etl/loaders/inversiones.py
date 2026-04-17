@@ -67,16 +67,16 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
     Usa Disponibles (col 4) como cantidad real — Cantidad (col 2) tiene fórmulas.
     Recalcula monto ARS, USD, costo total, resultado y var% en Python.
     """
-    # --- Primera pasada: metadata como strings ---
-    df_meta = pd.read_excel(path, sheet_name=0, header=None, dtype=str)
+    # --- Leer una sola vez, sin dtype forzado ---
+    df = pd.read_excel(path, sheet_name=0, header=None)
 
     fecha_valuacion = None
     tc_mep = 0.0
     tc_ccl = 0.0
 
-    for i in range(min(10, len(df_meta))):
-        cell0 = _clean_str(df_meta.iloc[i, 0]) or ""
-        cell1 = _clean_str(df_meta.iloc[i, 1]) if df_meta.shape[1] > 1 else None
+    for i in range(min(10, len(df))):
+        cell0 = _clean_str(df.iloc[i, 0]) or ""
+        cell1 = _clean_str(df.iloc[i, 1]) if df.shape[1] > 1 else None
         cell0_lower = cell0.lower()
 
         if "valuaci" in cell0_lower:
@@ -101,9 +101,6 @@ def _parse_tenencias(path: Path, logger) -> list[dict]:
         tc_ccl = tc_mep  # fallback
 
     logger.info(f"  TC MEP={tc_mep:.2f}  TC CCL={tc_ccl:.2f}  Fecha={fecha_valuacion}")
-
-    # --- Segunda pasada: valores numéricos ---
-    df = pd.read_excel(path, sheet_name=0, header=None)
 
     records = []
     current_tipo: str | None = None

@@ -98,6 +98,7 @@ export interface MostradorMonthly {
   monto: number;
   cantidad: number;
   txCount: number;
+  diasConVenta: number;
 }
 
 export interface ProductoSemanalRow {
@@ -118,12 +119,13 @@ export interface MostradorRankingRow {
 export async function fetchMostradorMensual(): Promise<MostradorMonthly[]> {
   const { data, error } = await supabase.rpc("get_mostrador_mensual");
   if (error) throw error;
-  return ((data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number }[])
+  return ((data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number; dias_con_venta: number }[])
     .map((r) => ({
       periodo: r.periodo,
       monto: Number(r.monto) || 0,
       cantidad: Number(r.cantidad) || 0,
       txCount: Number(r.tx_count) || 0,
+      diasConVenta: Number(r.dias_con_venta) || 0,
     }))
     .sort((a, b) => a.periodo.localeCompare(b.periodo))
     .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
@@ -172,12 +174,91 @@ export async function fetchRankingMensual(periodo: string): Promise<MostradorRan
     }));
 }
 
+// Nuevas RPCs de análisis (migración 072)
+export interface ProductoMensualRow {
+  periodo: string;
+  producto: string;
+  monto: number;
+  cantidad: number;
+}
+
+export interface ProductoTendenciaRow {
+  producto: string;
+  cantReciente: number;
+  cantPrevia: number;
+  deltaPct: number | null;
+  montoReciente: number;
+}
+
+export interface DiarioMtdRow {
+  serie: "actual" | "mes_anterior" | "año_anterior";
+  diaMes: number;
+  monto: number;
+  acumulado: number;
+}
+
+export async function fetchProductoMensual(top = 8, meses = 24): Promise<ProductoMensualRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_producto_mensual", { p_top: top, p_meses: meses });
+  if (error) throw error;
+  type Raw = { periodo: string; producto: string; monto: number; cantidad: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    periodo: String(r.periodo),
+    producto: String(r.producto),
+    monto: Number(r.monto) || 0,
+    cantidad: Number(r.cantidad) || 0,
+  }));
+}
+
+export async function fetchProductoTendencia(limit = 20): Promise<ProductoTendenciaRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_producto_tendencia", { p_limit: limit });
+  if (error) throw error;
+  type Raw = { producto: string; cant_reciente: number; cant_previa: number; delta_pct: number | null; monto_reciente: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    producto: String(r.producto),
+    cantReciente: Number(r.cant_reciente) || 0,
+    cantPrevia: Number(r.cant_previa) || 0,
+    deltaPct: r.delta_pct === null ? null : Number(r.delta_pct),
+    montoReciente: Number(r.monto_reciente) || 0,
+  }));
+}
+
+export interface TicketDowRow {
+  dow: number;
+  ticketPromedio: number;
+  diasConVenta: number;
+  ventasTotales: number;
+}
+
+export async function fetchTicketPorDow(): Promise<TicketDowRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_ticket_por_dow");
+  if (error) throw error;
+  type Raw = { dow: number; ticket_promedio: number; dias_con_venta: number; ventas_totales: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    dow: Number(r.dow) || 0,
+    ticketPromedio: Number(r.ticket_promedio) || 0,
+    diasConVenta: Number(r.dias_con_venta) || 0,
+    ventasTotales: Number(r.ventas_totales) || 0,
+  }));
+}
+
+export async function fetchDiarioMtd(): Promise<DiarioMtdRow[]> {
+  const { data, error } = await supabase.rpc("get_mostrador_diario_mtd");
+  if (error) throw error;
+  type Raw = { serie: string; dia_mes: number; monto: number; acumulado: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    serie: r.serie as DiarioMtdRow["serie"],
+    diaMes: Number(r.dia_mes) || 0,
+    monto: Number(r.monto) || 0,
+    acumulado: Number(r.acumulado) || 0,
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // 3. Restobar — Similar to mostrador but filtered to restobar items
 // ---------------------------------------------------------------------------
 
 export interface RestobarData {
-  monthly: { periodo: string; monto: number; cantidad: number; txCount: number }[];
+  monthly: { periodo: string; monto: number; cantidad: number; txCount: number; diasConVenta: number }[];
   heatmap: HeatmapCell[];
   kpis: {
     totalVentas: number;
@@ -195,12 +276,13 @@ export async function fetchRestobar(): Promise<RestobarData> {
   if (mensualRes.error) throw mensualRes.error;
   if (heatmapRes.error) throw heatmapRes.error;
 
-  const monthly = ((mensualRes.data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number }[])
+  const monthly = ((mensualRes.data ?? []) as { periodo: string; monto: number; cantidad: number; tx_count: number; dias_con_venta: number }[])
     .map((r) => ({
       periodo: r.periodo,
       monto: Number(r.monto) || 0,
       cantidad: Number(r.cantidad) || 0,
       txCount: Number(r.tx_count) || 0,
+      diasConVenta: Number(r.dias_con_venta) || 0,
     }))
     .sort((a, b) => a.periodo.localeCompare(b.periodo))
     .filter((r) => r.periodo >= ECONOMICO_MIN_PERIODO);
@@ -236,6 +318,18 @@ export async function fetchRestobar(): Promise<RestobarData> {
       txTotal,
     },
   };
+}
+
+export async function fetchRestobarTicketPorDow(): Promise<TicketDowRow[]> {
+  const { data, error } = await supabase.rpc("get_restobar_ticket_por_dow");
+  if (error) throw error;
+  type Raw = { dow: number; ticket_promedio: number; dias_con_venta: number; ventas_totales: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    dow: Number(r.dow) || 0,
+    ticketPromedio: Number(r.ticket_promedio) || 0,
+    diasConVenta: Number(r.dias_con_venta) || 0,
+    ventasTotales: Number(r.ventas_totales) || 0,
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -371,4 +465,102 @@ export function dayName(day: number): string {
 
 export function hourLabel(hour: number): string {
   return `${hour.toString().padStart(2, "0")}:00`;
+}
+
+// ---------------------------------------------------------------------------
+// Servicios — Tipo de servicio (desglose por línea de factura)
+// Populated from factura_emitida_detalle, via RPCs get_servicios_tipo_mensual,
+// get_servicios_top_descripciones, get_servicios_cliente_tipo.
+// Header imp_neto_gravado_total is allocated across detalle lines in
+// proportion to detalle.importe so totals match the rest of the page.
+// ---------------------------------------------------------------------------
+
+export interface TipoServicioMensualRow {
+  periodo: string;
+  tipoServicio: string;
+  montoNeto: number;
+  cantidad: number;
+  lineas: number;
+}
+
+export interface TopDescripcionRow {
+  descripcion: string;
+  tipoServicio: string;
+  montoNeto: number;
+  cantidad: number;
+  lineas: number;
+  clientes: number;
+}
+
+export interface ClienteTipoRow {
+  cuit: string;
+  nombre: string;
+  tipoServicio: string;
+  montoNeto: number;
+  lineas: number;
+}
+
+export async function fetchServiciosTipoMensual(): Promise<TipoServicioMensualRow[]> {
+  const { data, error } = await supabase.rpc("get_servicios_tipo_mensual");
+  if (error) throw error;
+  type Raw = { periodo: string; tipo_servicio: string; monto_neto: number; cantidad: number; lineas: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    periodo: String(r.periodo),
+    tipoServicio: String(r.tipo_servicio),
+    montoNeto: Number(r.monto_neto) || 0,
+    cantidad: Number(r.cantidad) || 0,
+    lineas: Number(r.lineas) || 0,
+  }));
+}
+
+export async function fetchServiciosTopDescripciones(limit = 25, tipo?: string): Promise<TopDescripcionRow[]> {
+  const params: Record<string, unknown> = { p_limit: limit };
+  if (tipo) params.p_tipo = tipo;
+  const { data, error } = await supabase.rpc("get_servicios_top_descripciones", params);
+  if (error) throw error;
+  type Raw = { descripcion: string; tipo_servicio: string; monto_neto: number; cantidad: number; lineas: number; clientes: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    descripcion: String(r.descripcion),
+    tipoServicio: String(r.tipo_servicio),
+    montoNeto: Number(r.monto_neto) || 0,
+    cantidad: Number(r.cantidad) || 0,
+    lineas: Number(r.lineas) || 0,
+    clientes: Number(r.clientes) || 0,
+  }));
+}
+
+export interface TopRenglonRow {
+  numero: number;
+  montoNeto: number;
+  cantidad: number;
+  lineas: number;
+  clientes: number;
+  ejemplo: string;
+}
+
+export async function fetchServiciosTopRenglones(limit = 25): Promise<TopRenglonRow[]> {
+  const { data, error } = await supabase.rpc("get_servicios_top_renglones", { p_limit: limit });
+  if (error) throw error;
+  type Raw = { numero: number; monto_neto: number; cantidad: number; lineas: number; clientes: number; ejemplo: string };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    numero: Number(r.numero) || 0,
+    montoNeto: Number(r.monto_neto) || 0,
+    cantidad: Number(r.cantidad) || 0,
+    lineas: Number(r.lineas) || 0,
+    clientes: Number(r.clientes) || 0,
+    ejemplo: String(r.ejemplo ?? ""),
+  }));
+}
+
+export async function fetchServiciosClienteTipo(): Promise<ClienteTipoRow[]> {
+  const { data, error } = await supabase.rpc("get_servicios_cliente_tipo");
+  if (error) throw error;
+  type Raw = { cuit: string; nombre: string; tipo_servicio: string; monto_neto: number; lineas: number };
+  return ((data ?? []) as Raw[]).map((r) => ({
+    cuit: String(r.cuit),
+    nombre: String(r.nombre),
+    tipoServicio: String(r.tipo_servicio),
+    montoNeto: Number(r.monto_neto) || 0,
+    lineas: Number(r.lineas) || 0,
+  }));
 }

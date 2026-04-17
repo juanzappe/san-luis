@@ -10,6 +10,9 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 );
 
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+const ALLOWED_EXTENSIONS = new Set([".csv", ".xlsx", ".xls", ".txt", ".zip", ".pdf"]);
+
 // Whitelist: fuente → data_raw subfolder
 const FOLDER_MAP: Record<string, string> = {
   arca_ingresos: "ARCA_INGRESOS",
@@ -52,13 +55,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (file.size > MAX_FILE_SIZE) {
+      return NextResponse.json({ error: "Archivo demasiado grande (máximo 100 MB)" }, { status: 413 });
+    }
+
+    const ext = path.extname(file.name).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      return NextResponse.json(
+        { error: `Tipo de archivo no permitido: ${ext}. Permitidos: ${Array.from(ALLOWED_EXTENSIONS).join(", ")}` },
+        { status: 400 },
+      );
+    }
+
     // Resolve target directory
     const dataRawDir = path.resolve(process.cwd(), "..", "data_raw", FOLDER_MAP[fuente]);
     await mkdir(dataRawDir, { recursive: true });
 
-    // Write file
+    // Write file — use basename to prevent path traversal attacks
     const buffer = Buffer.from(await file.arrayBuffer());
-    const filePath = path.join(dataRawDir, file.name);
+    const filePath = path.join(dataRawDir, path.basename(file.name));
     await writeFile(filePath, buffer);
 
     // Log to import_log
@@ -85,7 +100,7 @@ export async function POST(request: NextRequest) {
       logId: logRow?.id ?? null,
     });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Error desconocido";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    console.error("[upload] Unhandled error:", err);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 }

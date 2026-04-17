@@ -125,15 +125,20 @@ function KpiCard({
   title,
   value,
   delta,
+  deltaYoY,
   color,
 }: {
   title: string;
   value: number;
   delta: number | null;
+  deltaYoY?: number | null;
   color?: string;
 }) {
-  const deltaPositive = delta !== null && delta < 0;
-  const deltaNegative = delta !== null && delta > 0;
+  // Para gastos, bajar es bueno → invertimos los colores
+  const colorFor = (d: number | null) => {
+    if (d === null) return "text-muted-foreground";
+    return d < 0 ? "text-green-600" : d > 0 ? "text-red-600" : "text-muted-foreground";
+  };
 
   return (
     <Card>
@@ -144,11 +149,16 @@ function KpiCard({
       <CardContent>
         <div className="text-2xl font-bold">{formatARS(value)}</div>
         {delta !== null ? (
-          <p className={`text-xs ${deltaPositive ? "text-green-600" : deltaNegative ? "text-red-600" : "text-muted-foreground"}`}>
+          <p className={`text-xs ${colorFor(delta)}`}>
             {formatPct(delta)} vs mes anterior
           </p>
         ) : (
           <p className="text-xs text-muted-foreground">Sin mes anterior</p>
+        )}
+        {deltaYoY !== undefined && deltaYoY !== null && (
+          <p className={`text-xs ${colorFor(deltaYoY)}`}>
+            {formatPct(deltaYoY)} vs mismo mes año anterior
+          </p>
         )}
       </CardContent>
     </Card>
@@ -177,6 +187,8 @@ export interface EgresoDetailPageProps {
    * summing monthly clamped values (which inflates the annual effective rate).
    */
   aggregateValue?: (rows: EgresoRow[]) => number;
+  /** Contenido del callout informativo (se renderiza arriba de los KPIs). */
+  callout?: React.ReactNode;
   /** Extra content rendered after the main sections (e.g. IVA section) */
   children?: React.ReactNode;
 }
@@ -192,6 +204,7 @@ export function EgresoDetailPage({
   extractBreakdown,
   breakdownColors,
   aggregateValue,
+  callout,
   children,
 }: EgresoDetailPageProps) {
   const { data, taxData, resultadoData, loading, error, periodos } = useEgresosData();
@@ -202,9 +215,15 @@ export function EgresoDetailPage({
   const selectedIdx = data.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? data[selectedIdx] : data[data.length - 1];
   const prev = selectedIdx >= 1 ? data[selectedIdx - 1] : null;
+  // Mismo mes año anterior para YoY delta
+  const prevYearPeriodo = last
+    ? `${parseInt(last.periodo.slice(0, 4), 10) - 1}-${last.periodo.slice(5, 7)}`
+    : "";
+  const prevYear = data.find((r) => r.periodo === prevYearPeriodo) ?? null;
 
   const lastValue = last ? extractValue(last, taxData.get(last.periodo), resultadoData.get(last.periodo)) : 0;
   const prevValue = prev ? extractValue(prev, taxData.get(prev.periodo), resultadoData.get(prev.periodo)) : null;
+  const prevYearValue = prevYear ? extractValue(prevYear, taxData.get(prevYear.periodo), resultadoData.get(prevYear.periodo)) : null;
 
   // Discover breakdown keys sorted by total descending
   const breakdownKeys = useMemo(() => {
@@ -301,22 +320,27 @@ export function EgresoDetailPage({
         </div>
       </div>
 
+      {callout}
+
       {/* KPI Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
         <KpiCard
           title={`Total ${title}`}
           value={lastValue}
           delta={prevValue !== null ? pctDelta(lastValue, prevValue) : null}
+          deltaYoY={prevYearValue !== null ? pctDelta(lastValue, prevYearValue) : null}
         />
         {hasBreakdown && breakdownKeys.slice(0, 5).map((k) => {
           const lastBd = last ? (extractBreakdown!(last, taxData.get(last.periodo), resultadoData.get(last.periodo))[k] ?? 0) : 0;
           const prevBd = prev ? (extractBreakdown!(prev, taxData.get(prev.periodo), resultadoData.get(prev.periodo))[k] ?? 0) : null;
+          const prevYearBd = prevYear ? (extractBreakdown!(prevYear, taxData.get(prevYear.periodo), resultadoData.get(prevYear.periodo))[k] ?? 0) : null;
           return (
             <KpiCard
               key={k}
               title={k}
               value={lastBd}
               delta={prevBd !== null ? pctDelta(lastBd, prevBd) : null}
+              deltaYoY={prevYearBd !== null ? pctDelta(lastBd, prevYearBd) : null}
               color={colorMap[k]}
             />
           );
@@ -376,7 +400,7 @@ export function EgresoDetailPage({
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Período</TableHead>
+                  <TableHead className="sticky left-0 z-20 bg-card">Período</TableHead>
                   {hasBreakdown &&
                     breakdownKeys.map((k) => (
                       <TableHead key={k} className="text-right">{k}</TableHead>
@@ -387,7 +411,7 @@ export function EgresoDetailPage({
               <TableBody>
                 {aggregated.map((row) => (
                   <TableRow key={row.key}>
-                    <TableCell className="font-medium whitespace-nowrap">{row.label}</TableCell>
+                    <TableCell className="sticky left-0 z-10 bg-card font-medium whitespace-nowrap">{row.label}</TableCell>
                     {hasBreakdown &&
                       breakdownKeys.map((k) => (
                         <TableCell key={k} className="text-right">

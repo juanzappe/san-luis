@@ -8,6 +8,7 @@ Fuente: data_raw/SEGMENTACION/*.csv (4 archivos)
 """
 
 import pandas as pd
+from psycopg2.extras import execute_batch
 
 from utils import (
     get_data_raw_path, safe_str,
@@ -33,16 +34,14 @@ def run(conn, logger, full: bool = False) -> int:
     if cat_path.exists():
         df = _read_csv(cat_path)
         logger.info(f"  {len(df)} categorías de egreso a cargar")
-        categorias = []
-        for _, row in df.iterrows():
-            nombre = safe_str(row.get("CategoriaEgreso") or row.get("Categoria") or row.get("nombre"))
-            if not nombre:
-                continue
-            tipo_costo = safe_str(row.get("TipoCosto") or row.get("tipo_costo")) or "variable"
-            categorias.append({
-                "nombre": nombre,
-                "tipo_costo": tipo_costo,
-            })
+        categorias = [
+            {
+                "nombre": safe_str(row.get("CategoriaEgreso") or row.get("Categoria") or row.get("nombre")),
+                "tipo_costo": safe_str(row.get("TipoCosto") or row.get("tipo_costo")) or "variable",
+            }
+            for row in df.to_dict("records")
+            if safe_str(row.get("CategoriaEgreso") or row.get("Categoria") or row.get("nombre"))
+        ]
         if categorias:
             count = batch_upsert(conn, "categoria_egreso", categorias, on_conflict="nombre")
             logger.info(f"  ✓ {count} categorías de egreso")
@@ -55,12 +54,11 @@ def run(conn, logger, full: bool = False) -> int:
     if sec_path.exists():
         df = _read_csv(sec_path)
         logger.info(f"  {len(df)} sectores de clientes a cargar")
-        sectores = []
-        for _, row in df.iterrows():
-            nombre = safe_str(row.get("Sector") or row.get("Categoria") or row.get("nombre") or row.get("Clasificacion"))
-            if not nombre:
-                continue
-            sectores.append({"nombre": nombre})
+        sectores = [
+            {"nombre": safe_str(row.get("Sector") or row.get("Categoria") or row.get("nombre") or row.get("Clasificacion"))}
+            for row in df.to_dict("records")
+            if safe_str(row.get("Sector") or row.get("Categoria") or row.get("nombre") or row.get("Clasificacion"))
+        ]
         if sectores:
             delete_all(conn, "sector_cliente")
             count = batch_insert(conn, "sector_cliente", sectores)
@@ -74,19 +72,19 @@ def run(conn, logger, full: bool = False) -> int:
     if cli_path.exists():
         df = _read_csv(cli_path)
         logger.info(f"  {len(df)} clientes a segmentar")
-        updated = 0
+        updates = [
+            (safe_str(row.get("TipoEntidad")), safe_str(row.get("Clasificacion")), safe_str(row.get("CUIT")))
+            for row in df.to_dict("records")
+            if safe_str(row.get("CUIT"))
+        ]
         with conn.cursor() as cur:
-            for _, row in df.iterrows():
-                cuit = safe_str(row.get("CUIT"))
-                if not cuit:
-                    continue
-                tipo_entidad = safe_str(row.get("TipoEntidad"))
-                clasificacion = safe_str(row.get("Clasificacion"))
-                cur.execute(
-                    "UPDATE cliente SET tipo_entidad = %s, clasificacion = %s WHERE cuit = %s",
-                    (tipo_entidad, clasificacion, cuit),
-                )
-                updated += cur.rowcount
+            execute_batch(
+                cur,
+                "UPDATE cliente SET tipo_entidad = %s, clasificacion = %s WHERE cuit = %s",
+                updates,
+                page_size=500,
+            )
+        updated = len(updates)
         logger.info(f"  ✓ {updated} clientes actualizados")
         total += updated
     else:
@@ -97,27 +95,21 @@ def run(conn, logger, full: bool = False) -> int:
     if prov_path.exists():
         df = _read_csv(prov_path)
         logger.info(f"  {len(df)} proveedores a segmentar")
-        updated = 0
-        unmatched = []
+        prov_rows = [
+            (safe_str(row.get("TipoCosto")), safe_str(row.get("CategoriaEgreso")), safe_str(row.get("Denominacion")))
+            for row in df.to_dict("records")
+            if safe_str(row.get("Denominacion"))
+        ]
         with conn.cursor() as cur:
-            for _, row in df.iterrows():
-                denominacion = safe_str(row.get("Denominacion"))
-                if not denominacion:
-                    continue
-                tipo_costo = safe_str(row.get("TipoCosto"))
-                cat_egreso = safe_str(row.get("CategoriaEgreso"))
-                cur.execute(
-                    "UPDATE proveedor SET tipo_costo = %s, categoria_egreso = %s "
-                    "WHERE UPPER(TRIM(razon_social)) = UPPER(TRIM(%s))",
-                    (tipo_costo, cat_egreso, denominacion),
-                )
-                if cur.rowcount > 0:
-                    updated += cur.rowcount
-                else:
-                    unmatched.append(denominacion)
+            execute_batch(
+                cur,
+                "UPDATE proveedor SET tipo_costo = %s, categoria_egreso = %s "
+                "WHERE UPPER(TRIM(razon_social)) = UPPER(TRIM(%s))",
+                prov_rows,
+                page_size=500,
+            )
+        updated = len(prov_rows)
         logger.info(f"  ✓ {updated} proveedores actualizados")
-        if unmatched:
-            logger.warning(f"  ⚠ {len(unmatched)} proveedores sin match: {unmatched[:10]}")
         total += updated
     else:
         logger.warning(f"  {prov_path.name} no encontrado")

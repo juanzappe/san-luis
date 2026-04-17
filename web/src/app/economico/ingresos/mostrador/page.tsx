@@ -5,7 +5,7 @@ import {
   BarChart, Bar, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-import { Loader2, AlertCircle, Store, ShoppingBag, Hash, Search, ChevronsUpDown } from "lucide-react";
+import { Loader2, AlertCircle, Store, ShoppingBag, Hash, Search, ChevronsUpDown, Info, ChevronDown } from "lucide-react";
 import { format, parseISO } from "date-fns";
 import { es } from "date-fns/locale";
 
@@ -22,9 +22,9 @@ import { InflationToggle, useInflation } from "@/lib/inflation";
 import { MonthSelector } from "@/components/month-selector";
 import {
   type MostradorMonthly, type MostradorRankingRow, type ProductoSemanalRow,
-  type HeatmapCell,
+  type HeatmapCell, type TicketDowRow,
   fetchMostradorMensual, fetchMostradorHeatmap, fetchProductosLista,
-  fetchProductoSemanal, fetchRankingMensual,
+  fetchProductoSemanal, fetchRankingMensual, fetchTicketPorDow,
   formatARS, dayName, hourLabel, periodoLabel,
 } from "@/lib/units-queries";
 import { pctDelta, formatPct } from "@/lib/economic-queries";
@@ -61,17 +61,12 @@ const QUARTER_MAP: Record<string, string> = {
   "10": "Q4", "11": "Q4", "12": "Q4",
 };
 
-const MONTH_SHORT: Record<string, string> = {
-  "01": "Ene", "02": "Feb", "03": "Mar", "04": "Abr",
-  "05": "May", "06": "Jun", "07": "Jul", "08": "Ago",
-  "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dic",
-};
-
 interface AggRow {
   periodo: string;
   monto: number;
   cantidad: number;
   txCount: number;
+  diasConVenta: number;
 }
 
 function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number): AggRow[] {
@@ -94,6 +89,7 @@ function aggregateMonthly(data: AggRow[], g: Granularity, ytdLastMonth?: number)
       cur.monto += r.monto;
       cur.cantidad += r.cantidad;
       cur.txCount += r.txCount;
+      cur.diasConVenta += r.diasConVenta;
     }
   }
   return Array.from(buckets.values()).sort((a, b) => a.periodo.localeCompare(b.periodo));
@@ -115,11 +111,43 @@ function granularityLabel(p: string, g: Granularity, ytdLastMonth?: number, cuto
 }
 
 // ---------------------------------------------------------------------------
-// Heatmap component (unchanged)
+// Compact ARS formatter (para celdas del heatmap y leyenda)
 // ---------------------------------------------------------------------------
-function Heatmap({ cells }: { cells: HeatmapCell[] }) {
-  const maxMonto = useMemo(() => Math.max(...cells.map((c) => c.monto), 1), [cells]);
-  const days = [1, 2, 3, 4, 5, 6, 0];
+function formatCompact(n: number): string {
+  if (Math.abs(n) >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(1)}M`;
+  if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(0)}K`;
+  return formatARS(n);
+}
+
+// ---------------------------------------------------------------------------
+// Heatmap component — acepta toggle entre "cantidad de ventas" y "monto $".
+// Incluye leyenda con min/max para dar contexto de la escala.
+// ---------------------------------------------------------------------------
+type HeatmapMetric = "count" | "monto";
+
+function Heatmap({ cells, metric }: { cells: HeatmapCell[]; metric: HeatmapMetric }) {
+  const valueOf = useCallback((c: HeatmapCell) => metric === "count" ? c.count : c.monto, [metric]);
+  const { minVal, maxVal } = useMemo(() => {
+    let mn = Infinity;
+    let mx = -Infinity;
+    for (const c of cells) {
+      const v = valueOf(c);
+      if (v > 0) {
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+    }
+    return {
+      minVal: mn === Infinity ? 0 : mn,
+      maxVal: mx === -Infinity ? 0 : mx,
+    };
+  }, [cells, valueOf]);
+
+  // Lun-Sab (domingo excluido — el local no abre los domingos; las ventas
+  // esporádicas de domingo son días especiales como Pascuas o Día de la Madre
+  // y distorsionan el promedio).
+  const days = [1, 2, 3, 4, 5, 6];
   const hours = Array.from({ length: 15 }, (_, i) => i + 8);
 
   const cellMap = useMemo(() => {
@@ -128,46 +156,119 @@ function Heatmap({ cells }: { cells: HeatmapCell[] }) {
     return m;
   }, [cells]);
 
+  const renderValue = (v: number) => metric === "count" ? v.toString() : formatCompact(v);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr>
-            <th className="px-1 py-1 text-left" />
-            {hours.map((h) => (
-              <th key={h} className="px-1 py-1 text-center">{hourLabel(h)}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {days.map((d) => (
-            <tr key={d}>
-              <td className="px-1 py-1 font-medium">{dayName(d)}</td>
-              {hours.map((h) => {
-                const cell = cellMap.get(`${d}|${h}`);
-                const intensity = cell ? cell.monto / maxMonto : 0;
-                return (
-                  <td key={h} className="px-1 py-1">
-                    <div
-                      className="rounded h-8 flex items-center justify-center text-[10px]"
-                      style={{
-                        backgroundColor: intensity > 0
-                          ? `rgba(139, 92, 246, ${0.1 + intensity * 0.85})`
-                          : "#f3f4f6",
-                        color: intensity > 0.5 ? "white" : "#6b7280",
-                      }}
-                      title={cell ? `${formatARS(cell.monto)} (${cell.count} ventas)` : "Sin datos"}
-                    >
-                      {cell ? cell.count : ""}
-                    </div>
-                  </td>
-                );
-              })}
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr>
+              <th className="px-1 py-1 text-left sticky left-0 z-10 bg-card" />
+              {hours.map((h) => (
+                <th key={h} className="px-1 py-1 text-center">{hourLabel(h)}</th>
+              ))}
             </tr>
+          </thead>
+          <tbody>
+            {days.map((d) => (
+              <tr key={d}>
+                <td className="px-1 py-1 font-medium sticky left-0 z-10 bg-card">{dayName(d)}</td>
+                {hours.map((h) => {
+                  const cell = cellMap.get(`${d}|${h}`);
+                  const v = cell ? valueOf(cell) : 0;
+                  const intensity = maxVal > 0 ? v / maxVal : 0;
+                  return (
+                    <td key={h} className="px-1 py-1">
+                      <div
+                        className="rounded h-8 flex items-center justify-center text-[10px]"
+                        style={{
+                          backgroundColor: intensity > 0
+                            ? `rgba(139, 92, 246, ${0.1 + intensity * 0.85})`
+                            : "#f3f4f6",
+                          color: intensity > 0.5 ? "white" : "#6b7280",
+                        }}
+                        title={cell ? `${formatARS(cell.monto)} · ${cell.count} ventas` : "Sin datos"}
+                      >
+                        {cell ? renderValue(v) : ""}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div className="mt-3 flex items-center justify-end gap-2 text-xs text-muted-foreground">
+        <span>Min: {renderValue(minVal)}</span>
+        <div className="flex h-3 w-40 overflow-hidden rounded border">
+          {[0.15, 0.3, 0.45, 0.6, 0.75, 0.9].map((o) => (
+            <div key={o} className="flex-1" style={{ backgroundColor: `rgba(139, 92, 246, ${o})` }} />
           ))}
-        </tbody>
-      </table>
+        </div>
+        <span>Max: {renderValue(maxVal)}</span>
+      </div>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Info callout
+// ---------------------------------------------------------------------------
+function MostradorCallout({
+  collapsed,
+  onToggle,
+}: {
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <Card className="border-l-4 border-l-primary">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+        <div className="flex items-center gap-2">
+          <Info className="h-4 w-4 shrink-0 text-primary" />
+          <CardTitle className="text-sm font-semibold">Cómo leer esta página</CardTitle>
+        </div>
+        <button
+          onClick={onToggle}
+          className="rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+          aria-label={collapsed ? "Expandir explicación" : "Colapsar explicación"}
+          aria-expanded={!collapsed}
+        >
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 transition-transform duration-200 ${collapsed ? "-rotate-90" : ""}`}
+          />
+        </button>
+      </CardHeader>
+      <div
+        className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
+          collapsed ? "grid-rows-[0fr]" : "grid-rows-[1fr]"
+        }`}
+      >
+        <div className="overflow-hidden">
+          <CardContent className="pt-0 text-sm space-y-2">
+            <p>
+              Ventas del <strong>punto de venta físico</strong> (POS), netas de IVA. Excluye Restobar (esa UN está en su propia página).
+            </p>
+            <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
+              <li>
+                <strong className="text-foreground">Facturación diaria promedio</strong>: monto del período / días con venta (el local no abre domingos, así que se descuentan). Es el ingreso promedio por día de operación, no el ticket por transacción.
+              </li>
+              <li>
+                <strong className="text-foreground">Ajuste por inflación</strong>: toggle arriba a la derecha. Sin activarlo, comparar meses distantes engaña.
+              </li>
+              <li>
+                <strong className="text-foreground">Mapa de calor</strong>: podés alternar entre &ldquo;cantidad de ventas&rdquo; (volumen de tickets) y &ldquo;monto $&rdquo; (facturación). Los picos pueden caer en horas distintas.
+              </li>
+              <li>
+                <strong className="text-foreground">YTD</strong>: cuando el mes actual está parcial, las filas de años anteriores usan el mismo día de corte para comparación justa.
+              </li>
+            </ul>
+          </CardContent>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -249,6 +350,8 @@ export default function MostradorPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [granularity, setGranularity] = useState<Granularity>("mensual");
+  const [isInfoCollapsed, setIsInfoCollapsed] = useState(false);
+  const [heatmapMetric, setHeatmapMetric] = useState<HeatmapMetric>("count");
 
   // Section 5: Product search
   const [selectedProduct, setSelectedProduct] = useState("");
@@ -264,6 +367,10 @@ export default function MostradorPage() {
   // YTD day-level cutoff
   const [ytdCutoff, setYtdCutoff] = useState<YtdCutoff | null>(null);
   const [ytdPartialRaw, setYtdPartialRaw] = useState<Map<string, UnitParcial>>(new Map());
+
+  // Ticket promedio por día de la semana (promedio de tickets diarios, no agregado)
+  const [ticketDow, setTicketDow] = useState<TicketDowRow[]>([]);
+
 
   // Initial load
   useEffect(() => {
@@ -284,6 +391,8 @@ export default function MostradorPage() {
         fetchMostradorMesParcial(c.mes, c.dia).then(setYtdPartialRaw);
       }
     });
+    // Ticket promedio por DOW (nuevo RPC — promedio de tickets diarios)
+    fetchTicketPorDow().then(setTicketDow).catch(() => {});
   }, []);
 
   // Section 5: fetch weekly on product select
@@ -370,8 +479,44 @@ export default function MostradorPage() {
   const selectedIdx = adjMonthly.findIndex((r) => r.periodo === activePeriodo);
   const last = selectedIdx >= 0 ? adjMonthly[selectedIdx] : (adjMonthly.length > 0 ? adjMonthly[adjMonthly.length - 1] : null);
   const prev = selectedIdx >= 1 ? adjMonthly[selectedIdx - 1] : null;
-  const lastTicket = last && last.txCount > 0 ? last.monto / last.txCount : 0;
-  const prevTicket = prev && prev.txCount > 0 ? prev.monto / prev.txCount : 0;
+  // Ticket promedio = monto / días con venta (promedio de facturación por día
+  // de operación). Sin Restobar. No es el "ticket por transacción" — es el
+  // ingreso diario promedio cuando el local estuvo abierto.
+  const lastTicket = last && last.diasConVenta > 0 ? last.monto / last.diasConVenta : 0;
+  const prevTicket = prev && prev.diasConVenta > 0 ? prev.monto / prev.diasConVenta : 0;
+  // Mismo mes año anterior — para delta YoY en KPIs
+  const prevYearPeriodo = last
+    ? `${parseInt(last.periodo.slice(0, 4), 10) - 1}-${last.periodo.slice(5, 7)}`
+    : "";
+  const prevYear = adjMonthly.find((r) => r.periodo === prevYearPeriodo) ?? null;
+  const prevYearTicket = prevYear && prevYear.diasConVenta > 0 ? prevYear.monto / prevYear.diasConVenta : 0;
+
+  // Weekly data ajustado por inflación (semana_inicio da el periodo de referencia)
+  const adjWeeklyData = useMemo(
+    () => weeklyData.map((w) => ({
+      ...w,
+      monto: adjust(w.monto, w.semanaInicio.slice(0, 7)),
+    })),
+    [weeklyData, adjust],
+  );
+
+  // Ticket promedio por día de la semana — viene del RPC get_mostrador_ticket_por_dow.
+  // Para cada fecha: ticket_diario = monto / transacciones. Después promedia
+  // los tickets diarios agrupando por DOW. Domingo (dow=0) se excluye porque
+  // el local no abre los domingos (salvo días especiales como Pascuas).
+  const ticketPorDia = useMemo(() => {
+    const DAY_ORDER = [1, 2, 3, 4, 5, 6]; // Lun..Sáb
+    const byDow = new Map<number, TicketDowRow>();
+    for (const r of ticketDow) byDow.set(r.dow, r);
+    return DAY_ORDER.map((d) => {
+      const r = byDow.get(d);
+      return {
+        dia: dayName(d),
+        ticket: r ? r.ticketPromedio : 0,
+        dias: r ? r.diasConVenta : 0,
+      };
+    });
+  }, [ticketDow]);
 
   // Year-over-year data (Section 3)
   const yoyData = useMemo(() => {
@@ -448,6 +593,13 @@ export default function MostradorPage() {
         </div>
       </div>
 
+      {/* Info callout */}
+      <MostradorCallout
+        collapsed={isInfoCollapsed}
+        onToggle={() => setIsInfoCollapsed((v) => !v)}
+      />
+
+
       {/* ====== SECTION 1: KPI Cards ====== */}
       <div className="grid gap-4 md:grid-cols-3">
         <Card>
@@ -460,6 +612,11 @@ export default function MostradorPage() {
             {last && prev && (
               <p className={`text-xs ${(pctDelta(last.monto, prev.monto) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
                 {formatPct(pctDelta(last.monto, prev.monto))} vs mes anterior
+              </p>
+            )}
+            {last && prevYear && (
+              <p className={`text-xs ${(pctDelta(last.monto, prevYear.monto) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.monto, prevYear.monto))} vs mismo mes año anterior
               </p>
             )}
           </CardContent>
@@ -476,18 +633,31 @@ export default function MostradorPage() {
                 {formatPct(pctDelta(last.txCount, prev.txCount))} vs mes anterior
               </p>
             )}
+            {last && prevYear && prevYear.txCount > 0 && (
+              <p className={`text-xs ${(pctDelta(last.txCount, prevYear.txCount) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(last.txCount, prevYear.txCount))} vs mismo mes año anterior
+              </p>
+            )}
           </CardContent>
         </Card>
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Ticket Promedio</CardTitle>
+            <CardTitle className="text-sm font-medium">Facturación Diaria Promedio</CardTitle>
             <ShoppingBag className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{formatARS(lastTicket)}</div>
+            <p className="text-[11px] text-muted-foreground">
+              {last?.diasConVenta ?? 0} días con venta
+            </p>
             {prevTicket > 0 && (
               <p className={`text-xs ${(pctDelta(lastTicket, prevTicket) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
                 {formatPct(pctDelta(lastTicket, prevTicket))} vs mes anterior
+              </p>
+            )}
+            {prevYearTicket > 0 && (
+              <p className={`text-xs ${(pctDelta(lastTicket, prevYearTicket) ?? 0) >= 0 ? "text-green-600" : "text-red-600"}`}>
+                {formatPct(pctDelta(lastTicket, prevYearTicket))} vs mismo mes año anterior
               </p>
             )}
           </CardContent>
@@ -517,26 +687,27 @@ export default function MostradorPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-[160px]">Período</TableHead>
+                  <TableHead className="w-[160px] sticky left-0 z-20 bg-card">Período</TableHead>
                   <TableHead className="text-right">Ventas ($)</TableHead>
                   <TableHead className="text-right w-[80px]">Δ%</TableHead>
                   <TableHead className="text-right">Transacciones</TableHead>
                   <TableHead className="text-right w-[80px]">Δ%</TableHead>
-                  <TableHead className="text-right">Ticket Promedio</TableHead>
+                  <TableHead className="text-right">Facturación/día</TableHead>
                   <TableHead className="text-right w-[80px]">Δ%</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {tableRows.map((row, idx) => {
                   const prevRow = idx < tableRows.length - 1 ? tableRows[idx + 1] : null;
-                  const ticket = row.txCount > 0 ? row.monto / row.txCount : 0;
-                  const prevTicketVal = prevRow && prevRow.txCount > 0 ? prevRow.monto / prevRow.txCount : 0;
+                  // Ticket promedio = monto / días con venta (ingresos diarios por día abierto)
+                  const ticket = row.diasConVenta > 0 ? row.monto / row.diasConVenta : 0;
+                  const prevTicketVal = prevRow && prevRow.diasConVenta > 0 ? prevRow.monto / prevRow.diasConVenta : 0;
                   const dVentas = prevRow ? pctDelta(row.monto, prevRow.monto) : null;
                   const dTx = prevRow ? pctDelta(row.txCount, prevRow.txCount) : null;
                   const dTicket = prevTicketVal > 0 ? pctDelta(ticket, prevTicketVal) : null;
                   return (
                     <TableRow key={row.periodo}>
-                      <TableCell className="font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth, ytdCutoff)}</TableCell>
+                      <TableCell className="sticky left-0 z-10 bg-card font-medium">{granularityLabel(row.periodo, granularity, ytdLastMonth, ytdCutoff)}</TableCell>
                       <TableCell className="text-right">{formatARS(row.monto)}</TableCell>
                       <TableCell className={`text-right text-xs ${dVentas !== null ? (dVentas >= 0 ? "text-green-600" : "text-red-600") : ""}`}>
                         {formatPct(dVentas)}
@@ -580,7 +751,7 @@ export default function MostradorPage() {
                   stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
                   strokeWidth={2}
                   dot={{ r: 3 }}
-                  connectNulls
+                  connectNulls={false}
                 />
               ))}
             </LineChart>
@@ -610,7 +781,7 @@ export default function MostradorPage() {
                   stroke={YEAR_COLORS[i % YEAR_COLORS.length]}
                   strokeWidth={2}
                   dot={{ r: 3 }}
-                  connectNulls
+                  connectNulls={false}
                 />
               ))}
             </LineChart>
@@ -620,15 +791,53 @@ export default function MostradorPage() {
 
       {/* ====== SECTION 4: Heatmap ====== */}
       <Card>
-        <CardHeader><CardTitle className="text-base">Mapa de Calor — Día × Hora</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle className="text-base">Mapa de Calor — Día × Hora</CardTitle>
+          <div className="flex items-center rounded-lg border text-xs font-medium">
+            {(["count", "monto"] as HeatmapMetric[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setHeatmapMetric(m)}
+                className={`px-3 py-1.5 transition-colors first:rounded-l-lg last:rounded-r-lg ${
+                  heatmapMetric === m ? "bg-primary text-primary-foreground" : "hover:bg-accent"
+                }`}
+              >
+                {m === "count" ? "Cant. ventas" : "Monto $"}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
         <CardContent>
           {heatmap.length > 0 ? (
-            <Heatmap cells={heatmap} />
+            <Heatmap cells={heatmap} metric={heatmapMetric} />
           ) : (
             <p className="text-sm text-muted-foreground text-center py-4">Sin datos horarios disponibles</p>
           )}
         </CardContent>
       </Card>
+
+      {/* ====== SECTION 4b: Ticket Promedio por Día de la Semana ====== */}
+      {ticketPorDia.some((d) => d.ticket > 0) && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Ticket Promedio por Día de la Semana</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={ticketPorDia}>
+                <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                <XAxis dataKey="dia" fontSize={12} />
+                <YAxis fontSize={12} tickFormatter={(v) => formatCompact(Number(v))} />
+                <Tooltip formatter={arsTooltip} />
+                <Bar dataKey="ticket" name="Ticket promedio" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Para cada fecha se calcula <em>ticket = monto / transacciones</em>. Después se promedian los tickets diarios agrupando por día de la semana. All-time en nominal — usar para la <strong>forma</strong> relativa entre días. Domingo excluido.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       {/* ====== SECTION 5: Product Search + Weekly Evolution ====== */}
       <Card>
@@ -651,10 +860,10 @@ export default function MostradorPage() {
             </div>
           )}
 
-          {!weeklyLoading && selectedProduct && weeklyData.length > 0 && (
+          {!weeklyLoading && selectedProduct && adjWeeklyData.length > 0 && (
             <>
               <ResponsiveContainer width="100%" height={300}>
-                <BarChart data={weeklyData.map((w) => ({
+                <BarChart data={adjWeeklyData.map((w) => ({
                   label: weekLabel(w.semanaInicio),
                   cantidad: w.cantidad,
                   monto: w.monto,
@@ -674,16 +883,16 @@ export default function MostradorPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Semana</TableHead>
+                      <TableHead className="sticky left-0 z-20 bg-card">Semana</TableHead>
                       <TableHead className="text-right">Cantidad</TableHead>
                       <TableHead className="text-right">Monto</TableHead>
                       <TableHead className="text-right">Promedio diario</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {weeklyData.map((w) => (
+                    {adjWeeklyData.map((w) => (
                       <TableRow key={w.semana}>
-                        <TableCell className="font-medium">
+                        <TableCell className="sticky left-0 z-10 bg-card font-medium">
                           {(() => {
                             try {
                               const start = parseISO(w.semanaInicio);
@@ -706,7 +915,7 @@ export default function MostradorPage() {
             </>
           )}
 
-          {!weeklyLoading && selectedProduct && weeklyData.length === 0 && (
+          {!weeklyLoading && selectedProduct && adjWeeklyData.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-4">
               Sin datos de las últimas 12 semanas para &quot;{selectedProduct}&quot;
             </p>
@@ -742,23 +951,27 @@ export default function MostradorPage() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[50px]">#</TableHead>
+                      <TableHead className="w-[50px] sticky left-0 z-20 bg-card">#</TableHead>
                       <TableHead>Producto</TableHead>
+                      <TableHead className="text-right">Monto total ($)</TableHead>
+                      <TableHead className="text-right">Unidades</TableHead>
                       <TableHead className="text-right">Promedio diario</TableHead>
-                      <TableHead className="text-right">Total mes</TableHead>
-                      <TableHead className="text-right">Unidad</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {(showAllRanking ? ranking : ranking.slice(0, 20)).map((r, i) => (
-                      <TableRow key={r.producto}>
-                        <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                        <TableCell className="font-medium max-w-[250px] truncate">{r.producto}</TableCell>
-                        <TableCell className="text-right">{r.promedioDiario.toLocaleString("es-AR", { maximumFractionDigits: 1 })}</TableCell>
-                        <TableCell className="text-right">{r.totalCantidad.toLocaleString("es-AR", { maximumFractionDigits: 1 })}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">unidades</TableCell>
-                      </TableRow>
-                    ))}
+                    {(() => {
+                      // Orden por monto descendente (antes era por cantidad)
+                      const sorted = [...ranking].sort((a, b) => (b.totalMonto ?? 0) - (a.totalMonto ?? 0));
+                      return (showAllRanking ? sorted : sorted.slice(0, 20)).map((r, i) => (
+                        <TableRow key={r.producto}>
+                          <TableCell className="sticky left-0 z-10 bg-card text-muted-foreground">{i + 1}</TableCell>
+                          <TableCell className="font-medium max-w-[260px] truncate" title={r.producto}>{r.producto}</TableCell>
+                          <TableCell className="text-right font-medium">{formatARS(r.totalMonto ?? 0)}</TableCell>
+                          <TableCell className="text-right">{r.totalCantidad.toLocaleString("es-AR", { maximumFractionDigits: 1 })}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">{r.promedioDiario.toLocaleString("es-AR", { maximumFractionDigits: 1 })}</TableCell>
+                        </TableRow>
+                      ));
+                    })()}
                   </TableBody>
                 </Table>
               </div>

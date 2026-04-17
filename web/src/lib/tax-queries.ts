@@ -4,7 +4,7 @@
  */
 import { supabase } from "./supabase";
 import { fetchWithRetry } from "./fetchWithRetry";
-import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, fetchIngresos, type ResultadoRow } from "./economic-queries";
+import { formatARS, formatPct, pctDelta, periodoLabel, shortLabel, fetchResultado, fetchIngresos, TASA_GANANCIAS, type ResultadoRow } from "./economic-queries";
 
 export { formatARS, formatPct, pctDelta, periodoLabel, shortLabel };
 
@@ -211,7 +211,7 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
   const resultadoMap = new Map<string, ResultadoRow>(resultados.map((r) => [r.periodo, r]));
   for (const [p, r] of Array.from(resultadoMap.entries())) {
     if (r.resultadoAntesGanancias > 0) {
-      let gananciasEst = r.resultadoAntesGanancias * 0.35;
+      let gananciasEst = r.resultadoAntesGanancias * TASA_GANANCIAS;
       // Cap: if resultado > 50% of ingresos, limit to 10% of ingresos
       if (r.ingresos > 0 && r.resultadoAntesGanancias > r.ingresos * 0.5) {
         gananciasEst = Math.min(gananciasEst, r.ingresos * 0.10);
@@ -239,7 +239,8 @@ export async function fetchResumenFiscal(): Promise<ResumenFiscalData> {
     const periodoMatch = obs.match(/Per[ií]odo:\s*(\d{4})(\d{2})/);
     if (periodoMatch) {
       const [, yyyy, mm] = periodoMatch;
-      if (mm === "00") {
+      const mmNum = parseInt(mm, 10);
+      if (mmNum < 1 || mmNum > 12) {
         month = (p.fecha_pago as string).slice(0, 7);
       } else {
         month = `${yyyy}-${mm}`;

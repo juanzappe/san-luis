@@ -48,25 +48,31 @@ export function InflationProvider({ children }: { children: ReactNode }) {
 
   // Fetch IPC from indicador_macro
   useEffect(() => {
-    supabase
-      .from("indicador_macro")
-      .select("fecha, valor")
-      .eq("tipo", "ipc")
-      .order("fecha", { ascending: true })
-      .then(({ data, error }) => {
+    const load = async () => {
+      try {
+        const { data, error } = await supabase
+          .from("indicador_macro")
+          .select("fecha, valor")
+          .eq("tipo", "ipc")
+          .order("fecha", { ascending: true });
         if (error || !data || data.length === 0) {
           setIpcLoaded(true);
           return;
         }
         const map = new Map<string, number>();
         for (const row of data as IpcEntry[]) {
-          // key = YYYY-MM
+          if (!row.fecha || row.fecha.length < 7) continue;
           const periodo = row.fecha.slice(0, 7);
           map.set(periodo, Number(row.valor));
         }
         setIpcMap(map);
+      } catch {
+        // silently ignore network errors; ipcLoaded=true lets the app render without IPC
+      } finally {
         setIpcLoaded(true);
-      });
+      }
+    };
+    load();
   }, []);
 
   // Base IPC = último mes disponible

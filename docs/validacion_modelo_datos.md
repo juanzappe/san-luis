@@ -1,7 +1,7 @@
 # Validación del Modelo de Datos vs Datasets Reales
 ## Hallazgos y Ajustes Necesarios
 
-**Fecha:** 28 de marzo de 2026
+**Fecha:** 28 de marzo de 2026 · Última revisión: 17 de abril de 2026 (documento histórico — refleja la validación inicial)
 
 ---
 

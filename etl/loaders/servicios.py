@@ -11,6 +11,8 @@ Dedup: Mismo key que arca_ingresos (fecha_emision, tipo_comprobante, punto_venta
 import zipfile
 from pathlib import Path
 
+from psycopg2.extras import execute_batch
+
 from utils import (
     get_data_raw_path, safe_int, safe_str,
     fetch_all, batch_insert, batch_insert_returning,
@@ -22,8 +24,8 @@ from utils import (
 # Amount / date parsing helpers
 # ---------------------------------------------------------------------------
 
-def _parse_importe(val: str, divisor: float = 10000.0) -> float | None:
-    """Parse fixed-width amount field. Default divisor 10000 (4 decimal places)."""
+def _parse_importe(val: str, divisor: float = 100.0) -> float | None:
+    """Parse fixed-width amount field. Default divisor 100 (ARCA format 15,2)."""
     v = val.strip()
     if not v or v == "0" * len(v):
         return 0.0
@@ -64,12 +66,52 @@ VENTAS_SPEC = [
     (198, 15, "percepciones_muni"),
     (213, 15, "impuestos_internos"),
     (228, 3, "moneda"),
-    (231, 10, "tipo_cambio"),
+    (231, 10, "tipo_cambio"),  # Format 10,6 → divisor 1_000_000
     (241, 1, "cantidad_alicuotas"),
     (242, 1, "codigo_operacion"),
     (243, 15, "otros_tributos"),
     (258, 8, "fecha_vto_pago"),
 ]
+
+
+# ALICUOTAS.txt: alic_id (4 chars) → (neto_col, iva_col) in factura_emitida.
+# Keys are 4-digit codes as they appear in the file ("0005" = 21%).
+ALICUOTA_FIELDS = {
+    "0002": ("iva_2_5_neto", "iva_2_5"),
+    "0003": ("iva_0_neto", None),
+    "0004": ("iva_10_5_neto", "iva_10_5"),
+    "0005": ("iva_21_neto", "iva_21"),
+    "0006": ("iva_27_neto", "iva_27"),
+}
+
+
+def _parse_alicuotas_content(content: str) -> dict:
+    """Parse ALICUOTAS.txt → dict keyed by (tipo_comp, pv, nro) → list of (alic_id, neto, iva).
+
+    ARCA Libro IVA Digital ALICUOTAS.txt format (62 chars per line):
+      [0:3]   Tipo comprobante (3)
+      [3:8]   Punto de venta (5)
+      [8:28]  Número de comprobante (20)
+      [28:43] Importe neto gravado (15,2)
+      [43:47] Alícuota IVA (4)   ← 4 chars, not 3
+      [47:62] Impuesto liquidado (15,2)
+    """
+    result = {}
+    for line in content.split("\n"):
+        line = line.rstrip("\r")
+        if len(line) < 62:
+            continue
+        tipo_comp = safe_int(line[0:3])
+        pv = safe_int(line[3:8])
+        nro = safe_int(line[8:28])
+        neto = _parse_importe(line[28:43])
+        alic_id = line[43:47].strip()
+        iva = _parse_importe(line[47:62])
+        if tipo_comp is None or pv is None or nro is None:
+            continue
+        key = (tipo_comp, pv, nro)
+        result.setdefault(key, []).append((alic_id, neto, iva))
+    return result
 
 
 def _parse_ventas_line(line: str) -> dict | None:
@@ -101,7 +143,7 @@ def _parse_ventas_line(line: str) -> dict | None:
         ),
         "denominacion_receptor": safe_str(fields.get("denominacion_receptor")),
         "moneda": moneda,
-        "tipo_cambio": _parse_importe(fields.get("tipo_cambio", "0")),
+        "tipo_cambio": _parse_importe(fields.get("tipo_cambio", "0"), divisor=1_000_000.0),
         "imp_total": _parse_importe(fields.get("imp_total", "0")),
         "imp_neto_no_gravado": _parse_importe(
             fields.get("imp_neto_no_gravado", "0")
@@ -180,10 +222,14 @@ def _parse_detalle_line(line: str) -> dict | None:
         # Actual detalle fields
         "renglon": safe_int(line[112:114]),
         "descripcion": descripcion,
-        "cantidad": _parse_importe(line[31:46]),
-        "precio_unitario": _parse_importe(line[46:61]),
-        "bonificacion": _parse_importe(line[61:76]),
-        "importe": _parse_importe(line[91:106]),
+        # Divisors verificados contra header (cantidad × precio = importe = imp_total):
+        #   cantidad:        15,9 → divisor 10^9  (ej: raw "000014200000070" → 14.2)
+        #   precio_unitario: 15,2 → divisor 10^2  (ej: raw "000000008000000" → 80000)
+        #   importe:         15,1 → divisor 10   (per-renglón gross, matches imp_total)
+        "cantidad": _parse_importe(line[31:46], divisor=1_000_000_000.0),
+        "precio_unitario": _parse_importe(line[46:61], divisor=100.0),
+        "bonificacion": _parse_importe(line[61:76], divisor=10_000.0),
+        "importe": _parse_importe(line[91:106], divisor=10.0),
         "alicuota_iva": _parse_importe(line[106:111], divisor=100.0),
         "codigo_operacion": safe_str(line[111:112]),
     }
@@ -269,8 +315,10 @@ def run(conn, logger, full: bool = False) -> int:
 
     logger.info(f"  Tipo 1 (VENTAS): {len(ventas_zips)}, Tipo 2 (CABECERA+DETALLE): {len(cabecera_zips)}")
 
-    # --- Process Tipo 1: VENTAS.txt ---
+    # --- Process Tipo 1: VENTAS.txt + ALICUOTAS.txt ---
     ventas_records = []
+    ventas_alicuotas = {}  # (tipo_comp, pv, nro_hasta) → list of (alic_id, neto, iva)
+
     for zip_path in ventas_zips:
         logger.info(f"  [VENTAS] {zip_path.name}")
         with zipfile.ZipFile(zip_path) as zf:
@@ -296,7 +344,13 @@ def run(conn, logger, full: bool = False) -> int:
                 seen_keys.add(key)
                 ventas_records.append(record)
 
+            alic_fname = _find_file(zf, "ALICUOTAS.TXT")
+            if alic_fname:
+                alic_content = _read_zip_file(zf, alic_fname)
+                ventas_alicuotas.update(_parse_alicuotas_content(alic_content))
+
     logger.info(f"  {len(ventas_records)} facturas nuevas de VENTAS.txt")
+    logger.info(f"  {len(ventas_alicuotas)} facturas con alicuotas en ALICUOTAS.txt")
 
     # --- Process Tipo 2: CABECERA.txt + DETALLE.txt ---
     cabecera_records = []
@@ -360,6 +414,67 @@ def run(conn, logger, full: bool = False) -> int:
     # Insert VENTAS records (no returning needed)
     if ventas_records:
         total_facturas += batch_insert(conn, "factura_emitida", ventas_records)
+
+        # Populate per-alicuota iva_* columns + imp_neto_gravado_total + total_iva
+        # from ALICUOTAS.txt. This only applies to Tipo 1 (VENTAS.txt) facturas.
+        if ventas_alicuotas:
+            pv6_rows = fetch_all(
+                conn,
+                "SELECT id, tipo_comprobante, punto_venta, numero_hasta "
+                "FROM factura_emitida WHERE punto_venta = 6"
+            )
+            id_map = {
+                (int(r["tipo_comprobante"]), int(r["punto_venta"]), int(r["numero_hasta"])): r["id"]
+                for r in pv6_rows
+                if r["numero_hasta"] is not None
+            }
+            updates = []
+            for r in ventas_records:
+                akey = (r["tipo_comprobante"], r["punto_venta"], r["numero_hasta"])
+                fid = id_map.get(akey)
+                entries = ventas_alicuotas.get(akey)
+                if fid is None or not entries:
+                    continue
+                row = {
+                    "_id": fid,
+                    "iva_0_neto": None,
+                    "iva_2_5_neto": None, "iva_2_5": None,
+                    "iva_10_5_neto": None, "iva_10_5": None,
+                    "iva_21_neto": None, "iva_21": None,
+                    "iva_27_neto": None, "iva_27": None,
+                    "imp_neto_gravado_total": 0.0,
+                    "total_iva": 0.0,
+                }
+                for alic_id, neto, iva in entries:
+                    cols = ALICUOTA_FIELDS.get(alic_id)
+                    if cols:
+                        neto_col, iva_col = cols
+                        row[neto_col] = neto
+                        if iva_col:
+                            row[iva_col] = iva
+                    row["imp_neto_gravado_total"] += neto or 0.0
+                    row["total_iva"] += iva or 0.0
+                updates.append(row)
+
+            if updates:
+                with conn.cursor() as cur:
+                    execute_batch(cur, """
+                        UPDATE factura_emitida SET
+                            iva_0_neto = %(iva_0_neto)s,
+                            iva_2_5_neto = %(iva_2_5_neto)s,
+                            iva_2_5 = %(iva_2_5)s,
+                            iva_10_5_neto = %(iva_10_5_neto)s,
+                            iva_10_5 = %(iva_10_5)s,
+                            iva_21_neto = %(iva_21_neto)s,
+                            iva_21 = %(iva_21)s,
+                            iva_27_neto = %(iva_27_neto)s,
+                            iva_27 = %(iva_27)s,
+                            imp_neto_gravado_total = %(imp_neto_gravado_total)s,
+                            total_iva = %(total_iva)s,
+                            updated_at = NOW()
+                        WHERE id = %(_id)s
+                    """, updates)
+                logger.info(f"  {len(updates)} facturas → IVA poblado desde ALICUOTAS.txt")
 
     # Insert CABECERA records with RETURNING to get IDs for detalle linking
     factura_id_map = {}  # (tipo_comp, pv, num_desde) → id

@@ -1,7 +1,7 @@
 # Infraestructura Tecnológica — App de Gestión San Luis
 ## Nadal y Zaccaro S.A.
 
-**Fecha:** 28 de marzo de 2026  
+**Fecha:** 28 de marzo de 2026 · Última revisión: 17 de abril de 2026
 **Versión:** 1.0
 
 ---
