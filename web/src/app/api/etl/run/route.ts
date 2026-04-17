@@ -30,14 +30,19 @@ const VALID_LOADERS = new Set([
   "ipc",
 ]);
 
-const LOADER_TIMEOUT_MS = 600_000; // 10 min por loader
+// Timeout del proceso Python: 10 min. Multi-loader corre en UNA sola invocación
+// así que este techo cubre todo el batch.
+const BATCH_TIMEOUT_MS = 600_000;
 
 function execPromise(
   args: string[],
   options: { cwd: string; timeout: number },
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile("python", args, options, (err, stdout, stderr) => {
+    // PYTHONIOENCODING=utf-8 evita que Python escape Unicode a \uXXXX cuando
+    // stdout no es una TTY (default en Windows, rompe el parseo de ✓/✗).
+    const env = { ...process.env, PYTHONIOENCODING: "utf-8" };
+    execFile("python", args, { ...options, env }, (err, stdout, stderr) => {
       if (err) {
         reject(
           Object.assign(err, {
@@ -52,12 +57,6 @@ function execPromise(
   });
 }
 
-function parseRegistros(output: string, loader: string): number | null {
-  const re = new RegExp(`✓\\s*${loader}:\\s*(\\d+)\\s*registros`);
-  const match = output.match(re);
-  return match ? parseInt(match[1], 10) : null;
-}
-
 interface LoaderResult {
   loader: string;
   ok: boolean;
@@ -66,74 +65,70 @@ interface LoaderResult {
   error?: string;
 }
 
-async function runSingleLoader(
-  loader: string,
-  etlDir: string,
-  logIds: Map<string, number[]>,
-): Promise<LoaderResult> {
-  // Marcar logs asociados como "procesando"
-  const ids = logIds.get(loader) ?? [];
-  if (ids.length > 0) {
-    await supabase
-      .from("import_log")
-      .update({ estado: "procesando" })
-      .in("id", ids);
-  }
-
-  try {
-    const { stdout, stderr } = await execPromise(
-      ["main.py", loader],
-      { cwd: etlDir, timeout: LOADER_TIMEOUT_MS },
-    );
-    const registros = parseRegistros(stdout, loader);
-
-    if (ids.length > 0) {
-      await supabase
-        .from("import_log")
-        .update({ estado: "procesado", registros_procesados: registros })
-        .in("id", ids);
+/**
+ * Parsea la salida combinada de main.py (una corrida con múltiples loaders)
+ * y extrae el resultado de cada loader por nombre.
+ *
+ * Formato esperado de main.py (ver etl/main.py):
+ *   ✓ LOADER: N registros en Ts
+ *   ✗ LOADER: error_msg (Ts)
+ */
+function parseLoaderResults(
+  output: string,
+  loaders: string[],
+): LoaderResult[] {
+  return loaders.map((loader) => {
+    // Acepta el glifo Unicode real (✓/✗) o el escape literal que Python emite
+    // a veces en Windows sin PYTHONIOENCODING=utf-8.
+    const okRe = new RegExp(`(?:✓|\\\\u2713)\\s*${loader}:\\s*(\\d+)\\s*registros`);
+    const errRe = new RegExp(`(?:✗|\\\\u2717)\\s*${loader}:`);
+    const okMatch = output.match(okRe);
+    if (okMatch) {
+      return {
+        loader,
+        ok: true,
+        registros: parseInt(okMatch[1], 10),
+        output: output.slice(-2000),
+      };
     }
-
-    return {
-      loader,
-      ok: true,
-      registros,
-      output: (stdout + "\n" + stderr).slice(0, 2000),
-    };
-  } catch (execErr) {
-    const e = execErr as Error & { stdout?: string; stderr?: string };
-    const out = (e.stdout ?? "") + "\n" + (e.stderr ?? e.message);
-
-    if (ids.length > 0) {
-      await supabase
-        .from("import_log")
-        .update({
-          estado: "error",
-          error_mensaje: (e.stderr ?? e.message).slice(0, 1000),
-        })
-        .in("id", ids);
+    if (errRe.test(output)) {
+      return {
+        loader,
+        ok: false,
+        registros: null,
+        output: output.slice(-2000),
+        error: `Error ejecutando ${loader}`,
+      };
     }
-
+    // Loader no apareció en la salida (p.ej. main.py nunca lo invocó).
     return {
       loader,
       ok: false,
       registros: null,
-      output: out.slice(0, 2000),
-      error: `Error ejecutando ${loader}`,
+      output: output.slice(-2000),
+      error: `Loader ${loader} no ejecutado`,
     };
-  }
+  });
 }
 
-async function refreshMvs(): Promise<{ ok: boolean; elapsed_ms: number; error?: string }> {
-  const t0 = Date.now();
-  const { error } = await supabase.rpc("refresh_aggregate_mvs");
-  const elapsed_ms = Date.now() - t0;
-  if (error) return { ok: false, elapsed_ms, error: error.message };
-  return { ok: true, elapsed_ms };
+/**
+ * `main.py` ya dispara `refresh_aggregate_mvs()` al final de cada corrida
+ * exitosa. Acá parseamos el log para reportar si pasó y cuánto tardó.
+ *
+ * (No llamamos a refresh desde Node porque Supabase REST corta a los ~8s
+ * por statement_timeout y el refresh completo toma ~22s.)
+ */
+function parseRefreshFromOutput(output: string): { ok: boolean; elapsed_ms: number } | null {
+  const m = output.match(/refresh_aggregate_mvs:\s*([\d.]+)s/);
+  if (!m) return null;
+  return { ok: true, elapsed_ms: Math.round(parseFloat(m[1]) * 1000) };
 }
 
 export async function POST(request: NextRequest) {
-  if (process.env.NODE_ENV === "production") {
+  // Bloquear solo cuando el código corre en un deploy remoto (Vercel).
+  // Con `npm start` local (NODE_ENV=production pero VERCEL undefined) el ETL
+  // debe funcionar: los loaders viven en el filesystem del usuario.
+  if (process.env.VERCEL) {
     return NextResponse.json(
       { error: "ETL solo disponible en desarrollo local" },
       { status: 403 },
@@ -172,20 +167,65 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const etlDir = path.resolve(process.cwd(), "..", "etl");
-
-    // Ejecutar loaders secuencialmente (algunos dependen de FKs de otros).
-    const results: LoaderResult[] = [];
-    for (const loader of loaders) {
-      const r = await runSingleLoader(loader, etlDir, logIds);
-      results.push(r);
+    // Marcar todos los logs como "procesando"
+    const allIds = Array.from(logIds.values()).flat();
+    if (allIds.length > 0) {
+      await supabase
+        .from("import_log")
+        .update({ estado: "procesando" })
+        .in("id", allIds);
     }
 
-    // Refrescar MVs al final si al menos un loader tuvo éxito.
-    const anyOk = results.some((r) => r.ok);
-    const refresh = anyOk ? await refreshMvs() : null;
+    const etlDir = path.resolve(process.cwd(), "..", "etl");
 
-    const allOk = results.every((r) => r.ok);
+    // Una sola invocación de main.py con todos los loaders. main.py respeta
+    // el orden recibido y corre refresh_aggregate_mvs() UNA vez al final.
+    let stdout = "";
+    let stderr = "";
+    let execError: Error | null = null;
+    try {
+      const result = await execPromise(
+        ["main.py", ...loaders],
+        { cwd: etlDir, timeout: BATCH_TIMEOUT_MS },
+      );
+      stdout = result.stdout;
+      stderr = result.stderr;
+    } catch (e) {
+      const err = e as Error & { stdout?: string; stderr?: string };
+      stdout = err.stdout ?? "";
+      stderr = err.stderr ?? err.message;
+      execError = err;
+    }
+
+    const combined = stdout + "\n" + stderr;
+    const results = parseLoaderResults(combined, loaders);
+
+    // Actualizar logs según el resultado parseado
+    for (const result of results) {
+      const ids = logIds.get(result.loader) ?? [];
+      if (ids.length === 0) continue;
+      if (result.ok) {
+        await supabase
+          .from("import_log")
+          .update({
+            estado: "procesado",
+            registros_procesados: result.registros,
+          })
+          .in("id", ids);
+      } else {
+        await supabase
+          .from("import_log")
+          .update({
+            estado: "error",
+            error_mensaje: (result.error ?? "Loader falló").slice(0, 1000),
+          })
+          .in("id", ids);
+      }
+    }
+
+    const refresh = parseRefreshFromOutput(combined);
+    const allOk = results.every((r) => r.ok) && !execError;
+
     return NextResponse.json({
       ok: allOk,
       results,

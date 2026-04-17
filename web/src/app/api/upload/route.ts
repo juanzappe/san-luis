@@ -33,8 +33,8 @@ const FOLDER_MAP: Record<string, string> = {
 };
 
 export async function POST(request: NextRequest) {
-  // Only allow in development
-  if (process.env.NODE_ENV === "production") {
+  // Bloquear solo en deploy remoto (Vercel). `npm start` local debe funcionar.
+  if (process.env.VERCEL) {
     return NextResponse.json(
       { error: "Importación solo disponible en desarrollo local" },
       { status: 403 },
