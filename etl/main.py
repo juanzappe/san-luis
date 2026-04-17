@@ -111,6 +111,20 @@ def main():
             total_ok += 1
 
     logger.info(f"Total: {total_ok} exitosos, {total_err} con error")
+
+    # Refrescar materialized views agregadoras — solo si algún loader tuvo éxito,
+    # la data cambió y corresponde refrescar los MVs que alimentan el frontend.
+    if total_ok > 0:
+        logger.info("--- Refrescando materialized views ---")
+        t_refresh = time.time()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT refresh_aggregate_mvs()")
+            elapsed = time.time() - t_refresh
+            logger.info(f"✓ refresh_aggregate_mvs: {elapsed:.1f}s")
+        except Exception as e:
+            logger.error(f"✗ refresh_aggregate_mvs falló: {e}", exc_info=True)
+
     conn.close()
 
 
